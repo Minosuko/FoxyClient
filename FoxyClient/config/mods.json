@@ -1,0 +1,47 @@
+{
+    "minecraft_version": "Fabric 1.21.11",
+    "loader": "fabric",
+    "game_optimize_mods": [
+        "fabric-api",
+        "sodium",
+        "iris",
+        "lithium",
+        "appleskin",
+        "architectury-api",
+        "modmenu",
+        "fabric-language-kotlin",
+        "BetterF3",
+        "Chunky",
+        "entityculling",
+        "continuity",
+        "dynamic-fps",
+        "entity-model-features",
+        "entitytexturefeatures",
+        "ferrite-core",
+        "fzzy-config",
+        "ImmediatelyFast",
+        "particle-core",
+        "smooth-scroll",
+        "yacl",
+        "sodium-extra",
+        "BadOptimizations"
+    ],
+    "additional_mods": {
+        "SurvivalEnchantmentPack": [
+            "jamlib",
+            "double-doors",
+            "sort-it-out",
+            "tree-harvester",
+            "ukulib",
+            "ukus-armor-hud",
+            "veinminer",
+            "collective",
+            "silk"
+        ],
+        "AddtionalModPack": [
+            "dark-loading-screen",
+            "lambdynamiclights",
+            "zoomify"
+        ]
+    }
+}
