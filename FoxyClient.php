@@ -163,6 +163,7 @@ class FoxyClient
 	private $isUpdatingCacert = false;
 	private $caUpdateProgress = 0.0;
 	private $isCheckingUiUpdate = false;
+	private $hasUiUpdate = false;
 	private $updateMessage = "";
 	private $updateChannel = null;
 
@@ -249,8 +250,18 @@ class FoxyClient
 	private $modDownloadFuture = null; // Reference to prevent "return ignored" fatal error
 	private $isDownloadingModrinth = false;
 
+	// Installed Modpacks State
+	private $installedModpacks = []; // slug => {name, version, mc_version, loader, files: [filenames]}
+	private $modpackInstallProgress = "";
+	private $modpackUninstallHover = -1;
+	private $modpackInstallProcess = null;
+	private $modpackInstallChannel = null;
+	private $modpackInstallFuture = null;
+	private $isInstallingModpack = false;
+
 	// Icon cache
 	private $modIconCache = []; // project_id => gl_texture_id
+	private $modpackIconCache = []; // slug => gl_texture_id
 	private $modIconLastUse = []; // project_id => timestamp
 	private $iconDownloadProcess = null;
 	private $iconDownloadChannel = null;
@@ -319,6 +330,7 @@ class FoxyClient
 		"language" => "en",
 		"show_modified_versions" => true,
 		"enable_modpack" => false,
+		"separate_modpack_folder" => false,
 		"overlay_cpu" => false,
 		"overlay_gpu" => false,
 		"overlay_ram" => false,
@@ -460,6 +472,7 @@ class FoxyClient
 		$this->colors = $this->darkColors; // Default initial colors to prevent null access
 		$this->loadConfig($configPath);
 		$this->loadSettings();
+		$this->loadModpacks();
 		$this->checkLocalMods();
 		$this->applyTheme();
 		$this->initFFI();
@@ -494,6 +507,9 @@ class FoxyClient
 		$this->discord = new DiscordRPC();
 		$this->discord->init("1475364971180331109");
 		$this->updateDiscordPresence();
+
+		// Silent background update check
+		$this->triggerCheckForUpdate(true);
 	}
 
 	private function loadConfig($path)
@@ -1574,9 +1590,14 @@ class FoxyClient
 			$this->currentPage === self::PAGE_FOXYCLIENT ? 0 : $this->activeTab;
 		$mods = $this->tabs[$tabIdx]["mods"] ?? [];
 		if ($this->currentPage === self::PAGE_MODS) {
-			$modsCount = count($this->modrinthSearchResults);
-			$rows = ceil($modsCount / 2);
-			$contentH = $rows * (100 + 10) + 20;
+			if ($this->modpackSubTab === 2) {
+				$modsCount = count($this->installedModpacks);
+				$contentH = $modsCount * (60 + 8) + 20;
+			} else {
+				$modsCount = count($this->modrinthSearchResults);
+				$rows = ceil($modsCount / 2);
+				$contentH = $rows * (100 + 10) + 20;
+			}
 		} else {
 			$modsCount = count($mods);
 			$contentH = $modsCount * (self::CARD_H + self::CARD_GAP);
@@ -1809,28 +1830,21 @@ class FoxyClient
 				$uuid = $uuids[$idx];
 				// Check if click on Delete button (right side)
 				$accW = $cw - self::PAD * 2;
-				$delW = 40;
+				$delW = 32; // Sync with render size
 				$delX = self::PAD + $accW - $delW - 10;
-				if ($cx >= $delX && $cx <= $delX + $delW) {
+				if ($cx >= $delX && $cx <= self::PAD + $accW - 10) {
 					unset($this->accounts[$uuid]);
 					if ($this->activeAccount === $uuid) {
-						$this->activeAccount =
-							count($this->accounts) > 0
-								? array_key_first($this->accounts)
-								: "";
-						$this->isLoggedIn = !empty($this->activeAccount);
-						if ($this->isLoggedIn) {
-							$this->accountName =
-								$this->accounts[$this->activeAccount][
-									"Username"
-								] ?? "";
+						if (count($this->accounts) > 0) {
+							$this->selectAccount(array_key_first($this->accounts));
 						} else {
-							$this->accountName = "";
+							$this->logout();
 						}
 					}
 					$this->saveAccounts();
 				} else {
 					$this->selectAccount($uuid);
+					$this->currentPage = self::PAGE_HOME;
 				}
 			}
 		}
@@ -2221,10 +2235,10 @@ class FoxyClient
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 
-		// Sub-tabs (Mods, Modpacks)
+		// Sub-tabs (Mods, Modpacks, Installed)
 		if ($cy >= self::HEADER_H && $cy <= self::HEADER_H + self::TAB_H) {
 			$tabX = self::PAD;
-			foreach (["Mods", "Modpacks"] as $i => $name) {
+			foreach (["Mods", "Modpacks", "Installed"] as $i => $name) {
 				$tw = $this->getTextWidth($name, 1000) + 32;
 				if ($cx >= $tabX && $cx <= $tabX + $tw) {
 					if ($this->modpackSubTab !== $i) {
@@ -2236,6 +2250,9 @@ class FoxyClient
 						// ALWAYS search on sub-tab switch for dedicated browser feel
 						// searchModrinth will handle cache cleanup internally
 						$this->searchModrinth();
+						if ($i === 2) {
+							$this->checkModpackIcons();
+						}
 					}
 					return;
 				}
@@ -2346,6 +2363,38 @@ class FoxyClient
 			return;
 		}
 
+		if ($this->modpackSubTab === 2) {
+			// Installed tab - uninstall button clicks
+			$y = self::HEADER_H + self::TAB_H + 10 - $this->scrollOffset;
+			if ($this->isInstallingModpack || $this->modpackInstallProgress !== "") {
+				$y += 46;
+			}
+			$idx = 0;
+			foreach ($this->installedModpacks as $slug => $pack) {
+				$cardH = 60;
+				$btnW = 90;
+				$btnH = 28;
+				$btnX = $cw - self::PAD * 2 - $btnW - 10;
+				$btnY2 = $y + ($cardH - $btnH) / 2;
+
+				// Play button detection
+				$pBtnW = 70;
+				$pBtnX = $cw - self::PAD * 2 - $btnW - 20 - $pBtnW;
+				if ($cx >= $pBtnX && $cx <= $pBtnX + $pBtnW && $cy >= $btnY2 && $cy <= $btnY2 + $btnH) {
+					$this->launchModpack($slug);
+					return;
+				}
+
+				// Uninstall button detection
+				if ($cx >= $btnX && $cx <= $btnX + $btnW && $cy >= $btnY2 && $cy <= $btnY2 + $btnH) {
+					$this->uninstallModpack($slug);
+					return;
+				}
+				$y += $cardH + 8;
+				$idx++;
+			}
+		}
+
 		if ($this->modsVerDropdownOpen) {
 			$this->modsVerDropdownOpen = false;
 			return;
@@ -2435,6 +2484,12 @@ class FoxyClient
 							$cy >= $btnY &&
 							$cy <= $btnY + $btnSize
 						) {
+							$slug = $hit["slug"] ?? $hit["project_id"];
+							if (isset($this->installedModpacks[$slug]) || isset($this->installedModpacks[$hit["project_id"]])) {
+								$this->log("Modpack already installed: " . ($hit["title"] ?? $slug));
+								return;
+							}
+
 							$title =
 								$hit["title"] ?? ($hit["slug"] ?? "Unknown");
 							$this->log("Installing from Modrinth: " . $title);
@@ -2777,6 +2832,404 @@ class FoxyClient
 		);
 	}
 
+	private function loadModpacks()
+	{
+		$path = self::DATA_DIR . "/config/modpacks.json";
+		if (file_exists($path)) {
+			$data = json_decode(file_get_contents($path), true);
+			if ($data && is_array($data)) {
+				$this->installedModpacks = $data;
+				$this->log("Installed modpacks loaded: " . count($data) . " modpacks.");
+			}
+		}
+	}
+
+	private function saveModpacks()
+	{
+		$dir = self::DATA_DIR . "/config";
+		if (!is_dir($dir)) {
+			@mkdir($dir, 0777, true);
+		}
+		file_put_contents(
+			$dir . "/modpacks.json",
+			json_encode($this->installedModpacks, JSON_PRETTY_PRINT),
+		);
+	}
+
+	private function installModpack($projectId, $projectName)
+	{
+		if ($this->isInstallingModpack) {
+			$this->log("Already installing a modpack. Please wait.", "WARN");
+			return;
+		}
+
+		$this->isInstallingModpack = true;
+		$this->modpackInstallProgress = "Starting modpack install...";
+		$this->modpackInstallChannel = new \parallel\Channel();
+		$this->modpackInstallProcess = new \parallel\Runtime();
+
+		$version = $this->config["minecraft_version"] ?? "1.20.1";
+		$loader = $this->config["loader"] ?? "fabric";
+		$cleanVer = str_replace(
+			["Fabric ", "Forge ", "Quilt ", "NeoForge "],
+			"",
+			$version,
+		);
+
+		$gameDir = $this->getAbsolutePath($this->settings["game_dir"]);
+		$installDir = $gameDir;
+
+		if ($this->settings["separate_modpack_folder"] ?? false) {
+			$folderName =
+				preg_replace("/[^a-zA-Z0-9_\-]/", "_", $projectName) .
+				"_" .
+				$cleanVer;
+			$installDir =
+				$gameDir .
+				DIRECTORY_SEPARATOR .
+				"versions" .
+				DIRECTORY_SEPARATOR .
+				$folderName;
+			if (!is_dir($installDir)) {
+				@mkdir($installDir, 0777, true);
+			}
+		}
+
+		$modsDir = $installDir . DIRECTORY_SEPARATOR . "mods";
+		if (!is_dir($modsDir)) {
+			@mkdir($modsDir, 0777, true);
+		}
+
+		$cacert = self::CACERT;
+		$this->log("Installing modpack: $projectName ($projectId) for $cleanVer $loader");
+
+		$this->modpackInstallFuture = $this->modpackInstallProcess->run(
+			function (
+				\parallel\Channel $ch,
+				$pid,
+				$pname,
+				$mcver,
+				$loader,
+				$modsDir,
+				$installDir,
+				$cacert,
+			) {
+				$curlFetch = function ($url) use ($cacert, $ch) {
+					$curl = curl_init($url);
+					curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/ModpackInstaller");
+					curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
+					curl_setopt($curl, CURLOPT_TIMEOUT, 30);
+					if (file_exists($cacert)) {
+						curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+					}
+					$data = curl_exec($curl);
+					$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+					$err = curl_error($curl);
+					curl_close($curl);
+					
+					if ($err) {
+						$ch->send(json_encode(["type" => "error", "message" => "Network error: $err"]));
+						return [null, 0];
+					}
+					return [$data, $code];
+				};
+
+				// Step 1: Get project info
+				$ch->send(json_encode(["type" => "progress", "message" => "Fetching project info..."]));
+				[$projData, $projCode] = $curlFetch("https://api.modrinth.com/v2/project/$pid");
+				if ($projData === null) return; 
+				if ($projCode !== 200) {
+					$ch->send(json_encode(["type" => "error", "message" => "Failed to fetch project info (HTTP $projCode)"]));
+					$ch->close();
+					return;
+				}
+				$project = json_decode($projData, true);
+				$slug = $project["slug"] ?? $pid;
+				$iconUrl = $project["icon_url"] ?? "";
+
+				// Step 2: Get compatible versions
+				$ch->send(json_encode(["type" => "progress", "message" => "Finding compatible version..."]));
+				$params = [
+					"loaders" => json_encode([$loader]),
+					"game_versions" => json_encode([$mcver]),
+				];
+				$vUrl = "https://api.modrinth.com/v2/project/$pid/version?" . http_build_query($params);
+				[$verData, $verCode] = $curlFetch($vUrl);
+				if ($verData === null) return;
+				if ($verCode !== 200) {
+					$ch->send(json_encode(["type" => "error", "message" => "Failed to fetch versions (HTTP $verCode)"]));
+					$ch->close();
+					return;
+				}
+				$versions = json_decode($verData, true);
+				if (empty($versions)) {
+					$ch->send(json_encode(["type" => "error", "message" => "No compatible version found for $pname on $mcver $loader"]));
+					$ch->close();
+					return;
+				}
+
+				// Find primary mrpack file
+				$latestVer = $versions[0];
+				$mrpackUrl = "";
+				$mrpackFilename = "";
+				foreach ($latestVer["files"] as $file) {
+					if (str_ends_with($file["filename"], ".mrpack") && ($file["primary"] || !$mrpackUrl)) {
+						$mrpackUrl = $file["url"];
+						$mrpackFilename = $file["filename"];
+					}
+				}
+				if (!$mrpackUrl) {
+					$ch->send(json_encode(["type" => "error", "message" => "No .mrpack file found in release"]));
+					$ch->close();
+					return;
+				}
+
+				// Step 3: Download mrpack
+				$ch->send(json_encode(["type" => "progress", "message" => "Downloading $mrpackFilename..."]));
+				$tmpPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $mrpackFilename;
+				[$mrpackData, $mrpackCode] = $curlFetch($mrpackUrl);
+				if ($mrpackData === null) return;
+				if ($mrpackCode !== 200) {
+					$ch->send(json_encode(["type" => "error", "message" => "Failed to download mrpack (HTTP $mrpackCode)"]));
+					$ch->close();
+					return;
+				}
+				file_put_contents($tmpPath, $mrpackData);
+
+				// Step 4: Parse modrinth.index.json from the mrpack (zip)
+				$ch->send(json_encode(["type" => "progress", "message" => "Parsing modpack index..."]));
+				$zip = new \ZipArchive();
+				if ($zip->open($tmpPath) !== true) {
+					$ch->send(json_encode(["type" => "error", "message" => "Failed to open mrpack as zip"]));
+					@unlink($tmpPath);
+					$ch->close();
+					return;
+				}
+
+				$indexJson = $zip->getFromName("modrinth.index.json");
+				if (!$indexJson) {
+					$ch->send(json_encode(["type" => "error", "message" => "modrinth.index.json not found in mrpack"]));
+					$zip->close();
+					@unlink($tmpPath);
+					$ch->close();
+					return;
+				}
+
+				$index = json_decode($indexJson, true);
+				if ($index === null) {
+					$ch->send(json_encode(["type" => "error", "message" => "Failed to parse index JSON: " . json_last_error_msg()]));
+					$zip->close();
+					@unlink($tmpPath);
+					$ch->close();
+					return;
+				}
+				if (!isset($index["files"])) {
+					$ch->send(json_encode(["type" => "error", "message" => "Invalid modrinth.index.json: missing 'files'"]));
+					$zip->close();
+					@unlink($tmpPath);
+					$ch->close();
+					return;
+				}
+
+				// Step 5: Download all mod files
+				$ch->send(json_encode(["type" => "progress", "message" => "Checking local files..."]));
+				$installedFiles = [];
+				$total = count($index["files"]);
+				$done = 0;
+
+				foreach ($index["files"] as $modFile) {
+					$done++;
+					$relPath = $modFile["path"] ?? "";
+					$downloads = $modFile["downloads"] ?? [];
+					if (!$relPath || empty($downloads)) continue;
+
+					$filename = basename($relPath);
+					$subDir = dirname($relPath); // e.g. "mods" or "config"
+
+					// Determine actual target directory
+					$actualDir = $installDir . DIRECTORY_SEPARATOR . str_replace("/", DIRECTORY_SEPARATOR, $subDir);
+					if (!is_dir($actualDir)) {
+						@mkdir($actualDir, 0777, true);
+					}
+					$targetPath = $actualDir . DIRECTORY_SEPARATOR . $filename;
+
+					// Check hash (skip if already valid)
+					$expectedHash = $modFile["hashes"]["sha1"] ?? "";
+					if (file_exists($targetPath) && $expectedHash && sha1_file($targetPath) === $expectedHash) {
+						$installedFiles[] = $relPath;
+						$ch->send(json_encode([
+							"type" => "progress",
+							"message" => "[$done/$total] $filename (cached)",
+						]));
+						continue;
+					}
+
+					// Delete old versions of this mod in the same directory
+					$slugPart = preg_replace('/[-_][\d\.]+.*\.jar$/i', '', $filename);
+					if ($slugPart && $subDir === "mods") {
+						$slugLower = strtolower($slugPart);
+						$newFileLower = strtolower($filename);
+						foreach (scandir($actualDir) as $ef) {
+							if ($ef === "." || $ef === "..") continue;
+							$efLower = strtolower($ef);
+							if (!str_ends_with($efLower, ".jar")) continue;
+							if ($efLower === $newFileLower) continue;
+							if (str_starts_with($efLower, $slugLower . "-") || str_starts_with($efLower, $slugLower . "_")) {
+								@unlink($actualDir . DIRECTORY_SEPARATOR . $ef);
+							}
+						}
+					}
+
+					// Download the file
+					$url = $downloads[0];
+					$ch->send(json_encode([
+						"type" => "progress",
+						"message" => "[$done/$total] Downloading $filename...",
+					]));
+
+					$curl = curl_init($url);
+					$fp = fopen($targetPath, "wb");
+					curl_setopt($curl, CURLOPT_FILE, $fp);
+					curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/ModpackInstaller");
+					curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
+					curl_setopt($curl, CURLOPT_TIMEOUT, 60);
+					if (file_exists($cacert)) {
+						curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+					}
+					curl_exec($curl);
+					$err = curl_error($curl);
+					curl_close($curl);
+					fclose($fp);
+					
+					if ($err) {
+						$ch->send(json_encode(["type" => "error", "message" => "Failed to download $filename: $err"]));
+						$zip->close();
+						@unlink($tmpPath);
+						$ch->close();
+						return;
+					}
+
+					$installedFiles[] = $relPath;
+				}
+
+				// Step 6: Extract overrides (Optimized: Single pass through ZIP index)
+				$ch->send(json_encode(["type" => "progress", "message" => "Extracting overrides..."]));
+				$overridesDirs = ["overrides/", "client-overrides/"];
+				for ($i = 0; $i < $zip->numFiles; $i++) {
+					$name = $zip->getNameIndex($i);
+					foreach ($overridesDirs as $overridesDir) {
+						if (str_starts_with($name, $overridesDir)) {
+							$relPath = substr($name, strlen($overridesDir));
+							if (!$relPath || str_ends_with($name, "/")) break; // It's just a directory entry
+							
+							$destPath = $installDir . DIRECTORY_SEPARATOR . str_replace("/", DIRECTORY_SEPARATOR, $relPath);
+							$destDir = dirname($destPath);
+							if (!is_dir($destDir)) {
+								@mkdir($destDir, 0777, true);
+							}
+							
+							$content = $zip->getFromIndex($i);
+							if ($content !== false) {
+								file_put_contents($destPath, $content);
+								$installedFiles[] = $relPath;
+							}
+							break; // Found its directory, no need to check other overridesDirs
+						}
+					}
+				}
+
+				$zip->close();
+				@unlink($tmpPath);
+
+				// Step 7: Report success with installed file list
+				$ch->send(json_encode([
+					"type" => "success",
+					"slug" => $slug,
+					"name" => $pname,
+					"version" => $latestVer["version_number"] ?? "unknown",
+					"mc_version" => $mcver,
+					"loader" => $loader,
+					"files" => $installedFiles,
+					"install_path" => $installDir, // Pass back the directory used
+					"icon_url" => $iconUrl,
+					"message" => "Modpack $pname installed successfully!",
+				]));
+				$ch->close();
+			},
+			[
+				$this->modpackInstallChannel,
+				$projectId,
+				$projectName,
+				$cleanVer,
+				$loader,
+				$modsDir,
+				$installDir, // Use installDir here
+				$cacert,
+			],
+		);
+
+		$this->pollEvents->addChannel($this->modpackInstallChannel);
+	}
+
+	private function uninstallModpack($slug)
+	{
+		if (!isset($this->installedModpacks[$slug])) {
+			$this->log("Modpack '$slug' not found in installed list.", "WARN");
+			return;
+		}
+
+		$pack = $this->installedModpacks[$slug];
+		$gameDir = $pack["install_path"] ?? $this->getAbsolutePath($this->settings["game_dir"]);
+		$removedCount = 0;
+
+		foreach ($pack["files"] ?? [] as $relPath) {
+			$fullPath = $gameDir . DIRECTORY_SEPARATOR . str_replace("/", DIRECTORY_SEPARATOR, $relPath);
+			if (file_exists($fullPath)) {
+				@unlink($fullPath);
+				$removedCount++;
+			}
+		}
+
+		$this->log("Uninstalled modpack '$slug': Removed $removedCount files.");
+		unset($this->installedModpacks[$slug]);
+		$this->saveModpacks();
+	}
+
+	private function launchModpack($slug)
+	{
+		if (!isset($this->installedModpacks[$slug])) {
+			return;
+		}
+		$pack = $this->installedModpacks[$slug];
+
+		// Ensure we have correct version selected for metadata loading (including loader)
+		if ($pack["mc_version"]) {
+			$loader = strtolower($pack["loader"] ?? "");
+			$found = false;
+			foreach ($this->versions as $v) {
+				if (isset($v["id"])) {
+					$vId = $v["id"];
+					if (strpos($vId, $pack["mc_version"]) !== false && stripos($vId, $loader) !== false) {
+						$this->selectedVersion = $vId;
+						$found = true;
+						break;
+					}
+				}
+			}
+			if (!$found) {
+				$this->selectedVersion = $pack["mc_version"];
+			}
+		}
+
+		$installPath =
+			$pack["install_path"] ??
+			$this->getAbsolutePath($this->settings["game_dir"]);
+		$this->launchGame($installPath);
+	}
+
 	private function saveAccounts()
 	{
 		$data = [
@@ -2797,12 +3250,20 @@ class FoxyClient
 			$this->isLoggedIn = true;
 			$this->updateDiscordPresence();
 		} else {
-			$this->activeAccount = "";
-			$this->accountName = "";
-			$this->isLoggedIn = false;
-			$this->updateDiscordPresence();
+			$this->logout();
 		}
 		$this->saveAccounts();
+	}
+
+	public function logout()
+	{
+		$this->activeAccount = "";
+		$this->accountName = "";
+		$this->isLoggedIn = false;
+		$this->currentPage = self::PAGE_LOGIN;
+		$this->loginStep = 0;
+		$this->saveAccounts();
+		$this->updateDiscordPresence();
 	}
 
 	private function toggleSelectAll()
@@ -3116,7 +3577,86 @@ class FoxyClient
 		return true;
 	}
 
-	private function launchGame()
+	private function checkModpackIcons()
+	{
+		if ($this->iconDownloadChannel) {
+			return; // Already downloading something
+		}
+
+		$iconsToDownload = [];
+		foreach ($this->installedModpacks as $slug => $pack) {
+			if (!empty($pack["icon_url"]) && !isset($this->modpackIconCache[$slug])) {
+				$iconsToDownload[$slug] = ["url" => $pack["icon_url"], "is_modpack" => true];
+			}
+		}
+
+		if (empty($iconsToDownload)) {
+			return;
+		}
+
+		$this->iconDownloadChannel = new \parallel\Channel();
+		$this->pollEvents->addChannel($this->iconDownloadChannel);
+		$this->iconCancelChannel = new \parallel\Channel(1);
+		$this->iconDownloadProcess = new \parallel\Runtime();
+		$cacert = self::CACERT;
+
+		if ($this->iconDownloadFuture) {
+			$this->pendingFutures[] = $this->iconDownloadFuture;
+		}
+
+		$this->iconDownloadFuture = $this->iconDownloadProcess->run(
+			function (\parallel\Channel $ch, \parallel\Channel $cancelCh, $icons, $cacert) {
+				$mh = curl_multi_init();
+				$handles = [];
+				foreach ($icons as $id => $data) {
+					$url = is_array($data) ? ($data["url"] ?? "") : $data;
+					$curl = curl_init($url);
+					curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/IconFetcher");
+					if (file_exists($cacert)) {
+						curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+					}
+					curl_multi_add_handle($mh, $curl);
+					$handles[$id] = ["curl" => $curl, "is_modpack" => true];
+				}
+
+				if (count($handles) > 0) {
+					do {
+						$mrc = curl_multi_exec($mh, $active);
+					} while ($mrc == CURLM_CALL_MULTI_PERFORM);
+
+					while ($active && $mrc == CURLM_OK) {
+						if (curl_multi_select($mh) != -1) {
+							do {
+								$mrc = curl_multi_exec($mh, $active);
+							} while ($mrc == CURLM_CALL_MULTI_PERFORM);
+						}
+					}
+
+					foreach ($handles as $id => $data) {
+						$curl = $data["curl"];
+						$content = curl_multi_getcontent($curl);
+						if ($content && curl_getinfo($curl, CURLINFO_HTTP_CODE) == 200) {
+							$ch->send([
+								"type" => "icon_ready",
+								"id" => $id,
+								"data" => $content,
+								"is_modpack" => true,
+							]);
+						}
+						curl_multi_remove_handle($mh, $curl);
+						curl_close($curl);
+					}
+				}
+				curl_multi_close($mh);
+				$ch->send(["type" => "finished"]);
+			},
+			[$this->iconDownloadChannel, $this->iconCancelChannel, $iconsToDownload, $cacert]
+		);
+	}
+
+	private function launchGame($gameDirOverride = null)
 	{
 		if (
 			!$this->selectedVersion ||
@@ -3130,9 +3670,11 @@ class FoxyClient
 		$this->isLaunching = true;
 		$this->launchStartTime = microtime(true);
 		$this->assetMessage = "PREPARING LAUNCH...";
-		$mcDir = $this->settings["game_dir"];
+		
+		$baseDir = $this->getAbsolutePath($this->settings["game_dir"]);
+		$instanceDir = $gameDirOverride ? $this->getAbsolutePath($gameDirOverride) : $baseDir;
 
-		$vData = $this->loadFullVersionData($version, $mcDir);
+		$vData = $this->loadFullVersionData($version, $baseDir);
 		if (!$vData) {
 			$this->assetMessage = "FAILED: Could not load version metadata";
 			$this->isLaunching = false;
@@ -3141,7 +3683,7 @@ class FoxyClient
 
 		// --- NEW: Asset Verification Phase ---
 		$this->assetMessage = "VERIFYING VERSION...";
-		$verifyRes = $this->verifyAssets($vData, $mcDir);
+		$verifyRes = $this->verifyAssets($vData, $baseDir);
 		if ($verifyRes !== true) {
 			$this->assetMessage = "REPAIRING: " . $verifyRes;
 			$this->triggerVersionDownload($version, true);
@@ -3237,7 +3779,7 @@ class FoxyClient
 				$path = null;
 				if (isset($lib["downloads"]["artifact"]["path"])) {
 					$path =
-						$mcDir .
+						$baseDir .
 						DIRECTORY_SEPARATOR .
 						"libraries" .
 						DIRECTORY_SEPARATOR .
@@ -3254,7 +3796,7 @@ class FoxyClient
 						$libVersion = $parts[2];
 						$classifier = $parts[3] ?? "";
 						$path =
-							$mcDir .
+							$baseDir .
 							DIRECTORY_SEPARATOR .
 							"libraries" .
 							DIRECTORY_SEPARATOR .
@@ -3282,7 +3824,7 @@ class FoxyClient
 		// Find and add version jars (Ensuring both loader and vanilla are present if needed)
 		$versionJars = [];
 		$versionJars[] =
-			$mcDir .
+			$baseDir .
 			DIRECTORY_SEPARATOR .
 			"versions" .
 			DIRECTORY_SEPARATOR .
@@ -3294,7 +3836,7 @@ class FoxyClient
 		if (isset($vData["inheritsFrom"])) {
 			$parent = $vData["inheritsFrom"];
 			$versionJars[] =
-				$mcDir .
+				$baseDir .
 				DIRECTORY_SEPARATOR .
 				"versions" .
 				DIRECTORY_SEPARATOR .
@@ -3321,7 +3863,7 @@ class FoxyClient
 		$cmdArray[] = "-Xmx" . $this->settings["ram_mb"] . "M";
 
 		$versionDir =
-			$mcDir .
+			$baseDir .
 			DIRECTORY_SEPARATOR .
 			"versions" .
 			DIRECTORY_SEPARATOR .
@@ -3335,7 +3877,7 @@ class FoxyClient
 		// For inherited versions (Fabric/Forge), ALWAYS use the parent version's natives directory
 		// The loader's own folder (e.g. "Fabric 1.21.11") may contain spaces that break Java paths
 		if (isset($vData["inheritsFrom"])) {
-			$parentDir = $mcDir . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $vData["inheritsFrom"];
+			$parentDir = $baseDir . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $vData["inheritsFrom"];
 			$parentNatives = realpath($parentDir . DIRECTORY_SEPARATOR . "natives");
 			if ($parentNatives) {
 				$nativesDir = $parentNatives;
@@ -3405,7 +3947,7 @@ class FoxyClient
 			'${launcher_version}' => self::VERSION,
 			'${classpath}' => $cpString,
 			'${classpath_separator}' => ";",
-			'${library_directory}' => realpath($mcDir . "/libraries"),
+			'${library_directory}' => realpath($baseDir . "/libraries"),
 		];
 
 		$hasJsonJvmArgs = false;
@@ -3572,8 +4114,8 @@ class FoxyClient
 		$placeholders = [
 			'${auth_player_name}' => $this->accountName ?: "Player",
 			'${version_name}' => $version,
-			'${game_directory}' => realpath($mcDir),
-			'${assets_root}' => realpath($mcDir . "/assets"),
+			'${game_directory}' => realpath($instanceDir),
+			'${assets_root}' => realpath($baseDir . "/assets"),
 			'${assets_index_name}' => $vData["assetIndex"]["id"] ?? "legacy",
 			'${auth_uuid}' => $this->activeAccount ?: "0",
 			'${auth_access_token}' => $token,
@@ -3695,7 +4237,7 @@ class FoxyClient
 			$detachCmd,
 			[], // No pipes!
 			$pipes,
-			$mcDir,
+			$instanceDir,
 			null,
 			["bypass_shell" => false] // Needs shell for 'start'
 		);
@@ -3860,6 +4402,7 @@ class FoxyClient
 			!$this->compatProcess &&
 			!$this->iconDownloadProcess &&
 			!$this->modDownloadProcess &&
+			!$this->modpackInstallProcess &&
 			$this->assetMessage !== "GAME RUNNING" && 
 			$this->assetMessage !== "WAITING FOR WINDOW..."
 		) {
@@ -4039,6 +4582,10 @@ class FoxyClient
 					$this->modDownloadChannel &&
 					(string) $event->source ===
 						(string) $this->modDownloadChannel;
+				$isModpackInstall =
+					$this->modpackInstallChannel &&
+					(string) $event->source ===
+						(string) $this->modpackInstallChannel;
 				$isModrinth =
 					$this->modrinthChannel &&
 					(string) $event->source === (string) $this->modrinthChannel;
@@ -4075,6 +4622,9 @@ class FoxyClient
 				if ($isModDownload) {
 					$this->pollEvents->addChannel($this->modDownloadChannel);
 				}
+				if ($isModpackInstall) {
+					$this->pollEvents->addChannel($this->modpackInstallChannel);
+				}
 
 				if ($data) {
 					if ($isUpdate && isset($data["type"])) {
@@ -4092,12 +4642,15 @@ class FoxyClient
 							$this->isCheckingUiUpdate = false;
 							$ver = $data["version"];
 							if ($ver !== "v" . self::VERSION) {
+								$this->hasUiUpdate = true;
 								$this->updateMessage = "New version available: $ver (Current: v" . self::VERSION . ")";
 							} else {
+								$this->hasUiUpdate = false;
 								$this->updateMessage = "You are running the latest version: $ver";
 							}
 						} elseif ($data["type"] === "ui_update_err") {
 							$this->isCheckingUiUpdate = false;
+							$this->hasUiUpdate = false;
 							$this->updateMessage =
 								"Check failed: " . ($data["msg"] ?? "Unknown");
 						}
@@ -4171,14 +4724,15 @@ class FoxyClient
 							// Dispatch icon downloads
 							$iconsToDownload = [];
 							foreach ($res as $hit) {
-								if (
-									!empty($hit["icon_url"]) &&
-									!isset(
-										$this->modIconCache[$hit["project_id"]],
-									)
-								) {
-									$iconsToDownload[$hit["project_id"]] =
-										$hit["icon_url"];
+								if (!empty($hit["icon_url"]) && !isset($this->modIconCache[$hit["project_id"]])) {
+									$iconsToDownload[$hit["project_id"]] = $hit["icon_url"];
+								}
+							}
+							
+							// Also check installed modpacks for icons
+							foreach ($this->installedModpacks as $slug => $pack) {
+								if (!empty($pack["icon_url"]) && !isset($this->modpackIconCache[$slug])) {
+									$iconsToDownload[$slug] = ["url" => $pack["icon_url"], "is_modpack" => true];
 								}
 							}
 
@@ -4222,32 +4776,20 @@ class FoxyClient
 									) {
 										$mh = curl_multi_init();
 										$handles = [];
-										foreach ($icons as $id => $url) {
+										foreach ($icons as $id => $data) {
+											$url = is_array($data) ? ($data["url"] ?? "") : $data;
 											$curl = curl_init($url);
-											curl_setopt(
-												$curl,
-												CURLOPT_RETURNTRANSFER,
-												true,
-											);
-											curl_setopt(
-												$curl,
-												CURLOPT_FOLLOWLOCATION,
-												true,
-											);
-											curl_setopt(
-												$curl,
-												CURLOPT_USERAGENT,
-												"FoxyClient/IconFetcher",
-											);
+											curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+											curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+											curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/IconFetcher");
 											if (file_exists($cacert)) {
-												curl_setopt(
-													$curl,
-													CURLOPT_CAINFO,
-													$cacert,
-												);
+												curl_setopt($curl, CURLOPT_CAINFO, $cacert);
 											}
 											curl_multi_add_handle($mh, $curl);
-											$handles[$id] = ["curl" => $curl];
+											$handles[$id] = [
+												"curl" => $curl, 
+												"is_modpack" => is_array($data) && ($data["is_modpack"] ?? false)
+											];
 										}
 
 										// Helper: non-blocking cancel check (recv throws when empty)
@@ -4401,6 +4943,7 @@ class FoxyClient
 														"type" => "icon_ready",
 														"id" => $id,
 														"data" => $content,
+														"is_modpack" => $data["is_modpack"] ?? false,
 													]);
 												}
 												curl_multi_remove_handle(
@@ -4453,6 +4996,37 @@ class FoxyClient
 						}
 					}
 
+					if ($isModpackInstall && isset($data["type"])) {
+						if ($data["type"] === "progress") {
+							$this->modpackInstallProgress = $data["message"] ?? "";
+							$this->log("[Modpack] " . $data["message"]);
+						} elseif ($data["type"] === "success") {
+							$this->log("[Modpack] " . $data["message"], "SUCCESS");
+							$slug = $data["slug"] ?? "unknown";
+							$this->installedModpacks[$slug] = [
+								"name" => $data["name"] ?? "Unknown",
+								"version" => $data["version"] ?? "unknown",
+								"mc_version" => $data["mc_version"] ?? "",
+								"loader" => $data["loader"] ?? "",
+								"files" => $data["files"] ?? [],
+								"install_path" => $data["install_path"] ?? null,
+								"icon_url" => $data["icon_url"] ?? "",
+							];
+							$this->saveModpacks();
+							$this->modpackInstallProgress = "Installed successfully!";
+							$this->isInstallingModpack = false;
+							$this->modpackInstallProcess = null;
+							$this->modpackInstallChannel = null;
+							$this->checkLocalMods();
+						} elseif ($data["type"] === "error") {
+							$this->log("[Modpack] Error: " . $data["message"], "ERROR");
+							$this->modpackInstallProgress = "Error: " . ($data["message"] ?? "Unknown");
+							$this->isInstallingModpack = false;
+							$this->modpackInstallProcess = null;
+							$this->modpackInstallChannel = null;
+						}
+					}
+
 					if (isset($data["type"]) && $data["type"] === "manifest") {
 						if (isset($data["versions"])) {
 							$this->log(
@@ -4480,10 +5054,13 @@ class FoxyClient
 						if (isset($data["data"])) {
 							$memData = $data["data"];
 							$id = $data["id"];
-							$this->modIconCache[
-								$id
-							] = $this->createTextureFromMemory($memData);
-							$this->modIconLastUse[$id] = microtime(true);
+							$isMp = $data["is_modpack"] ?? false;
+							$tex = $this->createTextureFromMemory($memData);
+							if ($isMp) {
+								$this->modpackIconCache[$id] = $tex;
+							} else {
+								$this->modIconCache[$id] = $tex;
+							}
 							$this->modIconAlpha[$id] = 0.0; // Start fade-in animation
 							$this->needsRedraw = true;
 						}
@@ -4782,6 +5359,29 @@ class FoxyClient
 			$this->vManifestFuture = null;
 			$this->vManifestChannel = null;
 		}
+
+		// Modpack Install Monitoring
+		if (
+			$this->modpackInstallProcess &&
+			$this->modpackInstallFuture &&
+			$this->modpackInstallFuture->done()
+		) {
+			try {
+				$this->modpackInstallFuture->value();
+			} catch (\Throwable $e) {
+				$this->log("Modpack Install Thread CRASHED: " . $e->getMessage(), "ERROR");
+				$this->modpackInstallProgress = "Error: Install thread crashed.";
+			}
+			$this->modpackInstallProcess = null;
+			$this->modpackInstallFuture = null;
+			$this->modpackInstallChannel = null;
+			$this->isInstallingModpack = false;
+		}
+
+		// Proactively check for missing modpack icons if on the Installed tab
+		if ($this->modpackSubTab === 2) {
+			$this->checkModpackIcons();
+		}
 	}
 
 	private function getOverlayLineCount()
@@ -4805,6 +5405,12 @@ class FoxyClient
 	private function startOverlayThread($gamePid = null)
 	{
 		if ($this->overlayThread) {
+			return;
+		}
+
+		// Don't run overlay if no OSD elements are enabled
+		if (!($this->settings["overlay_cpu"] || $this->settings["overlay_gpu"] || 
+			  $this->settings["overlay_ram"] || $this->settings["overlay_vram"])) {
 			return;
 		}
 
@@ -6280,12 +6886,16 @@ class FoxyClient
 		$code = null,
 	) {
 		$sanitizedData = $data;
-		if ($data && is_string($data)) {
+		if ($data && (is_array($data) || is_object($data))) {
+			$sanitizedData = json_encode($data);
+		}
+		
+		if ($sanitizedData && is_string($sanitizedData)) {
 			// Redact sensitive info from logs
 			$sanitizedData = preg_replace(
 				'/"(password|accessToken|clientToken|refreshToken|totpCode)":"[^"]+"/',
 				'"$1":"[REDACTED]"',
-				$data,
+				$sanitizedData,
 			);
 		}
 
@@ -6297,10 +6907,14 @@ class FoxyClient
 			$logText .= " | Status: $code";
 		}
 		if ($response) {
+			$sanitizedRes = $response;
+			if (is_array($response) || is_object($response)) {
+				$sanitizedRes = json_encode($response);
+			}
 			$sanitizedRes = preg_replace(
 				'/"(accessToken|clientToken|refreshToken|id_token)":"[^"]+"/',
 				'"$1":"[REDACTED]"',
-				$response,
+				$sanitizedRes,
 			);
 			$logText .= " | Response: $sanitizedRes";
 		}
@@ -6338,6 +6952,8 @@ class FoxyClient
 	{
 		$ch = curl_init($url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/" . self::VERSION);
 		curl_setopt($ch, CURLOPT_POST, true);
 		curl_setopt(
 			$ch,
@@ -6351,7 +6967,8 @@ class FoxyClient
 		if (file_exists($cacert)) {
 			curl_setopt($ch, CURLOPT_CAINFO, $cacert);
 		}
-		curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 
 		$res = curl_exec($ch);
 		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -6366,6 +6983,7 @@ class FoxyClient
 		$ch = curl_init($url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/" . self::VERSION);
 		if (!empty($headers)) {
 			curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 		}
@@ -6373,7 +6991,8 @@ class FoxyClient
 		if (file_exists($cacert)) {
 			curl_setopt($ch, CURLOPT_CAINFO, $cacert);
 		}
-		curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 
 		$res = curl_exec($ch);
 		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -6412,6 +7031,12 @@ class FoxyClient
 			$this->msVerificationUri = $data["verification_uri"];
 			$this->msPollingInterval = $data["interval"] ?? 5;
 			$this->loginStep = 1;
+
+			// Automatically open the browser for the user
+			if ($this->msVerificationUri) {
+				pclose(popen("start \"\" \"{$this->msVerificationUri}\"", "r"));
+			}
+			
 			return true;
 		}
 		$this->msError =
@@ -6470,13 +7095,15 @@ class FoxyClient
 				],
 				"RelyingParty" => "http://auth.xboxlive.com",
 				"TokenType" => "JWT",
-			]),
+			], JSON_UNESCAPED_SLASHES),
 			["Content-Type: application/json", "Accept: application/json"],
 		);
 
 		$xblData = json_decode($xblRes, true);
 		if (!isset($xblData["Token"])) {
-			$this->log("Microsoft login failed: XBL authentication failed.");
+			$this->log("Microsoft login failed: XBL authentication failed. Response: " . $xblRes, "ERROR");
+			$this->msError = "XBL authentication failed.";
+			$this->loginStep = 0;
 			return;
 		}
 		$xblToken = $xblData["Token"];
@@ -6492,13 +7119,14 @@ class FoxyClient
 				],
 				"RelyingParty" => "rp://api.minecraftservices.com/",
 				"TokenType" => "JWT",
-			]),
+			], JSON_UNESCAPED_SLASHES),
 			["Content-Type: application/json", "Accept: application/json"],
 		);
-
 		$xstsData = json_decode($xstsRes, true);
 		if (!isset($xstsData["Token"])) {
-			$this->log("Microsoft login failed: XSTS authentication failed.");
+			$this->log("Microsoft login failed: XSTS authentication failed. Response: " . $xstsRes, "ERROR");
+			$this->msError = "XSTS authentication failed.";
+			$this->loginStep = 0;
 			return;
 		}
 		$xstsToken = $xstsData["Token"];
@@ -6508,7 +7136,7 @@ class FoxyClient
 			"https://api.minecraftservices.com/authentication/login_with_xbox",
 			json_encode([
 				"identityToken" => "XBL3.0 x=$uhs;$xstsToken",
-			]),
+			], JSON_UNESCAPED_SLASHES),
 			["Content-Type: application/json", "Accept: application/json"],
 		);
 
@@ -7085,11 +7713,26 @@ class FoxyClient
 	{
 		$this->accHoverIndex = -1;
 		$usableH = $this->height - self::TITLEBAR_H;
+		$cw = $this->width - self::SIDEBAR_W;
+
 		if ($cy >= 100 && $cy < $usableH - 150) {
 			$idx = (int) floor(($cy - 100) / 60);
 			$uuids = array_keys($this->accounts);
 			if (isset($uuids[$idx])) {
-				$this->accHoverIndex = $uuids[$idx];
+				$uuid = $uuids[$idx];
+				$y = 100 + $idx * 60;
+				
+				// Delete button bounds check
+				$delW = 32;
+				$delH = 32;
+				$delX = $cw - self::PAD - $delW - 10;
+				$delY = $y + (50 - $delH) / 2;
+				
+				if ($cx >= $delX && $cx <= $delX + $delW && $cy >= $delY && $cy <= $delY + $delH) {
+					$this->accHoverIndex = $uuid . "_del";
+				} else {
+					$this->accHoverIndex = $uuid;
+				}
 			}
 		}
 	}
@@ -7186,7 +7829,7 @@ class FoxyClient
 				}
 			}
 		} else {
-			// OSD tab
+			// OSD tab (foxySubTab === 1)
 			for ($i = 0; $i < 4; $i++) {
 				$ty = 130 + $i * 60;
 				if (
@@ -7233,6 +7876,7 @@ class FoxyClient
 					$this->scrollOffset = 0;
 					$this->scrollTarget = 0;
 					$this->hoverModIndex = -1;
+					$this->modpackUninstallHover = -1;
 					return;
 				}
 				$tabX += $tw + 8;
@@ -7264,7 +7908,8 @@ class FoxyClient
 					$itemY += self::CARD_H + self::CARD_GAP;
 				}
 			}
-		} else {
+		} elseif ($this->foxySubTab === 1) {
+			// OSD tab (foxySubTab === 1)
 			for ($i = 0; $i < 4; $i++) {
 				$ty = 130 + $i * 60;
 				if (
@@ -7342,10 +7987,10 @@ class FoxyClient
 			return; // Don't process grid hover when dropdown is open
 		}
 
-		// Sub-tabs (Mods, Modpacks)
+		// Sub-tabs (Mods, Modpacks, Installed)
 		if ($cy >= self::HEADER_H && $cy <= self::HEADER_H + self::TAB_H) {
 			$tabX = self::PAD;
-			foreach (["Mods", "Modpacks"] as $i => $name) {
+			foreach (["Mods", "Modpacks", "Installed"] as $i => $name) {
 				$tw = $this->getTextWidth($name, 1000) + 32;
 				if ($cx >= $tabX && $cx <= $tabX + $tw) {
 					$this->subTabHoverIdx = 200 + $i;
@@ -7357,6 +8002,26 @@ class FoxyClient
 
 		$y = self::HEADER_H + self::TAB_H;
 		$h = $this->height - self::TITLEBAR_H - self::FOOTER_H - $y;
+
+		if ($this->modpackSubTab === 2) {
+			// Installed tab hover
+			$this->modpackUninstallHover = -1;
+			$itemY = $y + 10 - $this->scrollOffset;
+			if ($this->isInstallingModpack || $this->modpackInstallProgress !== "") {
+				$itemY += 46;
+			}
+			$idx = 0;
+			foreach ($this->installedModpacks as $slug => $pack) {
+				$cardH = 60;
+				if ($cx >= self::PAD && $cx <= $cw - self::PAD && $cy >= $itemY && $cy < $itemY + $cardH) {
+					$this->modpackUninstallHover = $idx;
+					return;
+				}
+				$itemY += $cardH + 8;
+				$idx++;
+			}
+			return;
+		}
 
 		if (
 			$cx >= self::PAD &&
@@ -7748,6 +8413,14 @@ class FoxyClient
 							: "overlay";
 					$this->propFontDropdownHover = -1;
 				}
+			} elseif ($idx === 6) {
+				// Separate Modpack Folder
+				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
+					$this->settings["separate_modpack_folder"] = !(
+						$this->settings["separate_modpack_folder"] ?? false
+					);
+					$this->saveSettings();
+				}
 			} else {
 				$this->propFontDropdownOpen = "";
 			}
@@ -7761,60 +8434,12 @@ class FoxyClient
 				$clickY = $localY - ($idx * $rowH);
 				if ($clickY >= 10 && $clickY <= 50) {
 					// "Check for FoxyClient Update"
-					if ($idx === 0 && !$this->isCheckingUiUpdate) {
-						$this->isCheckingUiUpdate = true;
-						$this->updateMessage = "Checking Github for updates...";
-						if (!isset($this->pollEvents)) {
-							return;
+					if ($idx === 0) {
+						if (strpos($this->updateMessage, "New version available") !== false) {
+							$this->performSelfUpdate();
+						} else {
+							$this->triggerCheckForUpdate(false);
 						}
-
-						if (!$this->updateChannel) {
-							$this->updateChannel = new \parallel\Channel(1024);
-							$this->pollEvents->addChannel($this->updateChannel);
-						}
-						$ch = $this->updateChannel;
-						
-						$proc = new \parallel\Runtime();
-						$cacert = self::CACERT;
-						
-						$f = $proc->run(function(\parallel\Channel $ch, $cacert) {
-							try {
-								$url = "https://api.github.com/repos/Minosuko/FoxyClient/releases/latest";
-								$curl = curl_init($url);
-								curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-								curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-Updater");
-								curl_setopt($curl, CURLOPT_TIMEOUT, 15);
-								curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
-								if (file_exists($cacert)) {
-									curl_setopt($curl, CURLOPT_CAINFO, $cacert);
-								}
-								
-								$json = curl_exec($curl);
-								$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-								$curlErr = curl_error($curl);
-								curl_close($curl);
-								
-								if ($json === false) {
-									$ch->send(['type' => 'ui_update_err', 'msg' => "Network error: $curlErr"]);
-									return;
-								}
-
-								if ($code === 200 && $json) {
-									$data = json_decode($json, true);
-									if (isset($data['tag_name'])) {
-										$ch->send(['type' => 'ui_update_res', 'version' => $data['tag_name']]);
-									} else {
-										$ch->send(['type' => 'ui_update_err', 'msg' => 'Invalid release data format.']);
-									}
-								} else {
-									$ch->send(['type' => 'ui_update_err', 'msg' => "HTTP $code failed to fetch."]);
-								}
-							} catch (\Throwable $e) {
-								$ch->send(['type' => 'ui_update_err', 'msg' => "Crash: " . $e->getMessage()]);
-							}
-						}, [$ch, $cacert]);
-						
-						$this->pendingFutures[] = $f;
 					}
 				// "Check CA Cert Update"
 				elseif ($idx === 1 && !$this->isUpdatingCacert) {
@@ -8366,6 +8991,16 @@ class FoxyClient
 		return [$x, $y, $w, $h];
 	}
 
+	private function getHomeUpdateBadgeRect()
+	{
+		$cw = $this->width - self::SIDEBAR_W;
+		$w = 180;
+		$h = 30;
+		$x = ($cw - $w) / 2;
+		$y = 185;
+		return [$x, $y, $w, $h];
+	}
+
 	// Returns bounds of Version Dropdown (x, y, w, h)
 	private function getHomeVerDropdownRect()
 	{
@@ -8491,6 +9126,7 @@ class FoxyClient
 		[$ax, $ay, $aw, $ah] = $this->getHomeAccDropdownRect();
 		[$vx, $vy, $vw, $vh] = $this->getHomeVerDropdownRect();
 		[$lx, $ly, $lw, $lh] = $this->getHomeLaunchRect();
+		[$ux, $uy, $uw, $uh] = $this->getHomeUpdateBadgeRect();
 
 		$y = $cy; // Map $cy to local $y for existing logic compatibility if preferred, but I'll just replace $y in comparisons.
 
@@ -8505,10 +9141,25 @@ class FoxyClient
 				$localY = $y - ($ay + $ah);
 				$idx = floor($localY / 40);
 				$uuids = array_keys($this->accounts);
-				if (isset($uuids[$idx])) {
-					$this->selectAccount($uuids[$idx]);
+				
+				if ($idx >= 0 && $idx < count($this->accounts)) {
+					if (isset($uuids[$idx])) {
+						$this->selectAccount($uuids[$idx]);
+					}
+				} elseif ($idx == count($this->accounts)) {
+					// Logout option
+					$this->logout();
 				}
 				$this->homeAccDropdownOpen = false;
+				return;
+			}
+		}
+
+		// Update Badge Hit
+		if ($this->hasUiUpdate) {
+			[$ux, $uy, $uw, $uh] = $this->getHomeUpdateBadgeRect();
+			if ($cx >= $ux && $cx <= $ux + $uw && $cy >= $uy && $cy <= $uy + $uh) {
+				$this->performSelfUpdate();
 				return;
 			}
 		}
@@ -8639,6 +9290,7 @@ class FoxyClient
 		[$ax, $ay, $aw, $ah] = $this->getHomeAccDropdownRect();
 		[$vx, $vy, $vw, $vh] = $this->getHomeVerDropdownRect();
 		[$lx, $ly, $lw, $lh] = $this->getHomeLaunchRect();
+		[$ux, $uy, $uw, $uh] = $this->getHomeUpdateBadgeRect();
 
 		$y = $cy;
 
@@ -8648,7 +9300,7 @@ class FoxyClient
 				$cx >= $ax &&
 				$cx <= $ax + $aw &&
 				$y >= $ay + $ah &&
-				$y <= $ay + $ah + count($this->accounts) * 40
+				$y <= $ay + $ah + (count($this->accounts) + 1) * 40
 			) {
 				$localY = $y - ($ay + $ah);
 				$this->homeHoverIdx = 10 + floor($localY / 40);
@@ -8688,6 +9340,11 @@ class FoxyClient
 			$y <= $ly + $lh
 		) {
 			$this->homeHoverIdx = 2;
+		} elseif (
+			$this->hasUiUpdate &&
+			$cx >= $ux && $cx <= $ux + $uw && $y >= $uy && $y <= $uy + $uh
+		) {
+			$this->homeHoverIdx = 4;
 		} else {
 			// Modpack checkbox hover — only for Fabric versions
 			$isFabricVersion =
@@ -8726,8 +9383,19 @@ class FoxyClient
 			($cw - 126) / 2,
 			155,
 			$this->colors["text_dim"],
-			1000,
+			$this->hasUiUpdate ? 0 : 1000, // Hide if update available
 		);
+
+		// Update Badge
+		if ($this->hasUiUpdate) {
+			[$ux, $uy, $uw, $uh] = $this->getHomeUpdateBadgeRect();
+			$uHover = $this->homeHoverIdx === 4;
+			$uBg = $uHover ? [0.2, 0.5, 0.3] : [0.1, 0.4, 0.2];
+			$this->drawRect($ux, $uy, $uw, $uh, $uBg);
+			$label = "UPDATE AVAILABLE";
+			$txtW = $this->getTextWidth($label, 1000);
+			$this->renderText($label, $ux + ($uw - $txtW) / 2, $uy + 20, [1, 1, 1], 1000);
+		}
 
 		// List of rects (sync with handling)
 		[$ax, $ay, $aw, $ah] = $this->getHomeAccDropdownRect();
@@ -8969,7 +9637,7 @@ class FoxyClient
 		$gl = $this->opengl32;
 
 		if ($this->homeAccDropdownOpen || $this->homeAccDropdownAnim > 0.01) {
-			$maxH = count($this->accounts) * 40;
+			$maxH = (count($this->accounts) + 1) * 40; // +1 for Logout
 			$ddH = $maxH * $this->homeAccDropdownAnim;
 			$dY = $ay + $ah;
 
@@ -9008,7 +9676,7 @@ class FoxyClient
 				}
 
 				if ($tex) {
-					$this->drawTexture($tex, $ax + 10, $itemY + 10, 20, 20);
+					$this->drawTexture($tex, $ax + 10, $itemY + 8, 24, 24);
 					$name = $accData["Username"] ?? "Unknown";
 					$this->renderText(
 						$name,
@@ -9029,6 +9697,28 @@ class FoxyClient
 				}
 				$i++;
 			}
+
+			// Add "SIGN OUT" option
+			$itemY = $dY + $i * 40;
+			$isHover = $this->homeHoverIdx === 10 + $i;
+			if ($isHover) {
+				$this->drawRect(
+					$ax,
+					$itemY,
+					$aw,
+					40,
+					$this->colors["card_hover"],
+				);
+			}
+			$this->drawRect($ax, $itemY, 2, 40, [0.8, 0.2, 0.2]); // Red accent for logout
+			$this->renderText(
+				"SIGN OUT",
+				$ax + 15,
+				$itemY + 26,
+				$this->colors["text"],
+				1000,
+			);
+
 			$gl->glDisable(0x0c11);
 		}
 
@@ -9135,10 +9825,12 @@ class FoxyClient
 			$this->colors["primary"],
 			2000,
 		);
-		$desc =
-			$this->foxySubTab === 0
-				? "Manage built-in optimization mods"
-				: "System overlay and display settings";
+		$descs = [
+			"Manage built-in optimization mods",
+			"View and manage installed modpacks",
+			"System overlay and display settings",
+		];
+		$desc = $descs[$this->foxySubTab] ?? $descs[0];
 		$this->renderText(
 			$desc,
 			self::PAD,
@@ -9175,7 +9867,6 @@ class FoxyClient
 
 		if ($this->foxySubTab === 0) {
 			// Render the first tab (Optimization) from $this->tabs
-			// We'll reuse renderModList but need to temporarily set activeTab to 0
 			$oldActive = $this->activeTab;
 			$this->activeTab = 0;
 
@@ -9192,8 +9883,6 @@ class FoxyClient
 				$h,
 			);
 
-			// We need to render the list but we can't easily reuse renderModList because of the Y offset
-			// Let's just render the mods from $this->tabs[0]
 			$mods = $this->tabs[0]["mods"] ?? [];
 			$itemY = $y + 10 - $this->scrollOffset;
 			foreach ($mods as $i => $mod) {
@@ -9209,6 +9898,7 @@ class FoxyClient
 			$this->renderScrollbar($y, $h);
 			$this->activeTab = $oldActive;
 		} else {
+			// OSD tab (foxySubTab === 1)
 			$y = 130;
 			$y = $this->renderSettingsToggle(
 				$y,
@@ -10687,6 +11377,29 @@ class FoxyClient
 			},
 		);
 
+		$y = $this->renderPropRow(
+			6,
+			$y,
+			"Separate Modpack Folders",
+			"Store each modpack in its own dedicated versions/ folder",
+			function ($x, $cy, $w, $h) {
+				$enabled =
+					(bool) ($this->settings["separate_modpack_folder"] ?? false);
+				$this->drawRect($x, $cy, $w, $h, $this->colors["card"]);
+				$text = $enabled ? "ENABLED" : "DISABLED";
+				$color = $enabled
+					? $this->colors["primary"]
+					: $this->colors["text_dim"];
+				$this->renderText(
+					$text,
+					$x + ($w - strlen($text) * 8) / 2,
+					$cy + 26,
+					$color,
+					1000,
+				);
+			},
+		);
+
 		// Render Font Dropdown Overlay
 		if ($this->propFontDropdownOpen !== "") {
 			$cw = $this->width - self::SIDEBAR_W;
@@ -10783,7 +11496,7 @@ class FoxyClient
 			$y,
 			"Client Update",
 			"Check GitHub for out-standing launcher releases",
-			$btnRenderer($this->isCheckingUiUpdate ? "CHECKING..." : "Check For Update", 0)
+			$btnRenderer($this->isCheckingUiUpdate ? "CHECKING..." : ($this->hasUiUpdate ? "INSTALL UPDATE" : "Check For Update"), 0)
 		);
 
 		// 2. CA Cert Update
@@ -10959,7 +11672,7 @@ class FoxyClient
 			$this->modSearchFocus,
 		);
 
-		$this->renderSubTabs(["Mods", "Modpacks"], $this->modpackSubTab, 200);
+		$this->renderSubTabs(["Mods", "Modpacks", "Installed"], $this->modpackSubTab, 200);
 
 		$y = self::HEADER_H + self::TAB_H;
 		$usableH = $this->height - self::TITLEBAR_H;
@@ -10970,7 +11683,36 @@ class FoxyClient
 			$this->searchModrinth("");
 		}
 
-		$this->renderModList();
+		if ($this->modpackSubTab === 2) {
+			$this->renderInstalledModpacks();
+		} else {
+			$this->renderModList();
+		}
+
+		// Install progress overlay below tabs (Moved to front/Z-index fix)
+		if (($this->modpackSubTab === 1 || $this->modpackSubTab === 2) && ($this->isInstallingModpack || $this->modpackInstallProgress !== "")) {
+			$progY = self::HEADER_H + self::TAB_H;
+			$isDone = !$this->isInstallingModpack && !str_starts_with($this->modpackInstallProgress, "Error");
+			$isErr = str_starts_with($this->modpackInstallProgress, "Error");
+			
+			$progBg = $isLight ? [0.94, 0.95, 0.98, 0.95] : [0.08, 0.09, 0.12, 0.95];
+			$this->drawRect(self::PAD, $progY + 5, $cw - self::PAD * 2, 34, $progBg, 4);
+			
+			$statusColor = $this->isInstallingModpack ? $this->colors["status_update"] : ($isErr ? $this->colors["status_error"] : $this->colors["status_done"]);
+			$this->drawRect(self::PAD, $progY + 5, 3, 34, $statusColor);
+			
+			$this->renderText(
+				strtoupper($this->modpackInstallProgress),
+				self::PAD + 15,
+				$progY + 28,
+				$statusColor,
+				3000
+			);
+
+			if ($isDone) {
+				$this->renderText("✓", $cw - self::PAD - 25, $progY + 28, $this->colors["status_done"], 1000);
+			}
+		}
 
 		if ($this->modsFilterDropdown !== "" || $this->modsFilterDropdownAnim > 0.01) {
 			$this->renderModsFilterDropdown();
@@ -11423,6 +12165,12 @@ class FoxyClient
 		$usableH = $this->height - self::TITLEBAR_H;
 		$y = self::HEADER_H + self::TAB_H;
 
+		// --- Hitbox Sync: Add offset for progress overlay ---
+		if ($this->currentPage === self::PAGE_MODS && ($this->modpackSubTab === 1 || $this->modpackSubTab === 2) && ($this->isInstallingModpack || $this->modpackInstallProgress !== "")) {
+			$y += 46;
+		}
+		// -------------------
+
 		// --- FOOTER SYNC ---
 		$showFooter = $this->getFooterVisibility();
 		$effectiveFooterH = $showFooter ? self::FOOTER_H : 0;
@@ -11618,6 +12366,114 @@ class FoxyClient
 		}
 
 		$this->renderScrollbar($y, $listH);
+	}
+
+	private function renderInstalledModpacks()
+	{
+		$cw = $this->width - self::SIDEBAR_W;
+		$y = self::HEADER_H + self::TAB_H + 10 - $this->scrollOffset;
+		if ($this->isInstallingModpack || $this->modpackInstallProgress !== "") {
+			$y += 46; // Add offset to match hitbox logic
+		}
+		$isLight = ($this->settings["theme"] ?? "dark") === "light";
+
+		if (empty($this->installedModpacks)) {
+			$this->renderText(
+				"No modpacks installed yet.",
+				self::PAD,
+				$y + 20,
+				$this->colors["text_dim"],
+				1000,
+			);
+			return;
+		}
+
+		$idx = 0;
+		foreach ($this->installedModpacks as $slug => $pack) {
+			$cardH = 60;
+			$isHover = $this->modpackUninstallHover === $idx;
+
+			$btnW = 90;
+			$btnH = 28;
+			$btnX = $cw - self::PAD * 2 - $btnW - 10;
+			$btnY2 = $y + ($cardH - $btnH) / 2;
+
+			// Card background
+			$bg = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
+			$this->drawRect(self::PAD, $y, $cw - self::PAD * 2, $cardH, $bg, 4);
+
+			// Icon rendering
+			$iconTid = $this->modpackIconCache[$slug] ?? null;
+			$iconSize = 44;
+			$iconX = self::PAD + 14;
+			$iconY = $y + ($cardH - $iconSize) / 2;
+			
+			if ($iconTid) {
+				$this->drawTexture($iconTid, $iconX, $iconY, $iconSize, $iconSize);
+			} else {
+				// Placeholder/Loading
+				$this->drawRect($iconX, $iconY, $iconSize, $iconSize, $this->colors["card_hover"], 4);
+				$this->renderText("?", $iconX + 17, $iconY + 30, $this->colors["text_dim"], 1000);
+			}
+
+			// Modpack name
+			$this->renderText(
+				$pack["name"] ?? $slug,
+				$iconX + $iconSize + 14,
+				$y + 22,
+				$this->colors["text"],
+				2000,
+			);
+
+			// Version info
+			$verInfo = "v" . ($pack["version"] ?? "?") . "  |  MC " . ($pack["mc_version"] ?? "?") . "  |  " . ucfirst($pack["loader"] ?? "?");
+			$this->renderText(
+				$verInfo,
+				$iconX + $iconSize + 14,
+				$y + 42,
+				$this->colors["text_dim"],
+				3000,
+			);
+
+			// File count
+			$fileCount = count($pack["files"] ?? []);
+			$this->renderText(
+				"$fileCount files",
+				$iconX + $iconSize + 14,
+				$y + 55,
+				$this->colors["text_dim"],
+				3000,
+			);
+
+			// PLAY button
+			$pBtnW = 70;
+			$pBtnX = $cw - self::PAD * 2 - $btnW - 20 - $pBtnW;
+			$isPHover = $this->mouseX >= $pBtnX + self::SIDEBAR_W && $this->mouseX <= $pBtnX + self::SIDEBAR_W + $pBtnW &&
+						$this->mouseY >= $btnY2 + self::TITLEBAR_H && $this->mouseY <= $btnY2 + self::TITLEBAR_H + $btnH;
+			$pBtnColor = $isPHover ? $this->colors["button_hover"] : $this->colors["button"];
+			$this->drawRect($pBtnX, $btnY2, $pBtnW, $btnH, $pBtnColor, 4);
+			$this->renderText(
+				"PLAY",
+				$pBtnX + ($pBtnW - $this->getTextWidth("PLAY", 3000)) / 2,
+				$btnY2 + 19,
+				$this->colors["button_text"],
+				3000,
+			);
+
+			// Uninstall button
+			$delColor = $isHover ? $this->colors["del_btn_hover"] : $this->colors["del_btn"];
+			$this->drawRect($btnX, $btnY2, $btnW, $btnH, $delColor, 4);
+			$this->renderText(
+				"UNINSTALL",
+				$btnX + 10,
+				$btnY2 + 19,
+				$this->colors["text"],
+				3000,
+			);
+
+			$y += $cardH + 8;
+			$idx++;
+		}
 	}
 
 	private function getFooterVisibility()
@@ -13163,12 +14019,17 @@ class FoxyClient
 			$this->assetProcess = null;
 		}
 		if ($this->vManifestProcess) {
-			try {
-			} catch (\Throwable $e) {
-			}
+			try { $this->vManifestProcess->kill(); } catch (\Throwable $e) {}
 			$this->vManifestProcess = null;
 		}
-
+		if ($this->modpackInstallProcess) {
+			try { $this->modpackInstallProcess->kill(); } catch (\Throwable $e) {}
+			$this->modpackInstallProcess = null;
+		}
+		if ($this->modDownloadProcess) {
+			try { $this->modDownloadProcess->kill(); } catch (\Throwable $e) {}
+			$this->modDownloadProcess = null;
+		}
 		if ($this->modrinthProcess) {
 			try { $this->modrinthProcess->kill(); } catch (\Throwable $e) {}
 			$this->modrinthProcess = null;
@@ -13389,6 +14250,9 @@ class FoxyClient
 		if (!$isPrefetch) {
 			$this->modrinthPage = $page;
 			$this->modrinthAnim = 0.0; // Reset animation on new search
+			
+			// Also ensure modpack icons are checked when browser is used
+			$this->checkModpackIcons();
 		}
 
 		$this->modrinthChannel = new \parallel\Channel();
@@ -13497,6 +14361,12 @@ class FoxyClient
 		$projectType,
 		$projectName,
 	) {
+		// Route modpack installs to the dedicated modpack installer
+		if ($projectType === "modpack") {
+			$this->installModpack($projectId, $projectName);
+			return;
+		}
+
 		if ($this->isDownloadingModrinth) {
 			$this->log("Already downloading a project. Please wait.", "WARN");
 			return;
@@ -13542,12 +14412,18 @@ class FoxyClient
 				$cacert,
 			) {
 				// Step 1: Query for compatible versions
-				$url = "https://api.modrinth.com/v2/project/$pid/version?loaders=[\"$loader\"]&game_versions=[\"$mcver\"]";
+				$params = [
+					"loaders" => json_encode([$loader]),
+					"game_versions" => json_encode([$mcver]),
+				];
+				$url = "https://api.modrinth.com/v2/project/$pid/version?" . http_build_query($params);
 
 				$curl = curl_init($url);
 				curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
 				curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
 				curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/Downloader");
+				curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
+				curl_setopt($curl, CURLOPT_TIMEOUT, 30);
 				if (file_exists($cacert)) {
 					curl_setopt($curl, CURLOPT_CAINFO, $cacert);
 				}
@@ -13605,6 +14481,45 @@ class FoxyClient
 					return;
 				}
 
+				// Step 1.5: Delete old versions of this mod (only for mods, not modpacks)
+				if ($ptype !== "modpack") {
+					// Get project slug for old version matching
+					$projUrl = "https://api.modrinth.com/v2/project/$pid";
+					$pCurl = curl_init($projUrl);
+					curl_setopt($pCurl, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($pCurl, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($pCurl, CURLOPT_USERAGENT, "FoxyClient/Downloader");
+					if (file_exists($cacert)) {
+						curl_setopt($pCurl, CURLOPT_CAINFO, $cacert);
+					}
+					$projResponse = curl_exec($pCurl);
+					curl_close($pCurl);
+					$projData = $projResponse ? json_decode($projResponse, true) : null;
+					$slug = $projData["slug"] ?? $pid;
+					$slugLower = strtolower($slug);
+					$newFileLower = strtolower($targetFilename);
+
+					foreach (scandir($targetDir) as $existingFile) {
+						if ($existingFile === "." || $existingFile === "..") continue;
+						$existingLower = strtolower($existingFile);
+						if (!str_ends_with($existingLower, ".jar")) continue;
+						if ($existingLower === $newFileLower) continue;
+						if (
+							str_starts_with($existingLower, $slugLower . "-") ||
+							str_starts_with($existingLower, $slugLower . "_") ||
+							$existingLower === $slugLower . ".jar"
+						) {
+							@unlink($targetDir . DIRECTORY_SEPARATOR . $existingFile);
+							$ch->send(
+								json_encode([
+									"type" => "progress",
+									"message" => "Removed old version: $existingFile",
+								]),
+							);
+						}
+					}
+				}
+
 				// Step 2: Download file
 				$ch->send(
 					json_encode([
@@ -13629,12 +14544,15 @@ class FoxyClient
 				curl_setopt($dCurl, CURLOPT_FILE, $out);
 				curl_setopt($dCurl, CURLOPT_FOLLOWLOCATION, true);
 				curl_setopt($dCurl, CURLOPT_USERAGENT, "FoxyClient/Downloader");
+				curl_setopt($dCurl, CURLOPT_CONNECTTIMEOUT, 10);
+				curl_setopt($dCurl, CURLOPT_TIMEOUT, 60);
 				if (file_exists($cacert)) {
 					curl_setopt($dCurl, CURLOPT_CAINFO, $cacert);
 				}
 
 				$success = curl_exec($dCurl);
 				$dHttpCode = curl_getinfo($dCurl, CURLINFO_HTTP_CODE);
+				$dErr = curl_error($dCurl);
 				curl_close($dCurl);
 				fclose($out);
 
@@ -13652,7 +14570,7 @@ class FoxyClient
 					$ch->send(
 						json_encode([
 							"type" => "error",
-							"message" => "Failed to download $targetFilename (HTTP $dHttpCode)",
+							"message" => "Failed to download $targetFilename: " . ($dErr ?: "HTTP $dHttpCode"),
 						]),
 					);
 				}
@@ -13726,6 +14644,16 @@ class FoxyClient
 		$author = $hit["author"] ?? "Unknown";
 		$summary = $hit["description"] ?? "";
 		$projId = $hit["project_id"] ?? "";
+		$slug = $hit["slug"] ?? $projId;
+
+		$isInstalled = isset($this->installedModpacks[$slug]) || isset($this->installedModpacks[$projId]);
+
+		// Installed Badge
+		if ($isInstalled) {
+			$badgeW = 75;
+			$this->drawRect($x + $w - $badgeW - 10, $y + 10, $badgeW, 20, [0.15, 0.45, 0.15, 0.8 * $alpha], 4);
+			$this->renderText("INSTALLED", $x + $w - $badgeW + 2, $y + 25, [1, 1, 1, $alpha], 3000);
+		}
 
 		$iconSize = 64;
 		$textOffsetX = 14;
@@ -13856,11 +14784,18 @@ class FoxyClient
 		$cy2 = $btnY2 + $btnSize / 2;
 
 		// Vertical stem
-		$this->drawRect($cx2 - 1, $cy2 - 7, 2, 10, $icA);
-		// Arrow head (left)
-		$this->drawLine($cx2, $cy2 + 5, $cx2 - 5, $cy2, $icA);
-		// Arrow head (right)
-		$this->drawLine($cx2, $cy2 + 5, $cx2 + 5, $cy2, $icA);
+		if ($isInstalled) {
+			// Checkmark icon
+			$this->drawLine($cx2 - 5, $cy2, $cx2 - 1, $cy2 + 5, $icA);
+			$this->drawLine($cx2 - 1, $cy2 + 5, $cx2 + 7, $cy2 - 4, $icA);
+		} else {
+			// Vertical stem
+			$this->drawRect($cx2 - 1, $cy2 - 7, 2, 10, $icA);
+			// Arrow head (left)
+			$this->drawLine($cx2, $cy2 + 5, $cx2 - 5, $cy2, $icA);
+			// Arrow head (right)
+			$this->drawLine($cx2, $cy2 + 5, $cx2 + 5, $cy2, $icA);
+		}
 		// Base line
 		$this->drawRect($cx2 - 6, $cy2 + 7, 12, 2, $icA);
 
@@ -13884,6 +14819,75 @@ class FoxyClient
 		$this->drawLine($bx + 5, $by + $bs - 3, $bx + $bs + 2, $by - 2, $ecA);
 		$this->drawRect($bx + $bs - 2, $by - 2, 6, 2, $ecA);
 		$this->drawRect($bx + $bs + 2, $by - 2, 2, 6, $ecA);
+	}
+
+	private function triggerCheckForUpdate($silent = false)
+	{
+		if ($this->isCheckingUiUpdate) return;
+		$this->isCheckingUiUpdate = true;
+		if (!$silent) $this->updateMessage = "Checking Github for updates...";
+
+		if (!$this->updateChannel) {
+			$this->updateChannel = new \parallel\Channel(1024);
+			$this->pollEvents->addChannel($this->updateChannel);
+		}
+		$ch = $this->updateChannel;
+		$proc = new \parallel\Runtime();
+		$cacert = self::CACERT;
+		
+		$f = $proc->run(function(\parallel\Channel $ch, $cacert) {
+			try {
+				$url = "https://api.github.com/repos/Minosuko/FoxyClient/releases/latest";
+				$curl = curl_init($url);
+				curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+				curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-Updater");
+				curl_setopt($curl, CURLOPT_TIMEOUT, 15);
+				curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
+				if (file_exists($cacert)) {
+					curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+				}
+				
+				$json = curl_exec($curl);
+				$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+				$curlErr = curl_error($curl);
+				curl_close($curl);
+				
+				if ($json === false) {
+					$ch->send(['type' => 'ui_update_err', 'msg' => "Network error: $curlErr"]);
+					return;
+				}
+
+				if ($code === 200 && $json) {
+					$data = json_decode($json, true);
+					if (isset($data['tag_name'])) {
+						$ch->send(['type' => 'ui_update_res', 'version' => $data['tag_name']]);
+					} else {
+						$ch->send(['type' => 'ui_update_err', 'msg' => 'Invalid release data format.']);
+					}
+				} else {
+					$ch->send(['type' => 'ui_update_err', 'msg' => "HTTP $code failed to fetch."]);
+				}
+			} catch (\Throwable $e) {
+				$ch->send(['type' => 'ui_update_err', 'msg' => "Crash: " . $e->getMessage()]);
+			}
+		}, [$ch, $cacert]);
+		
+		$this->pendingFutures[] = $f;
+	}
+
+	private function performSelfUpdate()
+	{
+		$this->updateMessage = "Launching FoxyClient Updater... Please wait.";
+		$this->needsRedraw = true;
+		
+		// Launch wrapper with --update
+		$wrapper = "FoxyClient.exe";
+		if (file_exists($wrapper)) {
+			pclose(popen("start \"\" \"$wrapper\" --update", "r"));
+			$this->running = false; // This will trigger exit
+		} else {
+			$this->updateMessage = "Error: FoxyClient.exe wrapper not found.";
+		}
 	}
 }
 
@@ -14615,6 +15619,34 @@ class FoxyModrinthJob
 					]),
 				);
 				continue;
+			}
+
+			// Delete old versions of this mod before downloading the new one
+			$slug = $project["slug"] ?? $id;
+			$slugLower = strtolower($slug);
+			$newFileLower = strtolower($file["filename"]);
+			foreach (scandir($modsDir) as $existingFile) {
+				if ($existingFile === "." || $existingFile === "..") continue;
+				$existingLower = strtolower($existingFile);
+				if (!str_ends_with($existingLower, ".jar")) continue;
+				if ($existingLower === $newFileLower) continue; // Don't delete the target
+				// Match if existing file starts with the mod slug followed by a separator
+				if (
+					str_starts_with($existingLower, $slugLower . "-") ||
+					str_starts_with($existingLower, $slugLower . "_") ||
+					$existingLower === $slugLower . ".jar"
+				) {
+					$oldPath = $modsDir . DIRECTORY_SEPARATOR . $existingFile;
+					@unlink($oldPath);
+					$ch->send(
+						json_encode([
+							"type" => "status",
+							"mod" => $id,
+							"state" => "cleanup",
+							"message" => "Removed old version: $existingFile",
+						]),
+					);
+				}
 			}
 
 			$ch->send(
