@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.0";
+	public const VERSION = "1.3.1";
 	private $kernel32;
 	private $user32;
 	private $gdi32;
@@ -11121,7 +11121,7 @@ class FoxyClient
 		$opts = [
 			"http" => [
 				"method" => "GET",
-				"header" => "User-Agent: FoxyClient/1.3.0\r\n"
+				"header" => "User-Agent: FoxyClient/" . self::VERSION . "\r\n"
 			]
 		];
 		$ctx = stream_context_create($opts);
@@ -16203,7 +16203,7 @@ class FoxyClient
 
 class FoxyVersionJob
 {
-	public const VERSION = "1.3.0";
+	public const VERSION = FoxyClient::VERSION;
 	public static function run(
 		\parallel\Channel $ch,
 		string $version,
@@ -16819,7 +16819,7 @@ class FoxyVersionJob
 
 class FoxyCompatCheckJob
 {
-	public const VERSION = "1.2.5-beta";
+	public const VERSION = FoxyClient::VERSION;
 	public static function run(
 		\parallel\Channel $ch,
 		array $modIds,
@@ -16887,7 +16887,7 @@ class FoxyCompatCheckJob
 
 class FoxyModrinthJob
 {
-	public const VERSION = "1.2.5-beta";
+	public const VERSION = FoxyClient::VERSION;
 	public static function run(
 		\parallel\Channel $ch,
 		array $modIds,
