@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.2";
+	public const VERSION = "1.3.3";
 	private $kernel32;
 	private $user32;
 	private $gdi32;
@@ -55,6 +55,7 @@ class FoxyClient
 	private const ACC_MICROSOFT = "microsoft";
 	private const ACC_ELYBY = "elyby";
 	private const ACC_FOXY = "foxy";
+	private const ACC_MOJANG = "mojang";
 
 	private $currentPage = self::PAGE_HOME;
 	private $sidebarHover = -1;
@@ -285,7 +286,11 @@ class FoxyClient
 	private $iconDownloadChannel = null;
 	private $iconCancelChannel = null; // Channel for stopping stale downloads
 	private $iconDownloadFuture = null; // Reference to prevent "return ignored" fatal error
-
+	private $httpResultChannel = null;
+	private $httpQueueChannel = null;
+	private $httpWorkerProcess = null;
+	private $httpResults = [];
+	private $httpPending = [];
 	// Manifest fetch state
 	private $vManifestProcess = null;
 	private $vManifestFuture = null;
@@ -550,6 +555,156 @@ class FoxyClient
 
 		$this->pollEvents = new \parallel\Events();
 		$this->pollEvents->setBlocking(false);
+		$this->httpResultChannel = new \parallel\Channel(\parallel\Channel::Infinite);
+		$this->pollEvents->addChannel($this->httpResultChannel);
+		
+		// Initialize persistent HTTP worker
+		$this->httpQueueChannel = new \parallel\Channel(\parallel\Channel::Infinite);
+		$this->httpWorkerProcess = new \parallel\Runtime();
+		
+		$qChan = $this->httpQueueChannel;
+		$rChan = $this->httpResultChannel;
+		$cacert = __DIR__ . DIRECTORY_SEPARATOR . self::CACERT;
+		$version = self::VERSION;
+		$acc_elyby = self::ACC_ELYBY;
+		$acc_foxy = self::ACC_FOXY;
+		$acc_offline = self::ACC_OFFLINE;
+		$acc_mojang = self::ACC_MOJANG;
+
+		$this->httpWorkerProcess->run(function(\parallel\Channel $q, \parallel\Channel $r, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang) {
+			$log = function($msg, $lvl = "INFO") use ($r) {
+				$r->send(["type" => "log", "msg" => "[HTTPWorker] " . $msg, "level" => $lvl]);
+			};
+
+			$fetch = function($url) use ($version, $cacert, $log) {
+				$log("Fetching: $url");
+				$ch = curl_init($url);
+				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+				curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+				curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/" . $version);
+				curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+				curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+				if (file_exists($cacert)) {
+					curl_setopt($ch, CURLOPT_CAINFO, $cacert);
+				}
+				$data = curl_exec($ch);
+				$code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+				$curlErr = curl_error($ch);
+				curl_close($ch);
+				
+				if ($data === false) {
+					$log("Fetch failed: $url ($curlErr)", "ERROR");
+				} else {
+					$log("Fetch finished: $url (HTTP $code)");
+				}
+				return [$data, $code];
+			};
+
+			while ($job = $q->recv()) {
+				try {
+					$type = $job['type'] ?? 'generic';
+					$id = $job['id'];
+					$log("Received job: $type (ID: $id)");
+					
+					if ($type === 'skin_resolve') {
+						$username = $job['username'];
+						$accType = $job['accType'];
+						$skinPath = $job['path'];
+						$skinUrl = "";
+						
+						if ($accType === $acc_elyby) {
+							[$json] = $fetch("http://skinsystem.ely.by/textures/" . urlencode($username));
+							if ($json) {
+								$data = json_decode($json, true);
+								if (isset($data["SKIN"]["url"])) {
+									$skinUrl = $data["SKIN"]["url"];
+									$log("Resolved Ely.by skin: $skinUrl");
+								}
+							}
+						} elseif ($accType === $acc_foxy) {
+							[$uuidJson] = $fetch("https://foxyclient.qzz.io/api/profiles/minecraft/byname/" . urlencode($username));
+							if ($uuidJson) {
+								$uuidData = json_decode($uuidJson, true);
+								if (isset($uuidData["id"])) {
+									$uuid = $uuidData["id"];
+									[$profileJson] = $fetch("https://foxyclient.qzz.io/api/sessionserver/session/minecraft/profile/" . $uuid);
+									if ($profileJson) {
+										$profileData = json_decode($profileJson, true);
+										if (isset($profileData["properties"])) {
+											foreach ($profileData["properties"] as $prop) {
+												if ($prop["name"] === "textures") {
+													$texData = json_decode(base64_decode($prop["value"]), true);
+													if (isset($texData["textures"]["SKIN"]["url"])) {
+														$skinUrl = $texData["textures"]["SKIN"]["url"];
+														$log("Resolved FoxyClient skin: $skinUrl");
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						} elseif ($accType === $acc_mojang) {
+							[$uuidJson] = $fetch("https://api.mojang.com/users/profiles/minecraft/" . urlencode($username));
+							if ($uuidJson) {
+								$uuidData = json_decode($uuidJson, true);
+								if (isset($uuidData["id"])) {
+									$uuid = $uuidData["id"];
+									[$profileJson] = $fetch("https://sessionserver.mojang.com/session/minecraft/profile/" . $uuid . "?unsigned=false");
+									if ($profileJson) {
+										$profileData = json_decode($profileJson, true);
+										if (isset($profileData["properties"])) {
+											foreach ($profileData["properties"] as $prop) {
+												if ($prop["name"] === "textures") {
+													$texData = json_decode(base64_decode($prop["value"]), true);
+													if (isset($texData["textures"]["SKIN"]["url"])) {
+														$skinUrl = $texData["textures"]["SKIN"]["url"];
+														$log("Resolved Mojang skin: $skinUrl");
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+
+						if (empty($skinUrl)) {
+							$skinUrl = "https://minotar.net/skin/" . urlencode($username) . ".png";
+							$log("Falling back to Minotar skin: $skinUrl");
+						}
+
+						[$skinData, $code] = $fetch($skinUrl);
+						if ($skinData && $code === 200) {
+							file_put_contents($skinPath, $skinData);
+							$r->send(["type" => "http_result", "id" => $id, "success" => true, "path" => $skinPath]);
+						} else {
+							$r->send(["type" => "http_result", "id" => $id, "success" => false, "error" => "Download failed for $skinUrl"]);
+						}
+					} else {
+						// Generic download or fetch
+						$url = $job['url'];
+						$path = $job['path'] ?? null;
+						[$data, $code] = $fetch($url);
+						if ($path && $data !== false && $code === 200) {
+							file_put_contents($path, $data);
+						}
+						$r->send([
+							"type" => "http_result",
+							"id" => $id,
+							"success" => ($data !== false),
+							"data" => $data,
+							"code" => $code,
+							"path" => $path,
+							"metadata" => $job['metadata'] ?? []
+						]);
+					}
+				} catch (\Throwable $e) {
+					$r->send(["type" => "http_result", "id" => $job['id'] ?? 'unknown', "success" => false, "error" => $e->getMessage()]);
+				}
+			}
+		}, [$this->httpQueueChannel, $this->httpResultChannel, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang]);
+		
 		$this->colors = $this->darkColors; // Default initial colors to prevent null access
 		$this->loadConfig($configPath);
 		$this->loadSettings();
@@ -4764,6 +4919,7 @@ class FoxyClient
 			$processed = 0;
 			while ($processed < 50 && ($event = $this->pollEvents->poll())) {
 				$processed++;
+				$this->needsRedraw = true; // Any async event might change the UI state
 				// Determine source channel and re-add
 				$val = $event->value;
 				if (is_string($val)) {
@@ -4803,6 +4959,9 @@ class FoxyClient
 				$isUpdate =
 					$this->updateChannel &&
 					(string) $event->source === (string) $this->updateChannel;
+				$isHttp =
+					$this->httpResultChannel &&
+					(string) $event->source === (string) $this->httpResultChannel;
 
 				if ($isMod) {
 					$this->pollEvents->addChannel($this->modChannel);
@@ -4826,6 +4985,9 @@ class FoxyClient
 				}
 				if ($isCompat) {
 					$this->pollEvents->addChannel($this->compatChannel);
+				}
+				if ($isHttp) {
+					$this->pollEvents->addChannel($this->httpResultChannel);
 				}
 				if ($isIcon) {
 					$this->pollEvents->addChannel($this->iconDownloadChannel);
@@ -4866,6 +5028,13 @@ class FoxyClient
 							$this->hasUiUpdate = false;
 							$this->updateMessage =
 								"Check failed: " . ($data["msg"] ?? "Unknown");
+						}
+					}
+					if ($isHttp && isset($data["type"])) {
+						if ($data["type"] === "http_result") {
+							$this->httpResults[$data["id"]] = $data;
+						} elseif ($data["type"] === "log") {
+							$this->log($data["msg"], $data["level"] ?? "INFO");
 						}
 					}
 
@@ -11101,6 +11270,39 @@ class FoxyClient
 		$gl->glEnd();
 	}
 
+	private function curl_get_contents($url, $header = [])
+	{
+		$ch = curl_init();
+		curl_setopt($ch, CURLOPT_URL, $url);
+		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+		curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/" . self::VERSION);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+		if (!empty($header)) {
+			curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
+		}
+		$data = curl_exec($ch);
+		curl_close($ch);
+		return $data;
+	}
+
+	private function curlDownloadAsync($id, $url, $dst = null, $header = [])
+	{
+		if (isset($this->httpPending[$id])) {
+			return;
+		}
+		$this->httpPending[$id] = time();
+
+		$this->httpQueueChannel->send([
+			"type" => "generic",
+			"id" => $id,
+			"url" => $url,
+			"path" => $dst,
+			"headers" => $header
+		]);
+	}
+
 	private function downloadDefaultSkin($username, $accType)
 	{
 		$cacheDir = self::DATA_DIR . DIRECTORY_SEPARATOR . "cache";
@@ -11117,88 +11319,28 @@ class FoxyClient
 			return $skinPath; // Cached for 7 days
 		}
 
-		$opts = [
-			"http" => [
-				"method" => "GET",
-				"header" => "User-Agent: FoxyClient/" . self::VERSION . "\r\n"
-			]
-		];
-		$ctx = stream_context_create($opts);
-
-		$skinUrl = "";
-
-		if ($accType === self::ACC_ELYBY) {
-			// Ely.by AuthLib API
-			$json = @file_get_contents("http://skinsystem.ely.by/textures/" . urlencode($username), false, $ctx);
-			if ($json) {
-				$data = json_decode($json, true);
-				if (isset($data["SKIN"]["url"])) {
-					$skinUrl = $data["SKIN"]["url"];
-				}
+		// Check if we already have a result from a background thread
+		$id = "skin_" . md5($username . $accType);
+		if (isset($this->httpResults[$id])) {
+			$res = $this->httpResults[$id];
+			unset($this->httpResults[$id]);
+			if ($res["success"] && isset($res["path"])) {
+				return $res["path"];
 			}
-		} elseif ($accType === self::ACC_FOXY) {
-			// FoxyClient AuthLib API (New Sessionserver Flow)
-			$uuidJson = @file_get_contents("https://foxyclient.qzz.io/api/profiles/minecraft/byname/" . urlencode($username), false, $ctx);
-			if ($uuidJson) {
-				$uuidData = json_decode($uuidJson, true);
-				if (isset($uuidData["id"])) {
-					$uuid = $uuidData["id"];
-					$profileJson = @file_get_contents("https://foxyclient.qzz.io/api/sessionserver/session/minecraft/profile/" . $uuid, false, $ctx);
-					if ($profileJson) {
-						$profileData = json_decode($profileJson, true);
-						if (isset($profileData["properties"])) {
-							foreach ($profileData["properties"] as $prop) {
-								if ($prop["name"] === "textures") {
-									$texJson = base64_decode($prop["value"]);
-									$texData = json_decode($texJson, true);
-									if (isset($texData["textures"]["SKIN"]["url"])) {
-										$skinUrl = $texData["textures"]["SKIN"]["url"];
-									}
-									break;
-								}
-							}
-						}
-					}
-				}
-			}
-		} else {
-			// Mojang AuthLib API
-			$uuidJson = @file_get_contents("https://api.mojang.com/users/profiles/minecraft/" . urlencode($username), false, $ctx);
-			if ($uuidJson) {
-				$uuidData = json_decode($uuidJson, true);
-				if (isset($uuidData["id"])) {
-					$uuid = $uuidData["id"];
-					$profileJson = @file_get_contents("https://sessionserver.mojang.com/session/minecraft/profile/" . $uuid . "?unsigned=false", false, $ctx);
-					if ($profileJson) {
-						$profileData = json_decode($profileJson, true);
-						if (isset($profileData["properties"])) {
-							foreach ($profileData["properties"] as $prop) {
-								if ($prop["name"] === "textures") {
-									$texJson = base64_decode($prop["value"]);
-									$texData = json_decode($texJson, true);
-									if (isset($texData["textures"]["SKIN"]["url"])) {
-										$skinUrl = $texData["textures"]["SKIN"]["url"];
-									}
-									break;
-								}
-							}
-						}
-					}
-				}
-			}
-			
-			// Fallback for offline or rate-limit
-			if (empty($skinUrl)) {
-				$skinUrl = "https://minotar.net/skin/" . urlencode($username) . ".png";
-			}
+			unset($this->httpPending[$id]);
 		}
 
-		if (!empty($skinUrl)) {
-			$data = @file_get_contents($skinUrl, false, $ctx);
-			if ($data && strlen($data) > 1000) { // Valid PNG is usually > 1KB
-				file_put_contents($skinPath, $data);
-				return $skinPath;
-			}
+		// Trigger background download if not already pending
+		if (!isset($this->httpPending[$id])) {
+			$this->httpPending[$id] = time();
+			
+			$this->httpQueueChannel->send([
+				"type" => "skin_resolve",
+				"id" => $id,
+				"username" => $username,
+				"accType" => $accType,
+				"path" => $skinPath
+			]);
 		}
 
 		return "";
@@ -11704,16 +11846,18 @@ class FoxyClient
 
 					// Fallback: try GitHub API
 					$apiUrl = "https://api.github.com/repos/Minosuko/FoxyClientMod/releases/latest";
-					$ctx = stream_context_create([
-						"http" => [
-							"header" => "User-Agent: FoxyClient\r\n",
-							"timeout" => 30,
-						],
-						"ssl" => [
-							"cafile" => $cacert,
-						],
-					]);
-					$response = @file_get_contents($apiUrl, false, $ctx);
+					
+					$ch_curl = curl_init($apiUrl);
+					curl_setopt($ch_curl, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($ch_curl, CURLOPT_USERAGENT, "FoxyClient");
+					curl_setopt($ch_curl, CURLOPT_TIMEOUT, 30);
+					if (file_exists($cacert)) {
+						curl_setopt($ch_curl, CURLOPT_CAINFO, $cacert);
+					}
+					
+					$response = curl_exec($ch_curl);
+					curl_close($ch_curl);
+					
 					if ($response === false) {
 						$ch->send("ERROR:Could not reach GitHub API");
 						return;
@@ -11736,17 +11880,19 @@ class FoxyClient
 						return;
 					}
 
-					$ch->send("Downloading " . $jarAsset["name"] . "...");
-					$dlCtx = stream_context_create([
-						"http" => [
-							"header" => "User-Agent: FoxyClient\r\nAccept: application/octet-stream\r\n",
-							"timeout" => 120,
-						],
-						"ssl" => [
-							"cafile" => $cacert,
-						],
-					]);
-					$jarData = @file_get_contents($jarAsset["browser_download_url"], false, $dlCtx);
+					$ch_dl = curl_init($jarAsset["browser_download_url"]);
+					curl_setopt($ch_dl, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($ch_dl, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($ch_dl, CURLOPT_USERAGENT, "FoxyClient");
+					curl_setopt($ch_dl, CURLOPT_HTTPHEADER, ["Accept: application/octet-stream"]);
+					curl_setopt($ch_dl, CURLOPT_TIMEOUT, 120);
+					if (file_exists($cacert)) {
+						curl_setopt($ch_dl, CURLOPT_CAINFO, $cacert);
+					}
+					
+					$jarData = curl_exec($ch_dl);
+					curl_close($ch_dl);
+					
 					if ($jarData === false) {
 						$ch->send("ERROR:Download failed");
 						return;
@@ -12421,7 +12567,14 @@ class FoxyClient
 				];
 				$allVersions = [];
 				foreach ($urls as $key => $url) {
-					$data = @file_get_contents($url);
+					$curl = curl_init($url);
+					curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($curl, CURLOPT_TIMEOUT, 20);
+					curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient");
+					$data = curl_exec($curl);
+					curl_close($curl);
+					
 					if ($data) {
 						$manifest = json_decode($data, true);
 						if (isset($manifest["versions"])) {
@@ -15435,7 +15588,7 @@ class FoxyClient
 
 		// Send shutdown signals to all active background tasks
 		$processes = [
-			[$this->process, $this->modChannel ?? null], // Main mod search/load
+			[$this->process, $this->modChannel ?? null],
 			[$this->assetProcess, $this->assetChannel ?? null],
 			[$this->vManifestProcess, $this->vManifestChannel ?? null],
 			[$this->modpackInstallProcess, $this->modpackInstallChannel ?? null],
@@ -15443,13 +15596,19 @@ class FoxyClient
 			[$this->modrinthProcess, $this->modrinthChannel ?? null],
 			[$this->iconDownloadProcess, $this->iconDownloadChannel ?? null],
 			[$this->compatProcess, $this->compatChannel ?? null],
+			[$this->foxyModInstallProcess, $this->foxyModInstallChannel ?? null],
+			[$this->httpWorkerProcess, $this->httpQueueChannel ?? null],
 		];
 
 		foreach ($processes as $pair) {
 			[$proc, $ch] = $pair;
 			if ($proc && $ch) {
 				try {
-					$ch->send("shutdown");
+					if ($ch === $this->httpQueueChannel) {
+						$ch->send(null); // Special shutdown for HTTP worker
+					} else {
+						$ch->send("shutdown");
+					}
 				} catch (\Throwable $e) {}
 			}
 		}
@@ -15457,7 +15616,7 @@ class FoxyClient
 		// Brief wait for threads to see signals
 		usleep(50000);
 
-		// Nulling runtimes will trigger blocking destructors, but threads should be exiting now
+		// Nulling runtimes will trigger blocking destructors
 		$this->process = null;
 		$this->assetProcess = null;
 		$this->vManifestProcess = null;
@@ -15466,6 +15625,10 @@ class FoxyClient
 		$this->modrinthProcess = null;
 		$this->iconDownloadProcess = null;
 		$this->compatProcess = null;
+		$this->foxyModInstallProcess = null;
+		$this->httpWorkerProcess = null;
+		$this->httpQueueChannel = null;
+		$this->httpResultChannel = null;
 
 		if ($this->gdiplusToken !== null) {
 			$this->gdiplus->GdiplusShutdown($this->gdiplusToken);
@@ -15560,8 +15723,17 @@ class FoxyClient
 			$this->modPageDebounceTimer > 0 ||
 			$this->assetMessage === "WAITING FOR WINDOW..." ||
 			$this->assetMessage === "GAME RUNNING" ||
-			$this->isUpdatingCacert ||
-			$this->isCheckingUiUpdate;
+			!empty($this->httpPending) ||
+			!empty($this->pendingFutures) ||
+			$this->process !== null ||
+			$this->assetProcess !== null ||
+			$this->modrinthProcess !== null ||
+			$this->modDownloadProcess !== null ||
+			$this->modpackInstallProcess !== null ||
+			$this->iconDownloadProcess !== null ||
+			$this->vManifestProcess !== null ||
+			$this->isInstallingFoxyMod ||
+			$this->foxyModInstallProcess !== null;
 	}
 
 	private function getAbsolutePath($path)
@@ -16848,14 +17020,12 @@ class FoxyCompatCheckJob
 			if (!empty($params)) {
 				$url .= "?" . http_build_query($params);
 			}
-			$ctx = stream_context_create([
-				"http" => [
-					"header" =>
-						"User-Agent: FoxyClient/" . self::VERSION . "\r\n",
-					"timeout" => 10,
-				],
-			]);
-			$res = @file_get_contents($url, false, $ctx);
+			$ch_curl = curl_init($url);
+			curl_setopt($ch_curl, CURLOPT_RETURNTRANSFER, true);
+			curl_setopt($ch_curl, CURLOPT_USERAGENT, "FoxyClient/" . self::VERSION);
+			curl_setopt($ch_curl, CURLOPT_TIMEOUT, 10);
+			$res = curl_exec($ch_curl);
+			curl_close($ch_curl);
 			return $res ? json_decode($res, true) : null;
 		};
 
@@ -16917,13 +17087,12 @@ class FoxyModrinthJob
 			if (!empty($params)) {
 				$url .= "?" . http_build_query($params);
 			}
-			$ctx = stream_context_create([
-				"http" => [
-					"header" =>
-						"User-Agent: FoxyClient/" . self::VERSION . "\r\n",
-				],
-			]);
-			$res = file_get_contents($url, false, $ctx);
+			$ch_curl = curl_init($url);
+			curl_setopt($ch_curl, CURLOPT_RETURNTRANSFER, true);
+			curl_setopt($ch_curl, CURLOPT_USERAGENT, "FoxyClient/" . self::VERSION);
+			curl_setopt($ch_curl, CURLOPT_TIMEOUT, 20);
+			$res = curl_exec($ch_curl);
+			curl_close($ch_curl);
 			return $res ? json_decode($res, true) : null;
 		};
 
