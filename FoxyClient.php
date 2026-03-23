@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.1";
+	public const VERSION = "1.3.2";
 	private $kernel32;
 	private $user32;
 	private $gdi32;
@@ -11103,8 +11103,7 @@ class FoxyClient
 
 	private function downloadDefaultSkin($username, $accType)
 	{
-		$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? ".");
-		$cacheDir = $gameDir . DIRECTORY_SEPARATOR . self::DATA_DIR . DIRECTORY_SEPARATOR . "cache";
+		$cacheDir = self::DATA_DIR . DIRECTORY_SEPARATOR . "cache";
 		if (!is_dir($cacheDir)) {
 			@mkdir($cacheDir, 0777, true);
 		}
@@ -11138,12 +11137,28 @@ class FoxyClient
 				}
 			}
 		} elseif ($accType === self::ACC_FOXY) {
-			// FoxyClient AuthLib API
-			$json = @file_get_contents("https://foxyclient.qzz.io/api/textures/?username=" . urlencode($username), false, $ctx);
-			if ($json) {
-				$data = json_decode($json, true);
-				if (isset($data["SKIN"]["url"])) {
-					$skinUrl = $data["SKIN"]["url"];
+			// FoxyClient AuthLib API (New Sessionserver Flow)
+			$uuidJson = @file_get_contents("https://foxyclient.qzz.io/api/profiles/minecraft/byname/" . urlencode($username), false, $ctx);
+			if ($uuidJson) {
+				$uuidData = json_decode($uuidJson, true);
+				if (isset($uuidData["id"])) {
+					$uuid = $uuidData["id"];
+					$profileJson = @file_get_contents("https://foxyclient.qzz.io/api/sessionserver/session/minecraft/profile/" . $uuid, false, $ctx);
+					if ($profileJson) {
+						$profileData = json_decode($profileJson, true);
+						if (isset($profileData["properties"])) {
+							foreach ($profileData["properties"] as $prop) {
+								if ($prop["name"] === "textures") {
+									$texJson = base64_decode($prop["value"]);
+									$texData = json_decode($texJson, true);
+									if (isset($texData["textures"]["SKIN"]["url"])) {
+										$skinUrl = $texData["textures"]["SKIN"]["url"];
+									}
+									break;
+								}
+							}
+						}
+					}
 				}
 			}
 		} else {
@@ -11688,7 +11703,7 @@ class FoxyClient
 					}
 
 					// Fallback: try GitHub API
-					$apiUrl = "https://api.github.com/repos/AstralInternet/FoxyClientMods/releases/latest";
+					$apiUrl = "https://api.github.com/repos/Minosuko/FoxyClientMod/releases/latest";
 					$ctx = stream_context_create([
 						"http" => [
 							"header" => "User-Agent: FoxyClient\r\n",

@@ -22,7 +22,7 @@ internal class FoxyClient
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern int MessageBox(IntPtr hWnd, String text, String caption, uint type);
 
-    private const string UPDATE_URL = "https://github.com/Minosuko/FoxyClient/releases/latest/download/FoxyClient.zip";
+    private const string UPDATE_URL = "https://github.com/Minosuko/FoxyClient/releases/latest/download/FoxyClient-OTA.zip";
     
     // PEM Public Key
     private const string PUBLIC_KEY_PEM = @"-----BEGIN PUBLIC KEY-----
