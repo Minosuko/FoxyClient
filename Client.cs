@@ -253,7 +253,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         Console.WriteLine("Terminating any running FoxyClient instances...");
         KillRunningClients();
 
-        Console.WriteLine("Downloading update (FoxyClient.zip)...");
+        Console.WriteLine("Downloading update (FoxyClient_OTA.zip)...");
         string zipPath = Path.Combine(AppDir, "update.zip");
         
         using (var client = new HttpClient())
