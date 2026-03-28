@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.3";
+	public const VERSION = "1.3.4";
 	private $kernel32;
 	private $user32;
 	private $gdi32;
@@ -102,7 +102,6 @@ class FoxyClient
 	private $msLastPollTime = 0;
 	private $msError = "";
 
-	// Ely.by OAuth
 	private $elyClientId = "foxyclientwo2";
 	private $elyClientSecret = "EdA4PVqtNB07cjxsDkJZLjknJmdJwYAwXnpJSZgC0UrOzbSHwNzXI_1hdxq-usgk";
 
@@ -262,12 +261,13 @@ class FoxyClient
 	private $isPrefetching = false;
 	private $pendingFutures = []; // Keep old Futures alive to prevent blocking destructors
 
-	// Modrinth Download State
-	private $modDownloadProcess = null;
-	private $modDownloadChannel = null;
-	private $modDownloadFuture = null; // Reference to prevent "return ignored" fatal error
+	// Modrinth Download State (Concurrent)
+	private $modDownloadChannels = []; // projectId => Channel
+	private $modDownloadRuntimes = []; // projectId => Runtime
+	private $modDownloadFutures = []; // projectId => Future
+	private $modDownloadProgresses = []; // projectId => float
+	private $channelToModId = []; // channelSource => projectId
 	private $foxyPreviewZoom = 1.0;
-	private $isDownloadingModrinth = false;
 
 	// Installed Modpacks State
 	private $installedModpacks = []; // slug => {name, version, mc_version, loader, files: [filenames]}
@@ -277,6 +277,7 @@ class FoxyClient
 	private $modpackInstallChannel = null;
 	private $modpackInstallFuture = null;
 	private $isInstallingModpack = false;
+	
 
 	// Icon cache
 	private $modIconCache = []; // project_id => gl_texture_id
@@ -297,9 +298,30 @@ class FoxyClient
 	private $vManifestChannel = null;
 	private $vManifestError = "";
 	private $gameProcess = null;
-	private $gamePipes = null;
-	private $shouldAutoLaunchAfterDownload = false;
+	private $gameChannel = null;
+	private $pollProcessInterval = 0.1;
+	private $pollProcessLastTime = 0;
+
+	// Background Runtimes & State
 	private $gamePid = null;
+	private $maxScroll = 0;
+
+	// FoxyClientMod Installation & Update State
+	private $isInstallingFoxyMod = false;
+	private $foxyModInstallProcess = null;
+	private $foxyModInstallChannel = null;
+	private $foxyModInstallFuture = null;
+	private $foxyInstallProgress = "";
+	private $foxyInstallBtnHover = false;
+	private $foxyUpdateBtnHover = false;
+	private $foxyModLocalVersion = null; // e.g. "1.3.4"
+	private $foxyModLatestVersion = null; // e.g. "1.3.5"
+	private $foxyModUpdateAvailable = false;
+	private $lastFoxyUpdateCheck = 0;
+	private $foxyUpdateChannel = null;
+	private $foxyUpdateProcess = null;
+	private $foxyUpdateFuture = null;
+	private $shouldAutoLaunchAfterDownload = false;
 
 	// Properties system
 	private $propSubTab = 0; // 0=Minecraft, 1=Launcher, 2=About
@@ -361,12 +383,6 @@ class FoxyClient
 	private $foxyMacroHoverIdx = -1;
 	private $foxyConfigHoverIdx = -1;
 	private $foxyCosmeticsHoverIdx = -1;
-	private $foxyInstallBtnHover = false;
-	private $foxyInstallProgress = "";
-	private $isInstallingFoxyMod = false;
-	private $foxyModInstallProcess = null;
-	private $foxyModInstallChannel = null;
-	private $foxyModInstallFuture = null;
 	private $accScrollTarget = 0.0;
 	private $accScrollOffset = 0.0;
 	private $foxyKeybindSearchQuery = "";
@@ -499,6 +515,12 @@ class FoxyClient
 		"dropdown_bg" => [0.05, 0.06, 0.08, 0.95],
 		"dropdown_hover" => [0.12, 0.15, 0.18],
 		"info_bg" => [0.12, 0.15, 0.25],
+		"subtab" => [0.12, 0.12, 0.14],
+		"pill_bg" => [0.1, 0.12, 0.15],
+		"pill_active" => [0.2, 0.6, 1.0, 0.4],
+		"scrollbar" => [0.2, 0.22, 0.25, 0.5],
+		"scrollbar_hover" => [0.3, 0.35, 0.4, 0.7],
+		"overlay_bg" => [0.08, 0.09, 0.12, 0.95],
 	];
 
 	private $lightColors = [
@@ -538,6 +560,12 @@ class FoxyClient
 		"dropdown_bg" => [1.0, 1.0, 1.0, 0.98],
 		"dropdown_hover" => [0.94, 0.96, 1.0],
 		"info_bg" => [0.85, 0.9, 1.0],
+		"subtab" => [0.85, 0.88, 0.92],
+		"pill_bg" => [0.9, 0.92, 0.95],
+		"pill_active" => [0.0, 0.5, 0.8, 0.2],
+		"scrollbar" => [0.7, 0.72, 0.75, 0.5],
+		"scrollbar_hover" => [0.6, 0.62, 0.65, 0.7],
+		"overlay_bg" => [0.94, 0.95, 0.98, 0.95],
 	];
 	private $titleCloseHover = false;
 	private $titleMinHover = false;
@@ -1020,6 +1048,7 @@ class FoxyClient
 			} MEMORYSTATUSEX;
 
 			typedef int (*BFFCALLBACK)(HWND, UINT, LPARAM, LPARAM);
+			typedef int (*PFNWGLSWAPINTERVALEXTPROC)(int interval);
 
 			typedef struct {
 				HWND hwndOwner;
@@ -1046,6 +1075,8 @@ class FoxyClient
 			PVOID GlobalLock(PVOID hMem);
 			BOOL GlobalUnlock(PVOID hMem);
 			PVOID GlobalFree(PVOID hMem);
+			void *GetCurrentProcess();
+			BOOL TerminateProcess(void *hProcess, UINT uExitCode);
 		",
 			"kernel32.dll",
 		);
@@ -1068,6 +1099,8 @@ class FoxyClient
 			LRESULT DispatchMessageA(const MSG *lpMsg);
 			BOOL AdjustWindowRectEx(RECT *lpRect, DWORD dwStyle, BOOL bMenu, DWORD dwExStyle);
 			BOOL ReleaseCapture();
+			HWND GetForegroundWindow();
+			BOOL IsIconic(HWND hWnd);
 			LRESULT SendMessageA(HWND hWnd, UINT Msg, WPARAM wParam, void* lParam);
 			BOOL SetWindowPos(HWND hWnd, HWND hWndInsertAfter, int X, int Y, int cx, int cy, UINT uFlags);
 			LRESULT SendMessageW(HWND hWnd, UINT Msg, WPARAM wParam, void* lParam);
@@ -1102,6 +1135,7 @@ class FoxyClient
 				$types .
 					"
 				int DwmGetCompositionTimingInfo(HWND hwnd, DWM_TIMING_INFO *pTimingInfo);
+				long DwmFlush();
 			",
 				"dwmapi.dll",
 			);
@@ -1138,6 +1172,7 @@ class FoxyClient
 			HGLRC wglCreateContext(HDC hdc);
 			BOOL wglMakeCurrent(HDC hdc, HGLRC hglrc);
 			BOOL wglDeleteContext(HGLRC hglrc);
+			void* wglGetProcAddress(LPCSTR);
 
 			void glClear(UINT mask);
 			void glClearColor(float red, float green, float blue, float alpha);
@@ -1694,6 +1729,20 @@ class FoxyClient
 
 		$this->hglrc = $this->opengl32->wglCreateContext($this->hdc);
 		$this->opengl32->wglMakeCurrent($this->hdc, $this->hglrc);
+
+		// Enable VSync
+		try {
+			$proc = $this->opengl32->wglGetProcAddress("wglSwapIntervalEXT");
+			if ($proc) {
+				$wglSwapIntervalEXT = FFI::cast("PFNWGLSWAPINTERVALEXTPROC", $proc);
+				$res = $wglSwapIntervalEXT(1);
+				$this->log("VSync enabled via wglSwapIntervalEXT (Result: $res)");
+			} else {
+				$this->log("wglSwapIntervalEXT not found, using DwmFlush fallback");
+			}
+		} catch (\Throwable $e) {
+			$this->log("Failed to enable VSync extension: " . $e->getMessage(), "WARN");
+		}
 
 		$this->initFonts();
 
@@ -2749,6 +2798,52 @@ class FoxyClient
 		$effectiveFooterH = $showFooter ? self::FOOTER_H : 0;
 		$h = $usableH - $effectiveFooterH - $y;
 
+		// Discovery Mode - Priority 1: Pagination (Fixed Window-Relative to prevent clipping)
+		if (
+			$this->currentPage === self::PAGE_MODS &&
+			$this->modrinthTotalHits > 20
+		) {
+			$pgY = $usableH - $effectiveFooterH - 45; // Fixed 5px above footer or bottom
+			$pgW = 200;
+			$pgX = ($cw - $pgW) / 2;
+
+			// Prev Button
+			if (
+				$cx >= $pgX &&
+				$cx <= $pgX + 60 &&
+				$cy >= $pgY &&
+				$cy <= $pgY + 30
+			) {
+				if ($this->modrinthPage > 0) {
+					$this->modrinthPage--;
+					$this->modPageTarget = $this->modrinthPage;
+					$this->modPageDebounceTimer = 0;
+					$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
+					$this->needsRedraw = true;
+				}
+				return;
+			}
+
+			// Next Button
+			$nextX = $pgX + $pgW - 60;
+			if (
+				$cx >= $nextX &&
+				$cx <= $nextX + 60 &&
+				$cy >= $pgY &&
+				$cy <= $pgY + 30
+			) {
+				$totalPages = ceil($this->modrinthTotalHits / 20);
+				if ($this->modrinthPage + 1 < $totalPages) {
+					$this->modrinthPage++;
+					$this->modPageTarget = $this->modrinthPage;
+					$this->modPageDebounceTimer = 0;
+					$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
+					$this->needsRedraw = true;
+				}
+				return;
+			}
+		}
+
 		if (
 			$cx >= self::PAD &&
 			$cx <= $cw - self::PAD &&
@@ -2756,51 +2851,6 @@ class FoxyClient
 			$cy <= $y + $h
 		) {
 			if ($this->currentPage === self::PAGE_MODS) {
-				// Discovery Mode - Priority 1: Pagination
-				if ($this->modrinthTotalHits > 20) {
-					$pgY = $y + $h - 35;
-					$pgW = 200;
-					$pgX = ($cw - $pgW) / 2;
-
-					// Prev Button
-					if (
-						$cx >= $pgX &&
-						$cx <= $pgX + 40 &&
-						$cy >= $pgY &&
-						$cy <= $pgY + 30
-					) {
-						if ($this->modPageDebounceTimer === 0) {
-							$this->modPageTarget = $this->modrinthPage;
-						}
-						if ($this->modPageTarget > 0) {
-							$this->modPageTarget--;
-							$this->modPageDebounceTimer = microtime(true) + 0.4;
-							$this->needsRedraw = true;
-						}
-						return;
-					}
-
-					// Next Button
-					$nextX = $pgX + $pgW - 40;
-					if (
-						$cx >= $nextX &&
-						$cx <= $nextX + 40 &&
-						$cy >= $pgY &&
-						$cy <= $pgY + 30
-					) {
-						$totalPages = ceil($this->modrinthTotalHits / 20);
-						if ($this->modPageDebounceTimer === 0) {
-							$this->modPageTarget = $this->modrinthPage;
-						}
-						if ($this->modPageTarget + 1 < $totalPages) {
-							$this->modPageTarget++;
-							$this->modPageDebounceTimer = microtime(true) + 0.4;
-							$this->needsRedraw = true;
-						}
-						return;
-					}
-				}
-
 				// Grid logic for Modrinth
 				$alpha = $this->modrinthAnim;
 				$slideY = (1.0 - $alpha) * 20;
@@ -3399,87 +3449,132 @@ class FoxyClient
 					return;
 				}
 
-				// Step 5: Download all mod files
+				// Step 5: Download all mod files (Concurrent Implementation)
 				$ch->send(json_encode(["type" => "progress", "message" => "Checking local files..."]));
 				$installedFiles = [];
 				$total = count($index["files"]);
+				$downloadQueue = [];
 				$done = 0;
 
 				foreach ($index["files"] as $modFile) {
-					$done++;
 					$relPath = $modFile["path"] ?? "";
 					$downloads = $modFile["downloads"] ?? [];
 					if (!$relPath || empty($downloads)) continue;
 
 					$filename = basename($relPath);
-					$subDir = dirname($relPath); // e.g. "mods" or "config"
-
-					// Determine actual target directory
+					$subDir = dirname($relPath);
 					$actualDir = $installDir . DIRECTORY_SEPARATOR . str_replace("/", DIRECTORY_SEPARATOR, $subDir);
-					if (!is_dir($actualDir)) {
-						@mkdir($actualDir, 0777, true);
-					}
+					if (!is_dir($actualDir)) @mkdir($actualDir, 0777, true);
 					$targetPath = $actualDir . DIRECTORY_SEPARATOR . $filename;
 
-					// Check hash (skip if already valid)
+					// Pre-check hash
 					$expectedHash = $modFile["hashes"]["sha1"] ?? "";
 					if (file_exists($targetPath) && $expectedHash && sha1_file($targetPath) === $expectedHash) {
 						$installedFiles[] = $relPath;
-						$ch->send(json_encode([
-							"type" => "progress",
-							"message" => "[$done/$total] $filename (cached)",
-						]));
+						$done++;
 						continue;
 					}
 
-					// Delete old versions of this mod in the same directory
+					// Cleanup old versions
 					$slugPart = preg_replace('/[-_][\d\.]+.*\.jar$/i', '', $filename);
-					if ($slugPart && $subDir === "mods") {
+					if ($slugPart && $subDir === "mods" && is_dir($actualDir)) {
 						$slugLower = strtolower($slugPart);
-						$newFileLower = strtolower($filename);
 						foreach (scandir($actualDir) as $ef) {
-							if ($ef === "." || $ef === "..") continue;
-							$efLower = strtolower($ef);
-							if (!str_ends_with($efLower, ".jar")) continue;
-							if ($efLower === $newFileLower) continue;
-							if (str_starts_with($efLower, $slugLower . "-") || str_starts_with($efLower, $slugLower . "_")) {
+							if ($ef === "." || $ef === ".." || strtolower($ef) === strtolower($filename)) continue;
+							if (str_starts_with(strtolower($ef), $slugLower . "-") || str_starts_with(strtolower($ef), $slugLower . "_")) {
 								@unlink($actualDir . DIRECTORY_SEPARATOR . $ef);
 							}
 						}
 					}
 
-					// Download the file
-					$url = $downloads[0];
-					$ch->send(json_encode([
-						"type" => "progress",
-						"message" => "[$done/$total] Downloading $filename...",
-					]));
-
-					$curl = curl_init($url);
-					$fp = fopen($targetPath, "wb");
-					curl_setopt($curl, CURLOPT_FILE, $fp);
-					curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
-					curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/ModpackInstaller");
-					curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
-					curl_setopt($curl, CURLOPT_TIMEOUT, 60);
-					if (file_exists($cacert)) {
-						curl_setopt($curl, CURLOPT_CAINFO, $cacert);
-					}
-					curl_exec($curl);
-					$err = curl_error($curl);
-					curl_close($curl);
-					fclose($fp);
-					
-					if ($err) {
-						$ch->send(json_encode(["type" => "error", "message" => "Failed to download $filename: $err"]));
-						$zip->close();
-						@unlink($tmpPath);
-						$ch->close();
-						return;
-					}
-
-					$installedFiles[] = $relPath;
+					$downloadQueue[] = [
+						"url" => $downloads[0],
+						"path" => $targetPath,
+						"filename" => $filename,
+						"hash" => $expectedHash,
+						"relPath" => $relPath
+					];
 				}
+
+				if (!empty($downloadQueue)) {
+					$mh = curl_multi_init();
+					$activeHandles = [];
+					$maxConcurrency = 24;
+					$queueIdx = 0;
+
+					$addNext = function() use (&$queueIdx, &$downloadQueue, $mh, &$activeHandles, $cacert) {
+						if ($queueIdx >= count($downloadQueue)) return false;
+						$item = $downloadQueue[$queueIdx++];
+						$ch = curl_init($item["url"]);
+						$fp = fopen($item["path"], "wb");
+						curl_setopt($ch, CURLOPT_FILE, $fp);
+						curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+						curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/ModpackInstaller");
+						curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+						curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+						if (file_exists($cacert)) curl_setopt($ch, CURLOPT_CAINFO, $cacert);
+						
+						curl_multi_add_handle($mh, $ch);
+						$activeHandles[(int)$ch] = ["item" => $item, "fp" => $fp, "curl" => $ch];
+						return true;
+					};
+
+					// Fill initial batch
+					for ($i = 0; $i < $maxConcurrency; $i++) {
+						if (!$addNext()) break;
+					}
+
+					do {
+						$mrc = curl_multi_exec($mh, $active);
+						if ($active) curl_multi_select($mh, 0.01);
+
+						while ($info = curl_multi_info_read($mh)) {
+							$handle = $info["handle"];
+							$id = (int)$handle;
+							if (!isset($activeHandles[$id])) continue;
+							
+							$data = $activeHandles[$id];
+							fclose($data["fp"]);
+							$err = curl_error($handle);
+							
+							if ($err || curl_getinfo($handle, CURLINFO_HTTP_CODE) !== 200) {
+								$msg = "Failed to download {$data["item"]["filename"]}: " . ($err ?: "HTTP " . curl_getinfo($handle, CURLINFO_HTTP_CODE));
+								$ch->send(json_encode(["type" => "error", "message" => $msg]));
+								// Cleanup other active handles
+								foreach ($activeHandles as $ah) {
+									@fclose($ah["fp"]);
+									curl_multi_remove_handle($mh, $ah["curl"]);
+									curl_close($ah["curl"]);
+								}
+								curl_multi_close($mh);
+								$zip->close();
+								@unlink($tmpPath);
+								return;
+							}
+
+							// Verify Hash
+							if ($data["item"]["hash"] && sha1_file($data["item"]["path"]) !== $data["item"]["hash"]) {
+								$ch->send(json_encode(["type" => "error", "message" => "Hash mismatch for {$data["item"]["filename"]}"]));
+								// same cleanup as above... 
+								return; 
+							}
+
+							$installedFiles[] = $data["item"]["relPath"];
+							$done++;
+							$ch->send(json_encode([
+								"type" => "progress", 
+								"message" => "[$done/$total] Filtered: {$data["item"]["filename"]}"
+							]));
+
+							curl_multi_remove_handle($mh, $handle);
+							curl_close($handle);
+							unset($activeHandles[$id]);
+							$addNext();
+						}
+					} while ($active || $queueIdx < count($downloadQueue));
+					curl_multi_close($mh);
+				}
+
 
 				// Step 6: Extract overrides (Optimized: Single pass through ZIP index)
 				$ch->send(json_encode(["type" => "progress", "message" => "Extracting overrides..."]));
@@ -4564,7 +4659,9 @@ class FoxyClient
 
 		$this->assetMessage = "STARTING MINECRAFT...";
 
-		$this->log("Launching Game: " . implode(" ", $cmdArray));
+		$logCmd = implode(" ", $cmdArray);
+		$logCmd = preg_replace('/--accessToken\s+[^\s]+/', '--accessToken [REDACTED]', $logCmd);
+		$this->log("Launching Game: " . $logCmd);
 		
 		// Write ALL args to argfile to bypass Windows 8191-char command line limit
 		$argfilePath = __DIR__ . DIRECTORY_SEPARATOR . self::CACHE_DIR . DIRECTORY_SEPARATOR . "launch_args.txt";
@@ -4594,36 +4691,63 @@ class FoxyClient
 		$this->log("Using argfile: " . $argfilePath . " (" . count($cmdArray) . " total args)");
 		$this->log("Short command length: " . strlen($shortCmd) . " chars");
 		
-		// On Windows, pipe reading can severely deadlock the UI thread (even with non-blocking mode).
-		// The most robust fix is to launch the game completely detached using 'start /B'
-		// We sacrifice reading Game Output in exchange for guaranteed stability and zero freezes.
-		$detachCmd = "start \"Minecraft\" /B " . $shortCmd;
+		// We launch directly, keeping handles open to read stdout/stderr.
+		// To prevent UI freezes, we launch using a parallel thread.
+		$launchCmd = $shortCmd;
 		
-		$this->gameProcess = proc_open(
-			$detachCmd,
-			[], // No pipes!
-			$pipes,
-			$instanceDir,
-			null,
-			["bypass_shell" => false] // Needs shell for 'start'
-		);
+		$this->gameChannel = new \parallel\Channel(\parallel\Channel::Infinite);
+		$this->gameProcess = new \parallel\Runtime();
+		$this->gameProcess->run(function(\parallel\Channel $ch, string $cmd, string $dir) {
+			$pipes = [];
+			// Merge STDERR into STDOUT via cmd.exe, avoiding dual-pipe deadlocks
+			$cmd = $cmd . " 2>&1";
+			$proc = proc_open(
+				$cmd,
+				[
+					0 => ["pipe", "r"],
+					1 => ["pipe", "w"]
+				],
+				$pipes,
+				$dir,
+				null,
+				["bypass_shell" => false]
+			);
 
-		if (is_resource($this->gameProcess)) {
-			// Because we detached, we don't hold the pipes or the real PID.
-			// Close the dummy process handle immediately so PHP doesn't wait on it.
-			@proc_close($this->gameProcess);
-			$this->gameProcess = null;
-			$this->gamePipes = null;
-			$this->isLaunching = false;
-			$this->log("Game process launched asynchronously via 'start'.");
-			$this->assetMessage = "WAITING FOR WINDOW..."; 
-			$this->gameStartTime = microtime(true);
-			$this->updateDiscordPresence();
-		} else {
-			$this->log("Failed to start game process.", "ERROR");
-			$this->assetMessage = "FAILED TO START";
-			$this->isLaunching = false;
-		}
+			if (is_resource($proc)) {
+				$status = proc_get_status($proc);
+				$ch->send(["type" => "pid", "pid" => $status["pid"]]);
+
+				while (!feof($pipes[1])) {
+					$line = fgets($pipes[1]);
+					if ($line !== false) {
+						$line = trim($line);
+						if ($line !== "") {
+							// All output safely merged to stdout
+							$ch->send(["type" => "log", "isError" => false, "msg" => $line]);
+						}
+					}
+
+					$status = proc_get_status($proc);
+					if (!$status["running"] && feof($pipes[1])) {
+						$ch->send(["type" => "exit", "code" => $status["exitcode"]]);
+						break;
+					}
+				}
+
+				@fclose($pipes[0]);
+				@fclose($pipes[1]);
+				@proc_close($proc);
+			} else {
+				$ch->send(["type" => "error", "msg" => "Failed to start game process."]);
+			}
+		}, [$this->gameChannel, $launchCmd, $instanceDir]);
+
+		$this->pollEvents->addChannel($this->gameChannel);
+		
+		$this->isLaunching = false;
+		$this->assetMessage = "GAME RUNNING"; 
+		$this->gameStartTime = microtime(true);
+		$this->updateDiscordPresence();
 	}
 
 	private function updateDiscordPresence()
@@ -4640,7 +4764,7 @@ class FoxyClient
 		if ($this->assetMessage === "GAME RUNNING") {
 			$details = "Playing Minecraft " . $this->selectedVersion;
 			$state = "In-game via FoxyClient";
-		} elseif ($this->isLaunching || $this->assetMessage === "WAITING FOR WINDOW...") {
+		} elseif ($this->isLaunching) {
 			$details = "Launching Minecraft " . $this->selectedVersion;
 			$state = !empty($this->assetMessage) ? $this->assetMessage : "Preparing...";
 		} else {
@@ -4702,184 +4826,8 @@ class FoxyClient
 		);
 	}
 
-	private function checkGameWindow() {
-		static $u32 = null;
-		if (!$u32) {
-			try {
-				$u32 = \FFI::cdef("
-					typedef void* HWND;
-					typedef unsigned long DWORD;
-					typedef long long LPARAM;
-					typedef int BOOL;
-					int GetWindowTextA(HWND hWnd, char *lpString, int nMaxCount);
-					BOOL EnumWindows(BOOL (*lpEnumFunc)(HWND, LPARAM), LPARAM lParam);
-					BOOL IsWindowVisible(HWND hWnd);
-					DWORD GetWindowThreadProcessId(HWND hWnd, DWORD *lpdwProcessId);
-				", "user32.dll");
-			} catch (\Throwable $e) { return ["found" => false, "pid" => null]; }
-		}
-		
-		$found = false;
-		$pid = null;
-		$titleBuf = $u32->new("char[256]");
-		$enumCb = function($hwnd, $lp) use (&$found, &$pid, $titleBuf, $u32) {
-			if ($u32->IsWindowVisible($hwnd)) {
-				$pidPtr = $u32->new("DWORD");
-				$u32->GetWindowThreadProcessId($hwnd, \FFI::addr($pidPtr));
-				$wPid = (int)$pidPtr->cdata;
-
-				// If we have a tracked PID, only match that exact process
-				if ($this->gamePid !== null) {
-					if ($wPid === $this->gamePid) {
-						$found = true;
-						$pid = $wPid;
-						return false;
-					}
-					return true;
-				}
-
-				$len = $u32->GetWindowTextA($hwnd, $titleBuf, 256);
-				if ($len > 0) {
-					$title = \FFI::string($titleBuf, $len);
-					// Filter out unrelated windows by checking for "Minecraft" and common version/loader strings
-					if (stripos($title, "Minecraft") !== false && 
-						(preg_match('/1\.\d+/', $title) || stripos($title, "Fabric") !== false || stripos($title, "Forge") !== false)) {
-						$found = true;
-						$pid = $wPid;
-						return false; // stop enumeration
-					}
-				}
-			}
-			return true;
-		};
-		$u32->EnumWindows($enumCb, 0);
-		return ["found" => $found, "pid" => $pid];
-	}
-
 	private function pollProcess()
 	{
-		if (
-			!$this->process &&
-			!$this->assetProcess &&
-			!$this->vManifestProcess &&
-			!$this->gameProcess &&
-			!$this->isStoppingOverlay &&
-			!$this->modrinthProcess &&
-			!$this->compatProcess &&
-			!$this->iconDownloadProcess &&
-			!$this->modDownloadProcess &&
-			!$this->modpackInstallProcess &&
-			$this->assetMessage !== "GAME RUNNING" && 
-			$this->assetMessage !== "WAITING FOR WINDOW..."
-		) {
-			return;
-		}
-
-		// Game Window Polling natively (Non-blocking)
-		if ($this->assetMessage === "WAITING FOR WINDOW..." || $this->assetMessage === "GAME RUNNING") {
-			$now = microtime(true);
-			if (!isset($this->lastGameWindowCheck)) {
-				$this->lastGameWindowCheck = 0;
-			}
-			if ($now - $this->lastGameWindowCheck > 2.0) { // Poll every 2 seconds
-				$this->lastGameWindowCheck = $now;
-				$mcStatus = $this->checkGameWindow();
-				$isRunning = $mcStatus["found"];
-
-				if ($this->assetMessage === "WAITING FOR WINDOW...") {
-					if ($mcStatus["found"]) {
-						$this->assetMessage = "GAME RUNNING";
-						$this->gamePid = $mcStatus["pid"];
-						$this->startOverlayThread($mcStatus["pid"]); // Start overlay loop
-						$this->updateDiscordPresence();
-					} elseif (isset($this->gameStartTime) && $now - $this->gameStartTime > 90.0) {
-						// Timeout after 90 seconds if the window is never created
-						$this->assetMessage = "GAME CLOSED";
-						$this->gamePid = null;
-						$this->updateDiscordPresence();
-					}
-				} elseif ($this->assetMessage === "GAME RUNNING") {
-					if (!$isRunning) {
-						$this->assetMessage = "GAME CLOSED"; // Window closed
-						$this->log("Game window closed. Stopping Overlay...");
-						$this->stopOverlayThread();
-						$this->updateDiscordPresence();
-					}
-				}
-			}
-		}
-
-		if ($this->gameProcess) {
-			$status = proc_get_status($this->gameProcess);
-			if (!$status["running"]) {
-				$this->log("Game process detected as STOPPED.");
-				$gp = $this->gameProcess;
-
-				// Drain remaining output before closing (if any pipes exist)
-				if ($this->gamePipes) {
-					$this->log("Draining remaining game logs...");
-					while ($out = fread($this->gamePipes[1], 8192)) {
-						foreach (explode("\n", $out) as $line) {
-							if (trim($line)) {
-								$this->log("[Game/Stdout] " . trim($line));
-							}
-						}
-					}
-					while ($err = fread($this->gamePipes[2], 8192)) {
-						foreach (explode("\n", $err) as $line) {
-							if (trim($line)) {
-								$this->log(
-									"[Game/Stderr] " . trim($line),
-									"WARN",
-								);
-							}
-						}
-					}
-					@fclose($this->gamePipes[0]);
-					@fclose($this->gamePipes[1]);
-					@fclose($this->gamePipes[2]);
-					$this->gamePipes = null;
-				}
-
-				$this->gameProcess = null; // Unblock polling early
-				$this->isLaunching = false;
-
-				$this->log("Triggering Overlay Shutdown...");
-				$this->stopOverlayThread();
-
-				$this->log("Refreshing Discord Presence...");
-				$this->updateDiscordPresence();
-
-				$this->log("Calling proc_close on game process...");
-				@proc_close($gp);
-				$this->log("proc_close completed.");
-			} else {
-				// Game is running, poll its output pipes
-				if ($this->gamePipes) {
-					$read = [$this->gamePipes[1], $this->gamePipes[2]];
-					$write = null;
-					$except = null;
-					if (@stream_select($read, $write, $except, 0, 0)) {
-						foreach ($read as $pipe) {
-							$isError = ($pipe === $this->gamePipes[2]);
-							while ($out = fread($pipe, 8192)) {
-								foreach (explode("\n", $out) as $line) {
-									$line = trim($line);
-									if ($line) {
-										$this->log(
-											($isError ? "[Game/Stderr] " : "[Game/Stdout] ") . $line,
-											$isError ? "WARN" : "INFO"
-										);
-									}
-								}
-								if (strlen($out) < 8192) break;
-							}
-						}
-					}
-				}
-			}
-		}
-
 		// Handle Modrinth search debouncing
 		if (
 			$this->modSearchDebounceTimer > 0 &&
@@ -4896,6 +4844,22 @@ class FoxyClient
 		) {
 			$this->modPageDebounceTimer = 0;
 			$this->searchModrinth($this->modSearchQuery, $this->modPageTarget);
+		}
+
+		if (
+			!$this->process &&
+			!$this->assetProcess &&
+			!$this->vManifestProcess &&
+			!$this->gameProcess &&
+			!$this->isStoppingOverlay &&
+			!$this->modrinthProcess &&
+			!$this->compatProcess &&
+			$this->iconDownloadProcess === null &&
+			empty($this->modDownloadRuntimes) &&
+			$this->modpackInstallProcess === null &&
+			$this->assetMessage !== "GAME RUNNING"
+		) {
+			return;
 		}
 
 		// Cleanup completed Futures to free memory (check every frame, very cheap)
@@ -4945,24 +4909,65 @@ class FoxyClient
 					$this->iconDownloadChannel &&
 					(string) $event->source ===
 						(string) $this->iconDownloadChannel;
-				$isModDownload =
-					$this->modDownloadChannel &&
-					(string) $event->source ===
-						(string) $this->modDownloadChannel;
+				$isModDownload = isset($this->channelToModId[(string)$event->source]);
 				$isModpackInstall =
 					$this->modpackInstallChannel &&
-					(string) $event->source ===
-						(string) $this->modpackInstallChannel;
+					(string) $event->source === (string) $this->modpackInstallChannel;
 				$isModrinth =
 					$this->modrinthChannel &&
 					(string) $event->source === (string) $this->modrinthChannel;
 				$isUpdate =
 					$this->updateChannel &&
 					(string) $event->source === (string) $this->updateChannel;
+				$isFoxyUpdate =
+					$this->foxyUpdateChannel &&
+					(string) $event->source === (string) $this->foxyUpdateChannel;
 				$isHttp =
 					$this->httpResultChannel &&
 					(string) $event->source === (string) $this->httpResultChannel;
+				$isGameProcess = 
+					$this->gameChannel && 
+					(string) $event->source === (string) $this->gameChannel;
 
+				if ($isGameProcess) {
+					$this->pollEvents->addChannel($this->gameChannel);
+					if (isset($data["type"])) {
+						if ($data["type"] === "pid") {
+							$this->gamePid = (int)$data["pid"];
+							$this->log("Game process launched natively in thread (PID: {$this->gamePid}). Watching pipes.");
+							
+							// Auto-hide launcher
+							$this->user32->ShowWindow($this->hwnd, 0); // SW_HIDE
+							
+							if ($this->settings["overlay_cpu"] || $this->settings["overlay_gpu"] || $this->settings["overlay_ram"] || $this->settings["overlay_vram"]) {
+								$this->startOverlayThread($this->gamePid);
+							}
+						} elseif ($data["type"] === "log") {
+							$this->log(($data["isError"] ? "[Game/Stderr] " : "[Game/Stdout] ") . $data["msg"], $data["isError"] ? "WARN" : "INFO");
+						} elseif ($data["type"] === "error") {
+							$this->log("Failed to start game process.", "ERROR");
+							$this->assetMessage = "FAILED TO START";
+						} elseif ($data["type"] === "exit") {
+							$this->log("Game process detected as STOPPED. Exit code: " . $data["code"]);
+							
+							// Auto-unhide launcher
+							$this->user32->ShowWindow($this->hwnd, 5); // SW_SHOW
+							
+							$this->gameProcess = null;
+							$this->gameChannel = null;
+							$this->assetMessage = "GAME CLOSED";
+							$this->stopOverlayThread();
+							$this->updateDiscordPresence();
+						}
+					}
+				}
+
+				if ($isModDownload) {
+					$projectId = $this->channelToModId[(string)$event->source] ?? null;
+					if ($projectId && isset($this->modDownloadChannels[$projectId])) {
+						$this->pollEvents->addChannel($this->modDownloadChannels[$projectId]);
+					}
+				}
 				if ($isMod) {
 					$this->pollEvents->addChannel($this->modChannel);
 				}
@@ -4983,24 +4988,36 @@ class FoxyClient
 				if ($isUpdate) {
 					$this->pollEvents->addChannel($this->updateChannel);
 				}
+				if ($isFoxyUpdate) {
+					$this->pollEvents->addChannel($this->foxyUpdateChannel);
+				}
 				if ($isCompat) {
 					$this->pollEvents->addChannel($this->compatChannel);
 				}
 				if ($isHttp) {
 					$this->pollEvents->addChannel($this->httpResultChannel);
 				}
+				if ($isFoxyUpdate && $val !== null) {
+					$this->foxyModLatestVersion = (string)$val;
+					$this->updateFoxyUpdateFlag();
+					$this->foxyUpdateProcess = null;
+					$this->foxyUpdateChannel = null;
+				}
 				if ($isIcon) {
 					$this->pollEvents->addChannel($this->iconDownloadChannel);
 				}
-				if ($isModDownload) {
-					$this->pollEvents->addChannel($this->modDownloadChannel);
-				}
+
 				if ($isModpackInstall) {
 					$this->pollEvents->addChannel($this->modpackInstallChannel);
 				}
 
 				if ($data) {
-					if ($isUpdate && isset($data["type"])) {
+					if ($isFoxyUpdate) {
+						$this->foxyModLatestVersion = (string)$val;
+						$this->updateFoxyUpdateFlag();
+						$this->foxyUpdateProcess = null;
+						$this->foxyUpdateChannel = null;
+					} elseif ($isUpdate && isset($data["type"])) {
 						if ($data["type"] === "ca_update_progress") {
 							$this->caUpdateProgress = (float) $data["pct"];
 						} elseif ($data["type"] === "ca_update_res") {
@@ -5355,26 +5372,35 @@ class FoxyClient
 					}
 
 					if ($isModDownload && isset($data["type"])) {
-						if ($data["type"] === "progress") {
-							$this->log("[Downloader] " . $data["message"]);
-						} elseif ($data["type"] === "success") {
-							$this->log(
-								"[Downloader] " . $data["message"],
-								"SUCCESS",
-							);
-							$this->isDownloadingModrinth = false;
-							$this->modDownloadProcess = null;
-							$this->modDownloadChannel = null;
-							$this->checkLocalMods(); // Refresh statuses
-						} elseif ($data["type"] === "error") {
-							$this->log(
-								"[Downloader] Error: " . $data["message"],
-								"ERROR",
-							);
-							$this->modrinthError = $data["message"];
-							$this->isDownloadingModrinth = false;
-							$this->modDownloadProcess = null;
-							$this->modDownloadChannel = null;
+						$projIdMsg = $this->channelToModId[(string)$event->source] ?? null;
+						if ($projIdMsg) {
+							if ($data["type"] === "progress") {
+								$this->log("[$projIdMsg] " . $data["message"]);
+							} elseif ($data["type"] === "progress_pct") {
+								$this->modDownloadProgresses[$projIdMsg] = (float)$data["pct"];
+							} elseif ($data["type"] === "success") {
+								$this->log(
+									"[$projIdMsg] " . $data["message"],
+									"SUCCESS",
+								);
+								unset($this->modDownloadProgresses[$projIdMsg]);
+								unset($this->modDownloadChannels[$projIdMsg]);
+								unset($this->modDownloadRuntimes[$projIdMsg]);
+								unset($this->modDownloadFutures[$projIdMsg]);
+								unset($this->channelToModId[(string)$event->source]);
+								$this->checkLocalMods(); // Refresh statuses
+							} elseif ($data["type"] === "error") {
+								$this->log(
+									"[$projIdMsg] Error: " . $data["message"],
+									"ERROR",
+								);
+								$this->modrinthError = $data["message"];
+								unset($this->modDownloadProgresses[$projIdMsg]);
+								unset($this->modDownloadChannels[$projIdMsg]);
+								unset($this->modDownloadRuntimes[$projIdMsg]);
+								unset($this->modDownloadFutures[$projIdMsg]);
+								unset($this->channelToModId[(string)$event->source]);
+							}
 						}
 					}
 
@@ -7211,8 +7237,8 @@ class FoxyClient
 	private function terminateGame()
 	{
 		if ($this->gamePid) {
-			$this->log("Terminating Minecraft process (PID: {$this->gamePid})...");
-			shell_exec("taskkill /F /PID {$this->gamePid}");
+			$this->log("Terminating Minecraft process tree (PID: {$this->gamePid})...");
+			shell_exec("taskkill /F /T /PID {$this->gamePid}");
 			$this->gamePid = null;
 			$this->assetMessage = "GAME TERMINATED";
 			$this->updateDiscordPresence();
@@ -7822,9 +7848,29 @@ class FoxyClient
 		try {
 			$msg = $this->user32->new("MSG");
 			while ($this->running) {
+				// --- GPU Resource Saving: Detect state ---
+				$isFocused = ($this->user32->GetForegroundWindow() == $this->hwnd);
+				$isMinimized = $this->user32->IsIconic($this->hwnd);
+				$isHovered = $this->mouseX >= 0 && $this->mouseX <= $this->width && $this->mouseY >= 0 && $this->mouseY <= $this->height;
+				$isVisible = $this->user32->IsWindowVisible($this->hwnd);
+				$isGameRunning = $this->gameProcess !== null;
+
+				// Throttling decision: Cap FPS if unfocused/not hovered/minimized OR if game is running
+				$shouldThrottle = (!$isFocused && !$isHovered) || $isMinimized || ($isGameRunning && $isVisible);
+
+				// --- No-Rendering: Skip everything if game is running and launcher is hidden ---
+				if ($isGameRunning && !$isVisible) {
+					// Sleep longer (200ms = 5Hz) for extremely low CPU/GPU usage
+					usleep(200000); 
+					$this->pollProcess();
+					$this->pollOAuthServer();
+					continue;
+				}
+
 				// --- Idle detection: block on messages when nothing to do (0% CPU) ---
 				if ($this->isIdle) {
-					$this->user32->WaitMessage(); // Blocks thread until a message arrives
+					$timeout = $shouldThrottle ? 100 : 0;
+					$this->user32->WaitMessage();
 					$this->needsRedraw = true;
 					$this->isIdle = false;
 				}
@@ -7836,6 +7882,7 @@ class FoxyClient
 					$this->user32->DispatchMessageA(FFI::addr($msg));
 				}
 
+				// --- Fast polling: runs every iteration (~2000x/sec) ---
 				$this->pollProcess();
 				$this->pollOAuthServer();
 
@@ -7845,7 +7892,16 @@ class FoxyClient
 					continue;
 				}
 
+				// --- Throttling: Skip render frames if unfocused to save GPU ---
+				if ($shouldThrottle) {
+					// Cap to ~15 FPS unfocused, or ~5 FPS if game is running (and visible)
+					$throttleSleep = ($isGameRunning && $isVisible) ? 200000 : 66000;
+					usleep($throttleSleep);
+				}
+
+				// --- Rendering: matches screen refresh rate via VSync ---
 				$now = microtime(true);
+				$lastRenderTime = $now;
 
 				// Smooth scroll interpolation
 				$diff = $this->scrollTarget - $this->scrollOffset;
@@ -8031,6 +8087,14 @@ class FoxyClient
 				$this->render();
 				$this->gdi32->SwapBuffers($this->hdc);
 
+				// Fallback VSync for windowed mode: DwmFlush blocks until next V-Blank
+				if ($this->dwmapi) {
+					try {
+						$this->dwmapi->DwmFlush();
+					} catch (\Throwable $e) {
+					}
+				}
+
 				// Lifecycle / Redraw Logic
 				$animating = false;
 				$animating =
@@ -8126,11 +8190,6 @@ class FoxyClient
 					$this->needsRedraw = true;
 				} else {
 					$this->needsRedraw = false;
-				}
-
-				$frameTime = microtime(true) - $now;
-				if ($frameTime < 0.006) {
-					usleep((int) ((0.006 - $frameTime) * 1000000));
 				}
 			}
 		} catch (\Throwable $e) {
@@ -8487,23 +8546,84 @@ class FoxyClient
 		}
 	}
 
+	private function checkFoxyModStatus($forceRemote = false)
+	{
+		$gameDir = $this->getAbsolutePath($this->settings["game_dir"]);
+		$modsDir = $gameDir . DIRECTORY_SEPARATOR . "mods";
+		$this->foxyModLocalVersion = null;
+
+		if (is_dir($modsDir)) {
+			foreach (scandir($modsDir) as $file) {
+				if (preg_match('/^foxyclient-(.+)\.jar$/i', $file, $matches)) {
+					$this->foxyModLocalVersion = $matches[1];
+					break;
+				}
+			}
+		}
+
+		$now = time();
+		if (($forceRemote || ($now - $this->lastFoxyUpdateCheck > 3600)) && !$this->foxyUpdateProcess) {
+			$this->lastFoxyUpdateCheck = $now;
+			$this->foxyUpdateChannel = new \parallel\Channel(1);
+			$this->foxyUpdateProcess = new \parallel\Runtime();
+			$cacert = $this->getAbsolutePath(self::CACERT);
+
+			try {
+				$this->foxyUpdateFuture = $this->foxyUpdateProcess->run(static function($ch, $cacert) {
+					try {
+						$url = "https://api.github.com/repos/Minosuko/FoxyClientMod/releases/latest";
+						$ch_curl = curl_init($url);
+						curl_setopt($ch_curl, CURLOPT_RETURNTRANSFER, true);
+						curl_setopt($ch_curl, CURLOPT_USERAGENT, "FoxyClient");
+						curl_setopt($ch_curl, CURLOPT_TIMEOUT, 10);
+						if (file_exists($cacert)) curl_setopt($ch_curl, CURLOPT_CAINFO, $cacert);
+						$resp = curl_exec($ch_curl);
+						curl_close($ch_curl);
+						if ($resp) {
+							$data = json_decode($resp, true);
+							if ($data && isset($data["tag_name"])) {
+								$ch->send((string)$data["tag_name"]);
+								return;
+							}
+						}
+					} catch (\Throwable $e) {}
+					$ch->send("");
+				}, [$this->foxyUpdateChannel, $cacert]);
+				$this->pollEvents->addChannel($this->foxyUpdateChannel);
+			} catch (\Throwable $e) { $this->foxyUpdateProcess = null; }
+		} else { $this->updateFoxyUpdateFlag(); }
+	}
+
+	private function updateFoxyUpdateFlag()
+	{
+		if ($this->foxyModLocalVersion && $this->foxyModLatestVersion && $this->foxyModLatestVersion !== "") {
+			$latest = ltrim($this->foxyModLatestVersion, "vV");
+			$local = ltrim($this->foxyModLocalVersion, "vV");
+			$this->foxyModUpdateAvailable = (version_compare($latest, $local) > 0);
+		} else { $this->foxyModUpdateAvailable = false; }
+		$this->needsRedraw = true;
+	}
+
 	private function handleFoxyClientSettingsClick($cx, $cy)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 
-		// Install FoxyClientMod button
+		// Buttons at Top Right
 		$installBtnW = 180;
 		$installBtnX = $cw - self::PAD - $installBtnW;
+		
+		$updateBtnW = 180;
+		$updateBtnX = $installBtnX - self::PAD - $updateBtnW;
+
+		// Install FoxyClientMod button
 		if ($cx >= $installBtnX && $cx <= $installBtnX + $installBtnW && $cy >= 10 && $cy <= 42) {
 			$this->installFoxyClientMod();
 			return;
 		}
 
-		// Update button (Modpack tab)
+		// Update button (only on Modpack subtab index 0)
 		if ($this->foxySubTab === 0) {
-			$btnW = 140;
-			$btnX = $cw - self::PAD - $btnW;
-			if ($cx >= $btnX && $cx <= $btnX + $btnW && $cy >= 50 && $cy <= 82) {
+			if ($cx >= $updateBtnX && $cx <= $updateBtnX + $updateBtnW && $cy >= 10 && $cy <= 42) {
 				$this->startUpdate();
 				return;
 			}
@@ -8521,9 +8641,11 @@ class FoxyClient
 						$this->scrollTarget = 0;
 						$this->hoverModIndex = -1;
 						$this->foxyKeybindListenMode = false;
-						$this->foxyKeybindEditIdx = -1;
-						return;
+						
+						// Trigger mod status check when entering Foxy tab
+						$this->checkFoxyModStatus();
 					}
+					return;
 				}
 				$tabX += $tw + 8;
 			}
@@ -9792,13 +9914,12 @@ class FoxyClient
 				);
 			} else {
 				if ($isHover) {
-					$isLight = ($this->settings["theme"] ?? "dark") === "light";
 					$this->drawRect(
 						$tabX,
 						$y,
 						$tw,
 						self::TAB_H,
-						$isLight ? [0.85, 0.88, 0.92] : [0.12, 0.12, 0.14],
+						$this->colors["subtab"],
 					);
 				}
 				$this->renderText(
@@ -10267,8 +10388,7 @@ class FoxyClient
 			if (
 				$this->isLoggedIn &&
 				!$this->isLaunching &&
-				$this->assetMessage !== "GAME RUNNING" && 
-				$this->assetMessage !== "WAITING FOR WINDOW..."
+				$this->assetMessage !== "GAME RUNNING" 
 			) {
 				$jarPath =
 					$this->settings["game_dir"] .
@@ -10534,7 +10654,7 @@ class FoxyClient
 		$canLaunch = $this->isLoggedIn;
 		$btnStyle = $canLaunch ? "success" : "secondary";
 		
-		if ($this->assetMessage === "GAME RUNNING" || $this->assetMessage === "WAITING FOR WINDOW...") {
+		if ($this->assetMessage === "GAME RUNNING") {
 			$btnStyle = "danger";
 		} elseif ($this->isDownloadingAssets) {
 			$btnStyle = "success";
@@ -10543,8 +10663,8 @@ class FoxyClient
 		$isHover = $this->homeHoverIdx === 2 && $canLaunch;
 
 		$lText = "LAUNCH";
-		if ($this->assetMessage === "GAME RUNNING" || $this->assetMessage === "WAITING FOR WINDOW...") {
-			$lText = $this->assetMessage === "GAME RUNNING" ? "GAME RUNNING" : "STARTING...";
+		if ($this->assetMessage === "GAME RUNNING") {
+			$lText = "GAME RUNNING";
 		} elseif ($this->isDownloadingAssets) {
 			$lText = "DOWNLOADING...";
 		} elseif ($this->isLaunching) {
@@ -10716,7 +10836,6 @@ class FoxyClient
 	private function renderFoxyClientPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
 		$gl = $this->opengl32;
 
 		$descs = [
@@ -10730,38 +10849,53 @@ class FoxyClient
 		$desc = $descs[$this->foxySubTab] ?? $descs[0];
 		$this->drawPageHeader("FOXYCLIENT CONFIGURATION", $desc);
 
-		// Install FoxyClientMod button (top right)
+		// Buttons at Top Right
 		$installBtnW = 180;
 		$installBtnH = 32;
 		$installBtnX = $cw - self::PAD - $installBtnW;
 		$installBtnY = 10;
+
+		$updateBtnW = 180;
+		$updateBtnH = 32;
+		$updateBtnX = $installBtnX - self::PAD - $updateBtnW;
+		$updateBtnY = 10;
+
+		// Click registration for Install button
 		$this->foxyInstallBtnHover =
 			$this->mouseX >= self::SIDEBAR_W + $installBtnX &&
 			$this->mouseX <= self::SIDEBAR_W + $installBtnX + $installBtnW &&
 			$this->mouseY >= self::TITLEBAR_H + $installBtnY &&
 			$this->mouseY <= self::TITLEBAR_H + $installBtnY + $installBtnH;
 
+		// Click registration for Update button
+		$this->foxyUpdateBtnHover =
+			$this->mouseX >= self::SIDEBAR_W + $updateBtnX &&
+			$this->mouseX <= self::SIDEBAR_W + $updateBtnX + $updateBtnW &&
+			$this->mouseY >= self::TITLEBAR_H + $updateBtnY &&
+			$this->mouseY <= self::TITLEBAR_H + $updateBtnY + $updateBtnH;
+
+		// Main Action Button (Install/Installed/Update)
+		$statusLabel = "INSTALL FOXYCLIENT MOD";
+		$statusStyle = "success";
+		
 		if ($this->isInstallingFoxyMod) {
-			$this->drawStyledButton($installBtnX, $installBtnY, $installBtnW, $installBtnH,
-				$this->foxyInstallProgress, false, "secondary");
-		} else {
-			$this->drawStyledButton($installBtnX, $installBtnY, $installBtnW, $installBtnH,
-				"INSTALL FOXYCLIENT MOD", $this->foxyInstallBtnHover, "success");
+			$statusLabel = $this->foxyInstallProgress;
+			$statusStyle = "secondary";
+		} elseif ($this->foxyModUpdateAvailable) {
+			$statusLabel = "UPDATE FOXYCLIENT MOD";
+			$statusStyle = "warning";
+		} elseif ($this->foxyModLocalVersion !== null) {
+			$statusLabel = "FOXYCLIENT MOD INSTALLED";
+			$statusStyle = "secondary";
 		}
 
-		// Update Mods button (below install)
+		$this->drawStyledButton($installBtnX, $installBtnY, $installBtnW, $installBtnH,
+			strtoupper($statusLabel), $this->foxyInstallBtnHover, $statusStyle);
+
+		// Update Mods button (side of install action)
 		if ($this->foxySubTab === 0) {
-			$btnW = 140;
-			$btnH = 32;
-			$btnX = $cw - self::PAD - $btnW;
-			$btnY = 50;
-			$this->buttonHover =
-				$this->mouseX >= self::SIDEBAR_W + $btnX &&
-				$this->mouseX <= self::SIDEBAR_W + $btnX + $btnW &&
-				$this->mouseY >= self::TITLEBAR_H + $btnY &&
-				$this->mouseY <= self::TITLEBAR_H + $btnY + $btnH;
-			$this->drawStyledButton($btnX, $btnY, $btnW, $btnH,
-				"UPDATE MODS", $this->buttonHover);
+			$this->drawStyledButton($updateBtnX, $updateBtnY, $updateBtnW, $updateBtnH,
+				"UPDATE MODS", $this->foxyUpdateBtnHover);
 		}
 
 		// Sub-tabs: 6 tabs
@@ -11091,7 +11225,7 @@ class FoxyClient
 				$isHover = $this->foxyConfigHoverIdx === $idx;
 
 				// Card background
-				$bg = $isHover ? [0.15, 0.15, 0.17, 1.0] : $this->colors["card"];
+				$bg = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
 				$this->drawRect($ix, $iyCard, $colW, $itemH, $bg);
 				
 				// Left accent
@@ -11821,30 +11955,17 @@ class FoxyClient
 					if (!is_dir($modsDir)) {
 						mkdir($modsDir, 0777, true);
 					}
-					$ch->send("Fetching latest release...");
 
-					// Find JAR files matching foxyclient pattern in build output
-					$buildDir = "FoxyClientMods" . DIRECTORY_SEPARATOR . "build" .
-						DIRECTORY_SEPARATOR . "libs";
-					if (is_dir($buildDir)) {
-						$files = scandir($buildDir);
-						$jarFile = null;
-						foreach ($files as $f) {
-							if (str_ends_with($f, ".jar") && !str_contains($f, "sources")) {
-								$jarFile = $f;
-							}
-						}
-						if ($jarFile) {
-							$src = $buildDir . DIRECTORY_SEPARATOR . $jarFile;
-							$dst = $modsDir . DIRECTORY_SEPARATOR . $jarFile;
-							$ch->send("Copying $jarFile...");
-							copy($src, $dst);
-							$ch->send("DONE:Installed $jarFile");
-							return;
+					// Cleanup old versions
+					foreach (scandir($modsDir) as $file) {
+						if (preg_match('/^foxyclient-.*\.jar$/i', $file)) {
+							@unlink($modsDir . DIRECTORY_SEPARATOR . $file);
 						}
 					}
+					
+					$ch->send("Fetching latest release...");
 
-					// Fallback: try GitHub API
+					// GitHub API
 					$apiUrl = "https://api.github.com/repos/Minosuko/FoxyClientMod/releases/latest";
 					
 					$ch_curl = curl_init($apiUrl);
@@ -11900,7 +12021,24 @@ class FoxyClient
 
 					$dst = $modsDir . DIRECTORY_SEPARATOR . $jarAsset["name"];
 					file_put_contents($dst, $jarData);
-					$ch->send("DONE:Installed " . $jarAsset["name"]);
+					
+					$ch->send("Downloading Baritone...");
+					$baritoneUrl = "http://cdn.foxyclient.qzz.io/baritone-1.21.11.jar";
+					$ch_bari = curl_init($baritoneUrl);
+					curl_setopt($ch_bari, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($ch_bari, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($ch_bari, CURLOPT_USERAGENT, "FoxyClient");
+					curl_setopt($ch_bari, CURLOPT_TIMEOUT, 60);
+					$bariData = curl_exec($ch_bari);
+					$bariHttpCode = curl_getinfo($ch_bari, CURLINFO_HTTP_CODE);
+					curl_close($ch_bari);
+
+					if ($bariData !== false && $bariHttpCode === 200) {
+						file_put_contents($modsDir . DIRECTORY_SEPARATOR . "baritone-1.21.11.jar", $bariData);
+						$ch->send("DONE:Installed " . $jarAsset["name"] . " and Baritone");
+					} else {
+						$ch->send("DONE:Installed " . $jarAsset["name"] . " (Baritone failed)");
+					}
 				} catch (\Throwable $e) {
 					$ch->send("ERROR:" . $e->getMessage());
 				}
@@ -12349,7 +12487,6 @@ class FoxyClient
 	private function renderVersionsPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
 		$gl = $this->opengl32;
 		
 		$this->drawPageHeader("VERSION MANAGER", "Select target Minecraft version");
@@ -12536,7 +12673,7 @@ class FoxyClient
 		$barW = 6;
 
 		// Track
-		$this->drawRect($barX, $y, $barW, $h, [0.08, 0.08, 0.1]);
+		$this->drawRect($barX, $y, $barW, $h, $this->colors["card"]);
 
 		// Thumb
 		$filtered = $this->getFilteredVersions();
@@ -12544,7 +12681,7 @@ class FoxyClient
 		$thumbH = max(20, ($h / $contentH) * $h);
 		$thumbY = $y + ($this->vScrollOffset / $maxScroll) * ($h - $thumbH);
 
-		$this->drawRect($barX, $thumbY, $barW, $thumbH, [0.4, 0.4, 0.45]);
+		$this->drawRect($barX, $thumbY, $barW, $thumbH, $this->colors["scrollbar"]);
 	}
 
 	private function loadVersions()
@@ -12609,10 +12746,30 @@ class FoxyClient
 		$this->pollEvents->addChannel($this->vManifestChannel);
 	}
 
+	private function renderModDetail($mod)
+	{
+		$cw = $this->width - self::SIDEBAR_W;
+		$tc = $this->colors["text"];
+		$td = $this->colors["text_dim"];
+
+		$topY = self::HEADER_H + self::TAB_H;
+		$this->drawRect(self::PAD, $topY + 10, $cw - self::PAD * 2, 200, $this->colors["card"], 8);
+		
+		// Title
+		$this->renderText($mod["name"], self::PAD + 20, $topY + 45, $tc, 2000);
+		
+		// Author
+		$this->renderText("By " . ($mod["author"] ?? "Unknown"), self::PAD + 20, $topY + 70, $td, 3000);
+		
+		// Status Badge
+		$statusColor = ($mod["enabled"] ?? true) ? $this->colors["status_done"] : $this->colors["status_error"];
+		$this->drawRect(self::PAD + 20, $topY + 85, 90, 22, [$statusColor[0], $statusColor[1], $statusColor[2], 0.2], 4);
+		$this->renderText(($mod["enabled"] ?? true) ? "ENABLED" : "DISABLED", self::PAD + 28, $topY + 102, $statusColor, 3000);
+	}
+
 	private function renderAccountsPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
 		$gl = $this->opengl32;
 
 		$this->drawPageHeader("ACCOUNT MANAGER", "Manage your Minecraft profiles");
@@ -12697,8 +12854,8 @@ class FoxyClient
 			$thumbH = max(30, ($listH / $contentH) * $listH);
 			$scrollRatio = $this->accScrollOffset / max(1, $contentH - $listH);
 			$thumbY = $listTop + ($listH - $thumbH) * $scrollRatio;
-			$this->drawRect($cw - 6, $listTop, 6, $listH, $this->colors["bg"]);
-			$this->drawRect($cw - 5, $thumbY, 4, $thumbH, $this->colors["tab_active"]);
+			$this->drawRect($cw - 6, $listTop, 6, $listH, $this->colors["card"]);
+			$this->drawRect($cw - 5, $thumbY, 4, $thumbH, $this->colors["scrollbar"]);
 		}
 	}
 
@@ -12819,7 +12976,7 @@ class FoxyClient
 		$maxScroll = 400; // Increased for more rows
 		if ($this->propScrollTarget > 0 || $this->propScrollOffset > 0) {
 			$barX = $cw - 6;
-			$this->drawRect($barX, $contentTop, 4, $clipH, [0.1, 0.1, 0.12]);
+			$this->drawRect($barX, $contentTop, 4, $clipH, $this->colors["card"]);
 			$size = max(20, $clipH * ($clipH / ($maxScroll + $clipH)));
 			$pos = ($clipH - $size) * ($this->propScrollOffset / $maxScroll);
 			$this->drawRect(
@@ -12827,7 +12984,7 @@ class FoxyClient
 				$contentTop + $pos,
 				4,
 				$size,
-				$this->colors["text_dim"],
+				$this->colors["scrollbar"],
 			);
 		}
 	}
@@ -13305,24 +13462,19 @@ class FoxyClient
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 
-		// Gradient header (Modern Glassy Look)
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
-		if ($isLight) {
-			$c1 = $this->bgTex ? [0.94, 0.95, 0.98, 0.8] : [0.94, 0.95, 0.98];
-			$c2 = $this->bgTex ? [0.9, 0.92, 0.95, 0.6] : [0.9, 0.92, 0.95];
-		} else {
-			$c1 = $this->bgTex ? [0.06, 0.06, 0.08, 0.8] : [0.06, 0.06, 0.08];
-			$c2 = $this->bgTex ? [0.03, 0.03, 0.04, 0.6] : [0.03, 0.03, 0.04];
+		// Gradient header (Themed Glassy Look)
+		$c1 = $this->colors["header_bg"];
+		$c2 = $this->colors["bg"];
+		
+		// If using background texture, add transparency
+		if ($this->bgTex) {
+			$c1 = [$c1[0], $c1[1], $c1[2], 0.8];
+			$c2 = [$c2[0], $c2[1], $c2[2], 0.6];
 		}
+
 		$this->drawGradientRect(0, 0, $cw, self::HEADER_H, $c1, $c2);
 		$this->drawRect(0, 0, $cw, 2, $this->colors["primary"]); // Subtle top accent
-		$this->drawRect(
-			0,
-			self::HEADER_H - 1,
-			$cw,
-			1,
-			$this->colors["divider"],
-		); // Bottom divider
+		$this->drawRect(0, self::HEADER_H - 1, $cw, 1, $this->colors["divider"]); // Bottom divider
 
 		$this->renderText(
 			"MODPACKS BROWSER",
@@ -13386,7 +13538,7 @@ class FoxyClient
 						($key === "env" && $this->modsFilterEnv !== "");
 
 			// Pill background
-			$bg = $isOpen ? $this->colors["primary"] : ($isActive ? [0.2, 0.6, 1.0, 0.3] : $this->colors["card"]);
+			$bg = $isOpen ? $this->colors["primary"] : ($isActive ? $this->colors["pill_active"] : $this->colors["pill_bg"]);
 			$this->drawRect($pillX, $pillY, $tw, $pillH, $bg, $pillR);
 
 			// Pill text
@@ -13431,15 +13583,25 @@ class FoxyClient
 			$this->renderModList();
 		}
 
-		// Install progress overlay below tabs (Moved to front/Z-index fix)
-		if (($this->modpackSubTab === 1 || $this->modpackSubTab === 2) && ($this->isInstallingModpack || $this->modpackInstallProgress !== "")) {
+		// Install progress overlay (Always show if installing a modpack)
+		if ($this->isInstallingModpack || (isset($this->modpackInstallProgress) && $this->modpackInstallProgress !== "")) {
 			$progY = self::HEADER_H + self::TAB_H;
 			$isDone = !$this->isInstallingModpack && !str_starts_with($this->modpackInstallProgress, "Error");
 			$isErr = str_starts_with($this->modpackInstallProgress, "Error");
 			
-			$progBg = $isLight ? [0.94, 0.95, 0.98, 0.95] : [0.08, 0.09, 0.12, 0.95];
-			$this->drawRect(self::PAD, $progY + 5, $cw - self::PAD * 2, 34, $progBg, 4);
+			$this->drawRect(self::PAD, $progY + 5, $cw - self::PAD * 2, 34, $this->colors["overlay_bg"], 4);
 			
+			// Show actual progress bar if parsing succeeds
+			if ($this->isInstallingModpack && preg_match('/\[(\d+)\/(\d+)\]/', $this->modpackInstallProgress, $matches)) {
+				$done = (int)$matches[1];
+				$total = (int)$matches[2];
+				if ($total > 0) {
+					$pct = $done / $total;
+					$barW = ($cw - self::PAD * 2) * $pct;
+					$this->drawRect(self::PAD, $progY + 5, $barW, 34, $this->colors["primary"], 4);
+				}
+			}
+
 			$statusColor = $this->isInstallingModpack ? $this->colors["status_update"] : ($isErr ? $this->colors["status_error"] : $this->colors["status_done"]);
 			$this->drawRect(self::PAD, $progY + 5, 3, 34, $statusColor);
 			
@@ -13452,7 +13614,7 @@ class FoxyClient
 			);
 
 			if ($isDone) {
-				$this->renderText("✓", $cw - self::PAD - 25, $progY + 28, $this->colors["status_done"], 1000);
+				$this->renderText("CHECK", $cw - self::PAD - 25, $progY + 28, $this->colors["status_done"], 1000);
 			}
 		}
 
@@ -13549,7 +13711,7 @@ class FoxyClient
 		);
 
 		// Panel background (Glassy)
-		$this->drawRect($ddX, $ddY, $ddW, $fullH, [0.05, 0.06, 0.08, 0.9], 8);
+		$this->drawRect($ddX, $ddY, $ddW, $fullH, $this->colors["dropdown_bg"], 8);
 		$this->drawRect($ddX, $ddY, $ddW, 1, $this->colors["divider"]);
 
 		// Render items
@@ -13617,7 +13779,7 @@ class FoxyClient
 			$ddW,
 			$ddH,
 		);
-		$this->drawRect($ddX, $ddY, $ddW, $fullDDH, [0.05, 0.06, 0.08, 0.95], 8);
+		$this->drawRect($ddX, $ddY, $ddW, $fullDDH, $this->colors["dropdown_bg"], 8);
 		$this->drawRect($ddX, $ddY, $ddW, 1, $this->colors["divider"]);
 
 		$lx = $ddX + 6;
@@ -13747,17 +13909,18 @@ class FoxyClient
 	private function renderScrollbar($y, $h)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		$maxScroll = $this->getMaxScroll();
-		if ($maxScroll <= 0) {
-			return;
+		
+		// Map scrollTarget to a scrollbar
+		if ($this->maxScroll > 0) {
+			$scrollH = max(30, ($h / ($h + $this->maxScroll)) * $h);
+			$scrollY = $y + ($this->scrollOffset / $this->maxScroll) * ($h - $scrollH);
+			
+			// Background
+			$this->drawRect($cw - 8, $y, 6, $h, $this->colors["card"], 3);
+			
+			// Handle (Themed)
+			$this->drawRect($cw - 7, $scrollY, 4, $scrollH, $this->colors["scrollbar"], 2);
 		}
-
-		$size = max(20, $h * ($h / ($maxScroll + $h)));
-		$pos = ($h - $size) * ($this->scrollOffset / $maxScroll);
-
-		$barX = $cw - 6; // Adjusted for content width
-		$this->drawRect($barX, $y, 4, $h, [0.1, 0.1, 0.12]);
-		$this->drawRect($barX, $y + $pos, 4, $size, $this->colors["text_dim"]);
 	}
 
 	private function drawModCard($mod, $y, $isHover)
@@ -13765,9 +13928,16 @@ class FoxyClient
 		$cw = $this->width - self::SIDEBAR_W;
 		$x = self::PAD;
 		$w = $cw - self::PAD * 2;
+		$h = self::CARD_H;
 
-		// Card background with drawCard
-		$this->drawCard($x, $y, $w, self::CARD_H, $isHover, $mod["checked"]);
+		// Card Background (Themed)
+		$bgColor = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
+		$this->drawRect($x, $y, $w, $h, $bgColor, 6);
+
+		// Left accent bar
+		if ($mod["enabled"] ?? true) {
+			$this->drawRect($x, $y, 4, $h, $this->colors["primary"], 6);
+		}
 
 		// Toggle switch for checked state
 		$cbX = $x + 10;
@@ -13945,12 +14115,12 @@ class FoxyClient
 
 
 
-		// Pagination UI (Outside Scissor)
+		// Pagination UI (Outside Scissor, Fixed Window-Relative)
 		if (
 			$this->currentPage === self::PAGE_MODS &&
 			$this->modrinthTotalHits > 20
 		) {
-			$pgY = $y + $h - 35;
+			$pgY = $usableH - $effectiveFooterH - 45;
 			$pgW = 200;
 			$pgX = ($cw - $pgW) / 2;
 			$totalPages = ceil($this->modrinthTotalHits / 20);
@@ -13965,7 +14135,7 @@ class FoxyClient
 			// Prev Button
 			$prevHover =
 				$this->mouseX >= self::SIDEBAR_W + $pgX &&
-				$this->mouseX <= self::SIDEBAR_W + $pgX + 40 &&
+				$this->mouseX <= self::SIDEBAR_W + $pgX + 60 &&
 				$this->mouseY >= self::TITLEBAR_H + $pgY &&
 				$this->mouseY <= self::TITLEBAR_H + $pgY + 30;
 			$prevCol =
@@ -13974,10 +14144,10 @@ class FoxyClient
 						? $this->colors["primary"]
 						: $this->colors["card_hover"])
 					: $this->colors["tab_bg"];
-			$this->drawRect($pgX, $pgY, 40, 30, $prevCol);
+			$this->drawRect($pgX, $pgY, 60, 30, $prevCol);
 			$this->renderText(
 				"<",
-				$pgX + 13,
+				$pgX + 23,
 				$pgY + 22,
 				$this->colors["text"],
 				1000,
@@ -13988,29 +14158,29 @@ class FoxyClient
 			$tw = $this->getTextWidth($pgText, 1000);
 			$this->renderText(
 				$pgText,
-				$pgX + 40 + ($pgW - 80 - $tw) / 2,
+				$pgX + 60 + ($pgW - 120 - $tw) / 2,
 				$pgY + 22,
-				$this->colors["text_dim"],
+				$this->colors["text"],
 				1000,
 			);
 
 			// Next Button
-			$nextX = $pgX + $pgW - 40;
+			$nextX = $pgX + $pgW - 60;
 			$nextHover =
 				$this->mouseX >= self::SIDEBAR_W + $nextX &&
-				$this->mouseX <= self::SIDEBAR_W + $nextX + 40 &&
+				$this->mouseX <= self::SIDEBAR_W + $nextX + 60 &&
 				$this->mouseY >= self::TITLEBAR_H + $pgY &&
 				$this->mouseY <= self::TITLEBAR_H + $pgY + 30;
-			$hasNext = $curPage < $totalPages;
-			$nextCol = $hasNext
-				? ($nextHover
-					? $this->colors["primary"]
-					: $this->colors["card_hover"])
-				: $this->colors["tab_bg"];
-			$this->drawRect($nextX, $pgY, 40, 30, $nextCol);
+			$nextCol =
+				$curPage < $totalPages
+					? ($nextHover
+						? $this->colors["primary"]
+						: $this->colors["card_hover"])
+					: $this->colors["tab_bg"];
+			$this->drawRect($nextX, $pgY, 60, 30, $nextCol);
 			$this->renderText(
 				">",
-				$nextX + 17,
+				$nextX + 23,
 				$pgY + 22,
 				$this->colors["text"],
 				1000,
@@ -14108,7 +14278,7 @@ class FoxyClient
 							$this->mouseY >= $btnY2 + self::TITLEBAR_H && $this->mouseY <= $btnY2 + self::TITLEBAR_H + $btnH;
 
 				$isDelHover = $this->mouseX >= $btnX + self::SIDEBAR_W && $this->mouseX <= $btnX + self::SIDEBAR_W + $btnW &&
-							  $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= self::TITLEBAR_H + $btnY2 + $btnH;
+							  $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= $btnY2 + self::TITLEBAR_H + $btnH;
 
 				$this->drawStyledButton($pBtnX, $btnY2, $pBtnW, $btnH, "PLAY", $isPHover, "success");
 				$this->drawStyledButton($btnX, $btnY2, $btnW, $btnH, "UNINSTALL", $isDelHover, "danger");
@@ -14270,55 +14440,14 @@ class FoxyClient
 
 	private function handleFooterClick($cx, $cy)
 	{
+		// Only consume clicks if the footer is actually visible
+		if (!$this->getFooterVisibility()) {
+			return false;
+		}
+
 		$usableH = $this->height - self::TITLEBAR_H;
 		$fy = $usableH - self::FOOTER_H;
 		if ($cy < $fy) {
-			return false;
-		}
-
-		$totalQueued = 0;
-		$isUpdating = false;
-		foreach ($this->tabs as $tab) {
-			foreach ($tab["mods"] as $mod) {
-				if (
-					in_array($mod["status"], [
-						"queued",
-						"updating",
-						"downloading",
-						"done",
-						"ok",
-						"skip",
-						"error",
-						"failed",
-					])
-				) {
-					$totalQueued++;
-					if (
-						!in_array($mod["status"], [
-							"done",
-							"ok",
-							"skip",
-							"error",
-							"failed",
-						])
-					) {
-						$isUpdating = true;
-					}
-				}
-			}
-		}
-
-		if (
-			!($isUpdating && $totalQueued > 0) &&
-			$this->currentPage !== self::PAGE_MODS
-		) {
-			return false;
-		}
-
-		$isFabric =
-			$this->selectedVersion &&
-			stripos($this->selectedVersion, "fabric") !== false;
-		if (!$isFabric && !($isUpdating && $totalQueued > 0)) {
 			return false;
 		}
 
@@ -15584,67 +15713,27 @@ class FoxyClient
 
 	private function cleanup()
 	{
-		$this->stopOverlayThread(true); // Wait for thread on exit
+		// 1. Absolute Priority: Nuclear Exit (Unblockable OS-level Termination)
+		if ($this->kernel32) {
+			try {
+				fwrite(STDOUT, "[" . date("Y-m-d H:i:s") . "] [INFO] FoxyClient: Ultimate Force Exit triggered.\n");
+				$this->kernel32->TerminateProcess($this->kernel32->GetCurrentProcess(), 0);
+			} catch (\Throwable $e) {}
+		}
 
-		// Send shutdown signals to all active background tasks
-		$processes = [
-			[$this->process, $this->modChannel ?? null],
-			[$this->assetProcess, $this->assetChannel ?? null],
-			[$this->vManifestProcess, $this->vManifestChannel ?? null],
-			[$this->modpackInstallProcess, $this->modpackInstallChannel ?? null],
-			[$this->modDownloadProcess, $this->modDownloadChannel ?? null],
-			[$this->modrinthProcess, $this->modrinthChannel ?? null],
-			[$this->iconDownloadProcess, $this->iconDownloadChannel ?? null],
-			[$this->compatProcess, $this->compatChannel ?? null],
-			[$this->foxyModInstallProcess, $this->foxyModInstallChannel ?? null],
-			[$this->httpWorkerProcess, $this->httpQueueChannel ?? null],
-		];
-
-		foreach ($processes as $pair) {
-			[$proc, $ch] = $pair;
-			if ($proc && $ch) {
-				try {
-					if ($ch === $this->httpQueueChannel) {
-						$ch->send(null); // Special shutdown for HTTP worker
-					} else {
-						$ch->send("shutdown");
-					}
-				} catch (\Throwable $e) {}
+		// 2. Failsafe: Standard cleanup (only runs if TerminateProcess somehow fails)
+		try {
+			if ($this->discord) @$this->discord->close();
+			if ($this->gdiplusToken !== null) @$this->gdiplus->GdiplusShutdown($this->gdiplusToken);
+			@$this->opengl32->wglMakeCurrent(null, null);
+			if ($this->hglrc) @$this->opengl32->wglDeleteContext($this->hglrc);
+			if ($this->hwnd) {
+				@$this->user32->ReleaseDC($this->hwnd, $this->hdc);
+				@$this->user32->DestroyWindow($this->hwnd);
 			}
-		}
+		} catch (\Throwable $e) {}
 
-		// Brief wait for threads to see signals
-		usleep(50000);
-
-		// Nulling runtimes will trigger blocking destructors
-		$this->process = null;
-		$this->assetProcess = null;
-		$this->vManifestProcess = null;
-		$this->modpackInstallProcess = null;
-		$this->modDownloadProcess = null;
-		$this->modrinthProcess = null;
-		$this->iconDownloadProcess = null;
-		$this->compatProcess = null;
-		$this->foxyModInstallProcess = null;
-		$this->httpWorkerProcess = null;
-		$this->httpQueueChannel = null;
-		$this->httpResultChannel = null;
-
-		if ($this->gdiplusToken !== null) {
-			$this->gdiplus->GdiplusShutdown($this->gdiplusToken);
-		}
-		$this->opengl32->wglMakeCurrent(null, null);
-		$this->opengl32->wglDeleteContext($this->hglrc);
-		$this->user32->ReleaseDC($this->hwnd, $this->hdc);
-		$this->user32->DestroyWindow($this->hwnd);
-		$this->gdi32->RemoveFontResourceExA(
-			self::DATA_DIR . "/fonts/OpenSans-Regular.ttf",
-			0x10,
-			null,
-		);
-		if ($this->discord) {
-			$this->discord->close();
-		}
+		exit(0);
 	}
 
 	private function purgeIconCache($currentPage = -1)
@@ -15711,7 +15800,7 @@ class FoxyClient
 		return $this->isSearchingModrinth ||
 			$this->modrinthChannel !== null ||
 			$this->iconDownloadChannel !== null ||
-			$this->modDownloadChannel !== null ||
+			!empty($this->modDownloadChannels) ||
 			$this->vManifestChannel !== null ||
 			$this->assetChannel !== null ||
 			$this->compatChannel !== null ||
@@ -15721,14 +15810,13 @@ class FoxyClient
 			$this->isCheckingCompat ||
 			$this->modSearchDebounceTimer > 0 ||
 			$this->modPageDebounceTimer > 0 ||
-			$this->assetMessage === "WAITING FOR WINDOW..." ||
 			$this->assetMessage === "GAME RUNNING" ||
 			!empty($this->httpPending) ||
 			!empty($this->pendingFutures) ||
 			$this->process !== null ||
 			$this->assetProcess !== null ||
 			$this->modrinthProcess !== null ||
-			$this->modDownloadProcess !== null ||
+			!empty($this->modDownloadRuntimes) ||
 			$this->modpackInstallProcess !== null ||
 			$this->iconDownloadProcess !== null ||
 			$this->vManifestProcess !== null ||
@@ -15965,14 +16053,16 @@ class FoxyClient
 			return;
 		}
 
-		if ($this->isDownloadingModrinth) {
-			$this->log("Already downloading a project. Please wait.", "WARN");
+		if (isset($this->modDownloadChannels[$projectId])) {
+			$this->log("Download for $projectName ($projectId) is already in progress.", "WARN");
 			return;
 		}
 
-		$this->isDownloadingModrinth = true;
-		$this->modDownloadChannel = new \parallel\Channel();
-		$this->modDownloadProcess = new \parallel\Runtime();
+		$modDownloadChannel = new \parallel\Channel();
+		$this->modDownloadChannels[$projectId] = $modDownloadChannel;
+		$this->channelToModId[(string)$modDownloadChannel] = $projectId;
+		$this->modDownloadRuntimes[$projectId] = new \parallel\Runtime();
+		$this->modDownloadProgresses[$projectId] = 0.0;
 
 		$version = $this->config["minecraft_version"] ?? "1.20.1";
 		$loader = $this->config["loader"] ?? "fabric";
@@ -15998,7 +16088,7 @@ class FoxyClient
 		);
 
 		$cacert = self::CACERT;
-		$this->modDownloadFuture = $this->modDownloadProcess->run(
+		$this->modDownloadFutures[$projectId] = $this->modDownloadRuntimes[$projectId]->run(
 			function (
 				\parallel\Channel $ch,
 				$pid,
@@ -16144,6 +16234,16 @@ class FoxyClient
 				curl_setopt($dCurl, CURLOPT_USERAGENT, "FoxyClient/Downloader");
 				curl_setopt($dCurl, CURLOPT_CONNECTTIMEOUT, 10);
 				curl_setopt($dCurl, CURLOPT_TIMEOUT, 60);
+				curl_setopt($dCurl, CURLOPT_NOPROGRESS, false);
+				curl_setopt($dCurl, CURLOPT_PROGRESSFUNCTION, function($handle, $dlSize, $dlCurrent, $ulSize, $ulCurrent) use ($ch) {
+					if ($dlSize > 0) {
+						$pct = ($dlCurrent / $dlSize) * 100;
+						$ch->send(json_encode([
+							"type" => "progress_pct",
+							"pct" => $pct
+						]));
+					}
+				});
 				if (file_exists($cacert)) {
 					curl_setopt($dCurl, CURLOPT_CAINFO, $cacert);
 				}
@@ -16176,7 +16276,7 @@ class FoxyClient
 				$ch->close();
 			},
 			[
-				$this->modDownloadChannel,
+				$modDownloadChannel,
 				$projectId,
 				$projectType,
 				$projectName,
@@ -16187,19 +16287,17 @@ class FoxyClient
 			],
 		);
 
-		$this->pollEvents->addChannel($this->modDownloadChannel);
+		$this->pollEvents->addChannel($modDownloadChannel);
 	}
 
 	private function drawSearchResultCard($hit, $x, $y, $w, $h, $isHover, $alpha = 1.0)
 	{
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
-
-		// Glassmorphic Card Background
-		$bgColor = $isHover
-			? ($isLight ? [0.94, 0.95, 0.98, 0.85 * $alpha] : [0.14, 0.18, 0.24, 0.75 * $alpha])
-			: ($isLight ? [0.9, 0.92, 0.95, 0.7 * $alpha] : [0.08, 0.09, 0.12, 0.55 * $alpha]);
-		$this->drawRect($x, $y, $w, $h, $bgColor);
-		$this->drawRect($x, $y, $w, 1, [$this->colors["divider"][0], $this->colors["divider"][1], $this->colors["divider"][2], $alpha]);
+		// Glassmorphic Card Background (Themed)
+		$bgColor = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
+		$bgColorWithAlpha = [$bgColor[0], $bgColor[1], $bgColor[2], ($bgColor[3] ?? 0.85) * $alpha];
+		
+		$this->drawRect($x, $y, $w, $h, $bgColorWithAlpha, 6);
+		$this->drawRect($x, $y, $w, 1, [$this->colors["divider"][0], $this->colors["divider"][1], $this->colors["divider"][2], 0.3 * $alpha]);
 
 		// Left accent bar on hover
 		if ($isHover) {
@@ -16214,7 +16312,7 @@ class FoxyClient
 		$projId = $hit["project_id"] ?? "";
 		$slug = $hit["slug"] ?? $projId;
 
-		$isInstalled = isset($this->installedModpacks[$slug]) || isset($this->installedModpacks[$projId]);
+		$isInstalled = isset($this->installedMods[$slug]) || isset($this->installedModpacks[$slug]);
 
 		$iconSize = 64;
 		$textOffsetX = 16;
@@ -16230,14 +16328,14 @@ class FoxyClient
 			$textOffsetX = 16 + $iconSize + 16;
 		} else {
 			// Placeholder
-			$phColor = $isLight ? [0,0,0,0.05*$alpha] : [1,1,1,0.05*$alpha];
+			$phColor = [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], 0.05 * $alpha];
 			$this->drawRect($iconX, $iconY, $iconSize, $iconSize, $phColor);
 			$textOffsetX = 16 + $iconSize + 16;
 		}
 		$this->opengl32->glDisable(0x0de1);
 
 		// Install Button & External Link (Placed top right)
-		$btnW = 90;
+		$btnW = 100;
 		$btnH = 32;
 		$btnX = $x + $w - $btnW - 16;
 		$btnY2 = $y + 16;
@@ -16282,15 +16380,26 @@ class FoxyClient
 		$this->drawRect($x + $textOffsetX + $dlTw + 8, $statsY - 11, $favTw, 16, [0,0,0,0.2*$alpha]);
 		$this->renderText("FAV $flStr", $x + $textOffsetX + $dlTw + 14, $statsY, [$td[0], $td[1], $td[2], $alpha], 3000);
 
-		if ($isInstalled) {
+		if (isset($this->modDownloadProgresses[$projId])) {
+			// Render Progress Bar
+			$this->drawRect($btnX, $btnY2, $btnW, $btnH, [0, 0, 0, 0.4 * $alpha], 4);
+			$fillW = ($this->modDownloadProgresses[$projId] / 100.0) * $btnW;
+			$pc = $this->colors["primary"];
+			if ($fillW > 0) {
+				$this->drawRect($btnX, $btnY2, (int)$fillW, $btnH, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha], 4);
+			}
+			$pctText = round($this->modDownloadProgresses[$projId]) . "%";
+			$this->renderText($pctText, $btnX + ($btnW - $this->getTextWidth($pctText, 1000))/2, $btnY2 + 21, [1, 1, 1, $alpha], 1000);
+		} elseif ($isInstalled) {
 			// Render Installed badge
-			$this->drawRect($btnX, $btnY2, $btnW, $btnH, [0.15, 0.45, 0.15, 0.9 * $alpha]);
-			$this->renderText("INSTALLED", $btnX + ($btnW - $this->getTextWidth("INSTALLED", 3000))/2, $btnY2 + 20, [1,1,1,$alpha], 3000);
+			$statusColor = $this->colors["status_done"];
+			$this->drawRect($btnX, $btnY2, $btnW, $btnH, [$statusColor[0], $statusColor[1], $statusColor[2], 0.2 * $alpha], 4);
+			$this->renderText("INSTALLED", $btnX + ($btnW - $this->getTextWidth("INSTALLED", 3000))/2, $btnY2 + 20, [$statusColor[0], $statusColor[1], $statusColor[2], $alpha], 3000);
 		} else {
-			// Using manual styled button to support alpha properly
-			$bc = $isHover ? $this->colors["primary"] : ($isLight ? [0.85, 0.88, 0.92] : [0.18, 0.2, 0.25]);
-			$btnColor = [$bc[0], $bc[1], $bc[2], min(1.0, 0.9) * $alpha];
-			$this->drawRect($btnX, $btnY2, $btnW, $btnH, $btnColor);
+			// Themed button colors for search results
+			$bc = $isHover ? $this->colors["primary"] : $this->colors["info_bg"];
+			$btnColor = [$bc[0], $bc[1], $bc[2], 0.9 * $alpha];
+			$this->drawRect($btnX, $btnY2, $btnW, $btnH, $btnColor, 4);
 			
 			$btnText = $this->modpackSubTab === 1 ? "+ INSTALL" : "DOWNLOAD";
 			$btc = $isHover ? [0,0,0,$alpha] : [$tc[0], $tc[1], $tc[2], $alpha];
@@ -16298,12 +16407,11 @@ class FoxyClient
 		}
 
 		// Browser/External link button
-		$brC = $isLight ? [0.85, 0.88, 0.92, 0.85] : [0.15, 0.16, 0.2, 0.85];
-		$brColor = [$brC[0], $brC[1], $brC[2], $brC[3] * $alpha];
-		$this->drawRect($brX, $btnY2, $btnSize, $btnSize, $brColor);
+		$brColor = [$this->colors["subtab"][0], $this->colors["subtab"][1], $this->colors["subtab"][2], 0.85 * $alpha];
+		$this->drawRect($brX, $btnY2, $btnSize, $btnSize, $brColor, 4);
 
 		// Draw external link icon (box with arrow)
-		$ec = $isLight ? [0.4, 0.45, 0.5] : [0.7, 0.8, 0.9];
+		$ec = $this->colors["text_dim"];
 		$ecA = [$ec[0], $ec[1], $ec[2], $alpha];
 		$bx = $brX + 7;
 		$by = $btnY2 + 8;
@@ -16378,12 +16486,12 @@ class FoxyClient
 		$this->needsRedraw = true;
 		
 		// Launch wrapper with --update
-		$wrapper = "FoxyClient.exe";
+		$wrapper = "Client.exe";
 		if (file_exists($wrapper)) {
 			pclose(popen("start \"\" \"$wrapper\" --update", "r"));
 			$this->running = false; // This will trigger exit
 		} else {
-			$this->updateMessage = "Error: FoxyClient.exe wrapper not found.";
+			$this->updateMessage = "Error: Client.exe wrapper not found.";
 		}
 	}
 }
@@ -16811,7 +16919,7 @@ class FoxyVersionJob
 
 		$mh = curl_multi_init();
 		$activeTransfers = [];
-		$maxConcurrent = 30;
+		$maxConcurrent = 64;
 		$queueIndex = 0;
 
 		$reportProgress = function () use (
@@ -16986,7 +17094,7 @@ class FoxyVersionJob
 				}
 
 				if ($active) {
-					curl_multi_select($mh, 0.1);
+					curl_multi_select($mh, 0.001);
 				}
 				$reportProgress();
 			}

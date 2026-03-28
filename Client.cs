@@ -10,6 +10,8 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Windows.Forms;
+using System.Drawing;
 
 internal class FoxyClient
 {
@@ -22,7 +24,7 @@ internal class FoxyClient
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern int MessageBox(IntPtr hWnd, String text, String caption, uint type);
 
-    private const string UPDATE_URL = "https://github.com/Minosuko/FoxyClient/releases/latest/download/FoxyClient-OTA.zip";
+    private const string UPDATE_URL = "https://github.com/Minosuko/FoxyClient/releases/latest/download/FoxyClient_OTA.zip";
     
     // PEM Public Key
     private const string PUBLIC_KEY_PEM = @"-----BEGIN PUBLIC KEY-----
@@ -46,6 +48,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
     private static string SignPath = Path.Combine(AppDir, "FoxyClient.sign");
 
     // .NET 4.0 compatible entry point
+    [STAThread]
     static void Main(string[] args)
     {
         bool isUpdate = args.Contains("--update");
@@ -55,9 +58,19 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
 
         if (isUninstall)
         {
-            ShowWindow(handle, 5); // Show uninstall console
-            Console.Title = "FoxyClient Official Uninstaller";
-            RunUninstall();
+            ShowWindow(handle, 0); // Hide console
+            var result = MessageBox(IntPtr.Zero, "Are you sure you want to completely remove FoxyClient and all of its components?", "FoxyClient Uninstaller", 0x24); // Yes/No + Question
+            if (result == 6) // IDYES
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                var form = new ProgressForm("FoxyClient Uninstaller");
+                form.Shown += async (s, e) => {
+                    await RunUninstallAsync(form);
+                    form.Close();
+                };
+                Application.Run(form);
+            }
             return;
         }
 
@@ -77,26 +90,37 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         }
         else
         {
-            ShowWindow(handle, 5); // Show update console
-            Console.Title = "FoxyClient Official Update Tool";
-            RunUpdateTask(args).Wait();
+            ShowWindow(handle, 0); // Hide console
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            var form = new ProgressForm("FoxyClient Update Tool");
+            form.Shown += async (s, e) => {
+                await RunUpdateAsync(form);
+                form.Close();
+            };
+            Application.Run(form);
             MessageBox(IntPtr.Zero, "Update completed successfully! FoxyClient is now up to date.", "FoxyClient Update", 0x40);
         }
 
         LaunchClient();
     }
 
-    private static void RunUninstall()
+    private static async Task RunUninstallAsync(ProgressForm form)
     {
-        var result = MessageBox(IntPtr.Zero, "Are you sure you want to completely remove FoxyClient and all of its components?", "FoxyClient Uninstaller", 0x24); // Yes/No + Question
-        if (result != 6) return; // 6 = IDYES
+        void SetStatus(string text, int percent)
+        {
+            form.BeginInvoke(new Action(() => {
+                form.StatusLabel.Text = text;
+                form.ProgressBar.Value = percent;
+            }));
+        }
 
         try
         {
-            Console.WriteLine("Terminating any running FoxyClient instances...");
+            SetStatus("Terminating any running FoxyClient instances...", 20);
             KillRunningClients();
 
-            Console.WriteLine("Removing system shortcuts...");
+            SetStatus("Removing system shortcuts...", 40);
             string appName = "FoxyClient";
             string desktopShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), appName + ".lnk");
             string startShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), appName + ".lnk");
@@ -104,13 +128,13 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
             if (File.Exists(desktopShortcut)) File.Delete(desktopShortcut);
             if (File.Exists(startShortcut)) File.Delete(startShortcut);
 
-            Console.WriteLine("Cleaning Windows Registry...");
+            SetStatus("Cleaning Windows Registry...", 60);
             using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall", true))
             {
                 if (key != null) key.DeleteSubKeyTree(appName, false);
             }
 
-            Console.WriteLine("Scheduling folder deletion...");
+            SetStatus("Scheduling folder deletion...", 80);
             string appDir = AppDomain.CurrentDomain.BaseDirectory;
             string cmd = "/c timeout /t 2 /nobreak && rd /s /q \"" + appDir.TrimEnd('\\') + "\"";
             
@@ -119,19 +143,14 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
             psi.CreateNoWindow = true;
             Process.Start(psi);
 
-            Console.WriteLine("Uninstallation complete. This window will now close.");
-            Thread.Sleep(1000);
+            SetStatus("Uninstallation complete. This window will now close.", 100);
+            await Task.Delay(1500);
             Environment.Exit(0);
         }
         catch (Exception ex)
         {
             MessageBox(IntPtr.Zero, "Uninstallation failed: " + ex.Message, "FoxyClient Error", 0x10);
         }
-    }
-
-    private static async Task RunUpdateTask(string[] args)
-    {
-        await RunUpdate();
     }
 
     private static bool VerifyIntegrity()
@@ -248,12 +267,20 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         }
     }
 
-    private static async Task RunUpdate()
+    private static async Task RunUpdateAsync(ProgressForm form)
     {
-        Console.WriteLine("Terminating any running FoxyClient instances...");
+        void SetStatus(string text, int percent)
+        {
+            form.BeginInvoke(new Action(() => {
+                form.StatusLabel.Text = text;
+                form.ProgressBar.Value = percent;
+            }));
+        }
+
+        SetStatus("Terminating any running FoxyClient instances...", 10);
         KillRunningClients();
 
-        Console.WriteLine("Downloading update (FoxyClient_OTA.zip)...");
+        SetStatus("Downloading update...", 30);
         string zipPath = Path.Combine(AppDir, "update.zip");
         
         using (var client = new HttpClient())
@@ -263,7 +290,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
                 var zipData = await client.GetByteArrayAsync(UPDATE_URL);
                 File.WriteAllBytes(zipPath, zipData);
 
-                Console.WriteLine("Extracting files...");
+                SetStatus("Extracting files...", 70);
                 if (File.Exists(zipPath))
                 {
                     using (ZipArchive archive = ZipFile.OpenRead(zipPath))
@@ -279,15 +306,16 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
                     }
                 }
 
+                SetStatus("Cleaning up...", 90);
                 if (File.Exists(zipPath)) File.Delete(zipPath);
-                Console.WriteLine("Cleanup complete.");
+
+                SetStatus("Update complete!", 100);
+                await Task.Delay(1000);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Update failed: " + ex.Message);
+                MessageBox(IntPtr.Zero, "Update failed: " + ex.Message, "FoxyClient Update Error", 0x10);
                 File.WriteAllText(Path.Combine(AppDir, "ERROR.txt"), "Update error: " + ex.Message);
-                Console.WriteLine("Press any key to exit update...");
-                Console.ReadKey();
             }
         }
     }
@@ -322,5 +350,32 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         {
             File.WriteAllText(Path.Combine(AppDir, "ERROR.txt"), "Launch error: " + ex.Message);
         }
+    }
+}
+
+public class ProgressForm : Form
+{
+    public Label StatusLabel;
+    public ProgressBar ProgressBar;
+
+    public ProgressForm(string title)
+    {
+        this.Text = title;
+        this.Size = new Size(400, 150);
+        this.StartPosition = FormStartPosition.CenterScreen;
+        this.FormBorderStyle = FormBorderStyle.FixedDialog;
+        this.MaximizeBox = false;
+        this.Icon = SystemIcons.Application;
+
+        StatusLabel = new Label();
+        StatusLabel.Location = new Point(20, 20);
+        StatusLabel.Size = new Size(340, 30);
+        StatusLabel.Text = "Starting...";
+        this.Controls.Add(StatusLabel);
+
+        ProgressBar = new ProgressBar();
+        ProgressBar.Location = new Point(20, 60);
+        ProgressBar.Size = new Size(340, 25);
+        this.Controls.Add(ProgressBar);
     }
 }
