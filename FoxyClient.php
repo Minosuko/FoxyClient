@@ -7860,8 +7860,8 @@ class FoxyClient
 
 				// --- No-Rendering: Skip everything if game is running and launcher is hidden ---
 				if ($isGameRunning && !$isVisible) {
-					// Sleep longer (200ms = 5Hz) for extremely low CPU/GPU usage
-					usleep(200000); 
+					// 15ms = ~66Hz. Smooth log streaming without chewing up CPU using 1ms polls.
+					usleep(15000);
 					$this->pollProcess();
 					$this->pollOAuthServer();
 					continue;
