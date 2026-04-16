@@ -8,13 +8,22 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.4";
+	public const VERSION = "1.3.5";
 	private $kernel32;
-	private $user32;
-	private $gdi32;
-	private $opengl32;
-	private $gdiplus;
-	private $gdiplusToken;
+	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
+	private $gdiplus, $gdiplusToken;
+
+	// WGL MSAA Constants
+	public const WGL_DRAW_TO_WINDOW_ARB    = 0x2001;
+	public const WGL_SUPPORT_OPENGL_ARB    = 0x2010;
+	public const WGL_DOUBLE_BUFFER_ARB     = 0x2011;
+	public const WGL_PIXEL_TYPE_ARB        = 0x2013;
+	public const WGL_TYPE_RGBA_ARB         = 0x202B;
+	public const WGL_COLOR_BITS_ARB        = 0x2014;
+	public const WGL_DEPTH_BITS_ARB        = 0x2022;
+	public const WGL_STENCIL_BITS_ARB      = 0x2023;
+	public const WGL_SAMPLE_BUFFERS_ARB    = 0x2041;
+	public const WGL_SAMPLES_ARB           = 0x2042;
 
 	private $hwnd;
 	private $hdc;
@@ -63,7 +72,7 @@ class FoxyClient
 		["id" => self::PAGE_HOME, "name" => "HOME"],
 		["id" => self::PAGE_FOXYCLIENT, "name" => "FOXYCLIENT"],
 		["id" => self::PAGE_ACCOUNTS, "name" => "ACCOUNTS"],
-		["id" => self::PAGE_MODS, "name" => "MODPACKS"],
+		["id" => self::PAGE_MODS, "name" => "MODS"],
 		["id" => self::PAGE_VERSIONS, "name" => "VERSIONS"],
 		["id" => self::PAGE_PROPERTIES, "name" => "PROPERTIES"],
 	];
@@ -87,6 +96,7 @@ class FoxyClient
 	private const LOG_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "logs";
 	private const LATEST_LOG =
 		self::LOG_DIR . DIRECTORY_SEPARATOR . "latest.log";
+	private const ICON_CACHE_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "cache" . DIRECTORY_SEPARATOR . "icons";
 
 	private const ELY_ENDPOINT = "ely.by";
 	private const FOXY_ENDPOINT = "foxyclient.qzz.io";
@@ -237,6 +247,90 @@ class FoxyClient
 	private $modSearchQuery = "";
 	private $lastModrinthQuery = null; // Query associated with current cache
 	private $lastModrinthSubTab = null; // 0=Mods, 1=Modpacks associated with cache
+	private $subTabFadeStart = 0;
+	private $subTabAnimSourceX = 0;
+
+	// Translation Dictionary
+	private $langStrings = [
+		"en" => [
+			"all_categories" => "All Categories",
+			"all_loaders" => "All Loaders",
+			"all_envs" => "All Environments",
+			"client" => "Client",
+			"server" => "Server",
+			"adventure" => "Adventure",
+			"cursed" => "Cursed",
+			"decoration" => "Decoration",
+			"economy" => "Economy",
+			"equipment" => "Equipment",
+			"food" => "Food",
+			"game-mechanics" => "Game Mechanics",
+			"library" => "Library",
+			"magic" => "Magic",
+			"management" => "Management",
+			"minigame" => "Minigame",
+			"mobs" => "Mobs",
+			"optimization" => "Optimization",
+			"social" => "Social",
+			"storage" => "Storage",
+			"technology" => "Technology",
+			"transportation" => "Transportation",
+			"utility" => "Utility",
+			"world-generation" => "World Generation"
+		],
+		"Thai (th)" => [
+			"all_categories" => "ทุกหมวดหมู่",
+			"all_loaders" => "ทุก Loader",
+			"all_envs" => "ทุกสภาพแวดล้อม",
+			"client" => "Client",
+			"server" => "Server",
+			"adventure" => "ผจญภัย",
+			"cursed" => "คำสาป",
+			"decoration" => "ตกแต่ง",
+			"economy" => "เศรษฐกิจ",
+			"equipment" => "อุปกรณ์",
+			"food" => "อาหาร",
+			"game-mechanics" => "กลไกเกม",
+			"library" => "ไลบรารี",
+			"magic" => "เวทมนตร์",
+			"management" => "การจัดการ",
+			"minigame" => "มินิเกม",
+			"mobs" => "มอนสเตอร์",
+			"optimization" => "เพิ่มประสิทธิภาพ",
+			"social" => "โซเชียล",
+			"storage" => "คลังเก็บของ",
+			"technology" => "เทคโนโลยี",
+			"transportation" => "การขนส่ง",
+			"utility" => "ยูทิลิตี้",
+			"world-generation" => "สร้างโลก"
+		],
+		"Russian (ru)" => [
+			"all_categories" => "Все категории",
+			"all_loaders" => "Все загрузчики",
+			"all_envs" => "Все среды",
+			"client" => "Клиент",
+			"server" => "Сервер",
+			"adventure" => "Приключения",
+			"technology" => "Технологии",
+			"optimization" => "Оптимизация",
+			"magic" => "Магия"
+		],
+		"Japanese (ja)" => [
+			"all_categories" => "すべてのカテゴリ",
+			"all_loaders" => "すべてのローダー",
+			"all_envs" => "すべての環境",
+			"client" => "クライアント",
+			"server" => "サーバー",
+			"adventure" => "冒険",
+			"technology" => "技術",
+			"optimization" => "最適化",
+			"magic" => "魔法"
+		]
+	];
+	private $subTabAnimSourceW = 0;
+	private $subTabAnimTargetX = 0;
+	private $subTabAnimTargetW = 0;
+	private $lastKnownActiveIdx = []; // level_base => idx
 	private $lastModrinthMCVer = null; // MC version associated with cache
 	private $lastModrinthLoader = null; // Loader associated with cache
 	private $modSearchDebounceTimer = 0; // Timestamp when debounce finishes
@@ -282,6 +376,8 @@ class FoxyClient
 	// Icon cache
 	private $modIconCache = []; // project_id => gl_texture_id
 	private $modpackIconCache = []; // slug => gl_texture_id
+	private $localMods = null; // list of local jar metadata
+	private $isScanningLocalMods = false;
 	private $modIconLastUse = []; // project_id => timestamp
 	private $iconDownloadProcess = null;
 	private $iconDownloadChannel = null;
@@ -289,7 +385,7 @@ class FoxyClient
 	private $iconDownloadFuture = null; // Reference to prevent "return ignored" fatal error
 	private $httpResultChannel = null;
 	private $httpQueueChannel = null;
-	private $httpWorkerProcess = null;
+	private $httpWorkerProcesses = [];
 	private $httpResults = [];
 	private $httpPending = [];
 	// Manifest fetch state
@@ -299,6 +395,8 @@ class FoxyClient
 	private $vManifestError = "";
 	private $gameProcess = null;
 	private $gameChannel = null;
+	private $logHandle = null;
+	private $toggleAnims = [];
 	private $pollProcessInterval = 0.1;
 	private $pollProcessLastTime = 0;
 
@@ -331,6 +429,8 @@ class FoxyClient
 	private $propScrollTarget = 0.0;
 	private $propScrollOffset = 0.0;
 	private $propFontDropdownOpen = ""; // '' = closed, 'launcher' or 'overlay'
+	private $propLangDropdownOpen = false;
+	private $propDropdownAnim = 0.0;
 	private $propFontDropdownHover = -1;
 	private $propResetHover = false;
 	private $propSignOutHover = false;
@@ -344,6 +444,12 @@ class FoxyClient
 	private $dragType = ""; // 'mods', 'versions', 'prop', 'home_dropdown'
 	private $dragStartY = 0;
 	private $dragStartOffset = 0;
+
+	// Logout Modal
+	private $logoutModalOpen = false;
+	private $pendingLogoutUuid = null;
+	private $logoutModalCancelHover = false;
+	private $logoutModalConfirmHover = false;
 
 	// Discord RPC
 	private $discord;
@@ -360,6 +466,14 @@ class FoxyClient
 		"shenandoah" => "Force Shenandoah GC",
 		"zgc" => "Force ZGC",
 	];
+
+	// Mod Info Modal System
+	private $modInfoModalOpen = false;
+	private $modInfoSelected = null;
+	private $modInfoAlpha = 0.0;
+	private $modInfoButtonHover = ""; // 'install', 'external', 'close'
+	private $modInfoScrollOffset = 0;
+	private $modInfoScrollTarget = 0;
 
 	// Background Modal System
 	private $bgModalOpen = false;
@@ -413,8 +527,8 @@ class FoxyClient
 
 	private $settings = [
 		"game_dir" => "games",
-		"window_w" => "854",
-		"window_h" => "480",
+		"window_w" => "1280",
+		"window_h" => "720",
 		"java_path" => "temurin-jre/bin/javaw.exe",
 		"java_args" => "",
 		"minecraft_args" => "",
@@ -431,12 +545,12 @@ class FoxyClient
 		"overlay_gpu" => false,
 		"overlay_ram" => false,
 		"overlay_vram" => false,
-		"font_launcher" => "Open Sans",
+		"font_launcher" => "Nunito",
 		"font_overlay" => "Consolas",
 	];
 
 	// Available fonts for selection (populated dynamically from FoxyClient/fonts/*.ttf)
-	private $availableFonts = ["Open Sans"];
+	private $availableFonts = ["Nunito", "Open Sans"];
 
 	// Home Page system
 	private $homeAccDropdownOpen = false;
@@ -467,6 +581,7 @@ class FoxyClient
 	// Dynamic FPS / Idle detection
 	private $needsRedraw = true;
 	private $isIdle = false;
+	private $systemRamMB = 32768;
 
 	// System Metrics Overlay (parallel thread)
 	private $overlayThread = null;
@@ -479,93 +594,97 @@ class FoxyClient
 
 	// UI Color Palettes
 	private $darkColors = [
-		"bg" => [0.03, 0.04, 0.05],
-		"panel" => [0.06, 0.08, 0.1],
-		"card" => [0.1, 0.12, 0.15],
-		"card_hover" => [0.14, 0.18, 0.22],
-		"primary" => [0.2, 0.9, 1.0],
-		"primary_dim" => [0.15, 0.7, 0.85],
-		"accent" => [0.7, 0.95, 1.0],
-		"text" => [0.95, 0.98, 1.0],
+		"bg" => [0.03, 0.04, 0.06], // Deep Midnight
+		"panel" => [0.08, 0.10, 0.14, 0.65], // Frosted Navy Glass
+		"card" => [0.12, 0.15, 0.20, 0.75],
+		"card_hover" => [0.18, 0.22, 0.28, 0.85],
+		"primary" => [0.0, 0.85, 1.0], // Vibrant Cyber Cyan
+		"primary_dim" => [0.0, 0.65, 0.9],
+		"accent" => [0.35, 1.0, 0.85], // Soft Aquamarine
+		"text" => [0.95, 0.98, 1.0], // Crisp white with blue tint
 		"text_dim" => [0.6, 0.65, 0.75],
-		"button" => [0.2, 0.9, 1.0],
-		"button_hover" => [0.3, 0.95, 1.0],
-		"check_off" => [0.2, 0.22, 0.25],
-		"tab_bg" => [0.05, 0.07, 0.09],
-		"tab_active" => [0.08, 0.12, 0.16],
-		"divider" => [0.12, 0.15, 0.18],
-		"status_queue" => [0.5, 0.6, 1.0],
-		"status_update" => [0.2, 0.9, 1.0],
-		"status_done" => [0.3, 1.0, 0.5],
-		"status_error" => [1.0, 0.4, 0.3],
-		"warning" => [1.0, 0.9, 0.2],
-		"sidebar_bg1" => [0.08, 0.08, 0.09],
-		"sidebar_bg2" => [0.05, 0.05, 0.06],
-		"sidebar_active" => [0.15, 0.15, 0.17],
-		"sidebar_hover" => [0.12, 0.14, 0.16],
-		"titlebar_bg" => [0.03, 0.03, 0.04],
-		"input_bg" => [0.12, 0.12, 0.13],
-		"input_bg_active" => [0.15, 0.15, 0.16],
-		"button_text" => [0.0, 0.0, 0.0],
-		"acc_active" => [0.15, 0.25, 0.35],
-		"acc_active_border" => [0.2, 0.8, 1.0],
-		"del_btn" => [0.4, 0.1, 0.1],
-		"del_btn_hover" => [0.6, 0.15, 0.15],
-		"header_bg" => [0.05, 0.05, 0.06],
-		"dropdown_bg" => [0.05, 0.06, 0.08, 0.95],
-		"dropdown_hover" => [0.12, 0.15, 0.18],
-		"info_bg" => [0.12, 0.15, 0.25],
-		"subtab" => [0.12, 0.12, 0.14],
-		"pill_bg" => [0.1, 0.12, 0.15],
-		"pill_active" => [0.2, 0.6, 1.0, 0.4],
-		"scrollbar" => [0.2, 0.22, 0.25, 0.5],
-		"scrollbar_hover" => [0.3, 0.35, 0.4, 0.7],
-		"overlay_bg" => [0.08, 0.09, 0.12, 0.95],
+		"button" => [0.15, 0.18, 0.25, 0.8],
+		"button_hover" => [0.25, 0.30, 0.40, 0.9],
+		"check_off" => [0.2, 0.22, 0.28],
+		"tab_bg" => [0.05, 0.06, 0.08, 0.8],
+		"tab_active" => [0.12, 0.15, 0.22, 0.9],
+		"divider" => [0.3, 0.6, 1.0, 0.12], // Subtle blue divider
+		"status_queue" => [0.0, 0.8, 1.0],
+		"status_active" => [0.3, 1.0, 0.5], // Electric Green
+		"status_done" => [0.3, 1.0, 0.5], // Electric Green
+		"status_error" => [1.0, 0.3, 0.4], // Vivid Rose
+		"status_update" => [0.0, 0.85, 1.0], // Cyber Cyan for updates
+		"warning" => [1.0, 0.85, 0.2],
+		"sidebar_bg1" => [0.06, 0.07, 0.10, 0.88],
+		"sidebar_bg2" => [0.04, 0.05, 0.08, 0.88],
+		"sidebar_active" => [0.15, 0.35, 0.55, 0.4], // Blueish tint for active
+		"sidebar_hover" => [0.12, 0.18, 0.25, 0.5],
+		"titlebar_bg" => [0.03, 0.04, 0.06, 0.98],
+		"input_bg" => [0.0, 0.0, 0.0, 0.6],
+		"input_bg_active" => [0.05, 0.1, 0.15, 0.75],
+		"button_text" => [1.0, 1.0, 1.0],
+		"acc_active" => [0.0, 0.8, 1.0, 0.25],
+		"acc_active_border" => [0.0, 0.8, 1.0],
+		"del_btn" => [0.9, 0.25, 0.3],
+		"del_btn_hover" => [1.0, 0.4, 0.5],
+		"header_bg" => [0.06, 0.07, 0.10, 0.8],
+		"dropdown_bg" => [0.06, 0.07, 0.12, 0.98],
+		"dropdown_hover" => [0.15, 0.25, 0.45, 0.6],
+		"info_bg" => [0.1, 0.15, 0.25, 0.6],
+		"subtab" => [0.08, 0.10, 0.14],
+		"pill_bg" => [0.15, 0.18, 0.25],
+		"pill_active" => [0.0, 0.7, 1.0, 0.35],
+		"scrollbar" => [0.0, 0.8, 1.0, 0.25],
+		"scrollbar_hover" => [0.0, 0.8, 1.0, 0.45],
+		"overlay_bg" => [0.04, 0.05, 0.07, 0.9],
+		"modal_bg" => [0.12, 0.15, 0.20, 0.95],
 	];
 
 	private $lightColors = [
-		"bg" => [0.95, 0.96, 0.97],
-		"panel" => [0.9, 0.91, 0.93],
-		"card" => [1.0, 1.0, 1.0],
-		"card_hover" => [0.98, 0.98, 0.99],
-		"primary" => [0.0, 0.5, 0.8],
-		"primary_dim" => [0.0, 0.4, 0.7],
-		"accent" => [0.2, 0.7, 0.9],
-		"text" => [0.1, 0.12, 0.15],
-		"text_dim" => [0.4, 0.45, 0.5],
-		"button" => [0.0, 0.5, 0.8],
-		"button_hover" => [0.0, 0.6, 0.9],
-		"check_off" => [0.85, 0.87, 0.9],
-		"tab_bg" => [0.94, 0.95, 0.96],
-		"tab_active" => [1.0, 1.0, 1.0],
-		"divider" => [0.8, 0.82, 0.85],
-		"status_queue" => [0.3, 0.4, 0.8],
-		"status_update" => [0.0, 0.6, 0.8],
-		"status_done" => [0.1, 0.7, 0.3],
-		"status_error" => [0.9, 0.2, 0.1],
-		"warning" => [0.8, 0.7, 0.0],
-		"sidebar_bg1" => [0.92, 0.93, 0.94],
-		"sidebar_bg2" => [0.88, 0.89, 0.91],
-		"sidebar_active" => [1.0, 1.0, 1.0],
-		"sidebar_hover" => [0.96, 0.97, 0.98],
-		"titlebar_bg" => [0.94, 0.95, 0.96],
-		"input_bg" => [1.0, 1.0, 1.0],
-		"input_bg_active" => [0.98, 0.99, 1.0],
-		"button_text" => [1.0, 1.0, 1.0],
-		"acc_active" => [0.85, 0.92, 1.0],
-		"acc_active_border" => [0.0, 0.6, 0.8],
-		"del_btn" => [0.95, 0.85, 0.85],
-		"del_btn_hover" => [1.0, 0.8, 0.8],
-		"header_bg" => [0.9, 0.91, 0.93],
+		"bg" => [0.95, 0.96, 0.98], // Soft Pearl Blue
+		"panel" => [1.0, 1.0, 1.0, 0.55], // Frosted Glass
+		"card" => [1.0, 1.0, 1.0, 0.8],
+		"card_hover" => [0.92, 0.95, 1.0, 0.9],
+		"primary" => [0.12, 0.45, 0.9], // Modern Royal Blue
+		"primary_dim" => [0.1, 0.35, 0.75],
+		"accent" => [0.0, 0.7, 0.6], // Deep Teal
+		"text" => [0.12, 0.15, 0.2], // Slate Charcoal
+		"text_dim" => [0.45, 0.5, 0.58],
+		"button" => [0.88, 0.9, 0.94, 0.8],
+		"button_hover" => [0.82, 0.86, 0.92, 0.95],
+		"check_off" => [0.8, 0.82, 0.88],
+		"tab_bg" => [0.92, 0.93, 0.96, 0.7],
+		"tab_active" => [1.0, 1.0, 1.0, 0.9],
+		"divider" => [0.0, 0.3, 0.8, 0.08], // Subtle blue divider
+		"status_queue" => [0.1, 0.5, 0.9],
+		"status_active" => [0.15, 0.65, 0.25], // Forest Green
+		"status_done" => [0.15, 0.65, 0.25], // Forest Green
+		"status_error" => [0.9, 0.15, 0.25], // Rose Red
+		"status_update" => [0.1, 0.5, 0.9], // Royal Blue for updates
+		"warning" => [0.85, 0.6, 0.0],
+		"sidebar_bg1" => [0.96, 0.97, 0.99, 0.95],
+		"sidebar_bg2" => [0.92, 0.94, 0.97, 0.95],
+		"sidebar_active" => [0.0, 0.4, 0.9, 0.12], // Soft blue highlight
+		"sidebar_hover" => [0.0, 0.4, 0.9, 0.06],
+		"titlebar_bg" => [1.0, 1.0, 1.0, 0.95],
+		"input_bg" => [1.0, 1.0, 1.0, 0.9],
+		"input_bg_active" => [1.0, 1.0, 1.0, 1.0],
+		"button_text" => [0.12, 0.15, 0.2],
+		"acc_active" => [0.0, 0.45, 1.0, 0.15],
+		"acc_active_border" => [0.0, 0.45, 1.0],
+		"del_btn" => [0.9, 0.3, 0.35],
+		"del_btn_hover" => [1.0, 0.45, 0.5],
+		"header_bg" => [0.94, 0.95, 0.98, 0.85],
 		"dropdown_bg" => [1.0, 1.0, 1.0, 0.98],
-		"dropdown_hover" => [0.94, 0.96, 1.0],
-		"info_bg" => [0.85, 0.9, 1.0],
-		"subtab" => [0.85, 0.88, 0.92],
-		"pill_bg" => [0.9, 0.92, 0.95],
-		"pill_active" => [0.0, 0.5, 0.8, 0.2],
-		"scrollbar" => [0.7, 0.72, 0.75, 0.5],
-		"scrollbar_hover" => [0.6, 0.62, 0.65, 0.7],
-		"overlay_bg" => [0.94, 0.95, 0.98, 0.95],
+		"dropdown_hover" => [0.92, 0.95, 1.0, 0.8],
+		"info_bg" => [0.88, 0.92, 1.0, 0.6],
+		"subtab" => [0.92, 0.94, 0.97],
+		"pill_bg" => [0.88, 0.9, 0.95],
+		"pill_active" => [0.0, 0.45, 1.0, 0.25],
+		"scrollbar" => [0.0, 0.3, 0.8, 0.15],
+		"scrollbar_hover" => [0.0, 0.3, 0.8, 0.3],
+		"overlay_bg" => [1.0, 1.0, 1.0, 0.85],
+		"modal_bg" => [1.0, 1.0, 1.0, 0.95],
 	];
 	private $titleCloseHover = false;
 	private $titleMinHover = false;
@@ -577,6 +696,9 @@ class FoxyClient
 	public function __construct($configPath = "FoxyClient/config/mods.json")
 	{
 		$this->initLogs();
+		$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
+		$this->logHandle = fopen($logPath, "a");
+		
 		$this->log("FoxyClient " . self::VERSION . " Starting...");
 		$this->log("Environment: PHP " . PHP_VERSION . " on " . PHP_OS);
 		$this->log("Working Directory: " . getcwd());
@@ -586,9 +708,12 @@ class FoxyClient
 		$this->httpResultChannel = new \parallel\Channel(\parallel\Channel::Infinite);
 		$this->pollEvents->addChannel($this->httpResultChannel);
 		
-		// Initialize persistent HTTP worker
+		// Initialize persistent HTTP worker pool (8 concurrent workers for general tasks)
 		$this->httpQueueChannel = new \parallel\Channel(\parallel\Channel::Infinite);
-		$this->httpWorkerProcess = new \parallel\Runtime();
+		$this->httpWorkerProcesses = [];
+		for ($i = 0; $i < 8; $i++) {
+			$this->httpWorkerProcesses[] = new \parallel\Runtime();
+		}
 		
 		$qChan = $this->httpQueueChannel;
 		$rChan = $this->httpResultChannel;
@@ -599,7 +724,8 @@ class FoxyClient
 		$acc_offline = self::ACC_OFFLINE;
 		$acc_mojang = self::ACC_MOJANG;
 
-		$this->httpWorkerProcess->run(function(\parallel\Channel $q, \parallel\Channel $r, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang) {
+		foreach ($this->httpWorkerProcesses as $worker) {
+			$worker->run(function(\parallel\Channel $q, \parallel\Channel $r, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang) {
 			$log = function($msg, $lvl = "INFO") use ($r) {
 				$r->send(["type" => "log", "msg" => "[HTTPWorker] " . $msg, "level" => $lvl]);
 			};
@@ -732,6 +858,7 @@ class FoxyClient
 				}
 			}
 		}, [$this->httpQueueChannel, $this->httpResultChannel, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang]);
+		}
 		
 		$this->colors = $this->darkColors; // Default initial colors to prevent null access
 		$this->loadConfig($configPath);
@@ -743,6 +870,7 @@ class FoxyClient
 		$this->checkLocalMods();
 		$this->applyTheme();
 		$this->initFFI();
+		$this->detectSystemRam();
 		$this->initGDIPlus();
 		$this->initMicrosoftLogin();
 		$this->createWindow();
@@ -780,9 +908,8 @@ class FoxyClient
 
 	private function loadConfig($path)
 	{
-		if (!is_dir(self::DATA_DIR)) {
-			mkdir(self::DATA_DIR, 0777, true);
-			$this->log("Created data directory: " . self::DATA_DIR);
+		if (!is_dir(self::ICON_CACHE_DIR)) {
+			mkdir(self::ICON_CACHE_DIR, 0777, true);
 		}
 
 		if (!file_exists($path)) {
@@ -873,6 +1000,25 @@ class FoxyClient
 					}
 				}
 			}
+		}
+	}
+
+	private function detectSystemRam()
+	{
+		try {
+			if ($this->kernel32) {
+				$memStatus = $this->kernel32->new("MEMORYSTATUSEX");
+				$memStatus->dwLength = FFI::sizeof($memStatus);
+				if ($this->kernel32->GlobalMemoryStatusEx(FFI::addr($memStatus))) {
+					$totalMB = (int) ($memStatus->ullTotalPhys / (1024 * 1024));
+					// Round to nearest 512MB for cleaner slider UI, but keep the raw cap
+					$this->systemRamMB = $totalMB;
+					$this->log("System RAM detected: " . $totalMB . " MB");
+				}
+			}
+		} catch (\Throwable $e) {
+			$this->log("Failed to detect system RAM: " . $e->getMessage(), "ERROR");
+			$this->systemRamMB = 32768; // Default fallback
 		}
 	}
 
@@ -1049,6 +1195,7 @@ class FoxyClient
 
 			typedef int (*BFFCALLBACK)(HWND, UINT, LPARAM, LPARAM);
 			typedef int (*PFNWGLSWAPINTERVALEXTPROC)(int interval);
+			typedef int (*PFNWGLCHOOSEPIXELFORMATARBPROC)(HDC hdc, const int *piAttribIList, const float *pfAttribFList, unsigned int nMaxFormats, int *piFormats, unsigned int *nNumFormats);
 
 			typedef struct {
 				HWND hwndOwner;
@@ -1195,6 +1342,8 @@ class FoxyClient
 			void glBindTexture(UINT target, UINT texture);
 			void glTexImage2D(UINT target, int level, int internalformat, int width, int height, int border, UINT format, UINT type, const void *pixels);
 			void glTexParameteri(UINT target, UINT pname, int param);
+			void glTexParameterf(UINT target, UINT pname, float param);
+			void glGetFloatv(UINT pname, float *params);
 			void glTexCoord2f(float s, float t);
 			void glPushMatrix();
 			void glPopMatrix();
@@ -1207,6 +1356,7 @@ class FoxyClient
 			void glDepthFunc(UINT func);
 			void glCullFace(UINT mode);
 			void glFrustum(double left, double right, double bottom, double top, double zNear, double zFar);
+			void glHint(UINT target, UINT mode);
 		",
 			"opengl32.dll",
 		);
@@ -1235,8 +1385,44 @@ class FoxyClient
 			int GdipGetImageGraphicsContext(void *image, void **graphics);
 			int GdipDeleteGraphics(void *graphics);
 			int GdipSetInterpolationMode(void *graphics, int mode);
+			int GdipSetSmoothingMode(void *graphics, int mode);
+			int GdipSetPixelOffsetMode(void *graphics, int mode);
+			int GdipGraphicsClear(void *graphics, unsigned int color);
 			int GdipDrawImageRectRectI(void *graphics, void *image, int dstx, int dsty, int dstwidth, int dstheight, int srcx, int srcy, int srcwidth, int srcheight, int srcunit, void *imageAttributes, void *callback, void *callbackData);
 			int GdipCreateBitmapFromScan0(int width, int height, int stride, int format, void *scan0, void **bitmap);
+			
+			// GDI+ Typography
+			int GdipCreateFontFamilyFromName(const wchar_t *name, void *fontCollection, void **FontFamily);
+			int GdipCreateFont(void *FontFamily, float emSize, int style, int unit, void **font);
+			int GdipDeleteFont(void *font);
+			int GdipDeleteFontFamily(void *FontFamily);
+			int GdipSetTextRenderingHint(void *graphics, int mode);
+			int GdipDrawString(void *graphics, const wchar_t *string, int length, void *font, const void *layoutRect, void *stringFormat, void *brush);
+			int GdipCreateSolidFill(unsigned int color, void **brush);
+			int GdipDeleteBrush(void *brush);
+			int GdipGetGenericFontFamilySansSerif(void **FontFamily);
+			int GdipGetFamilyName(void *family, wchar_t *name, unsigned short language);
+			int GdipCreateFromHDC(HDC hdc, void **graphics);
+			int GdipMeasureString(void *graphics, const wchar_t *string, int length, void *font, const void *layoutRect, void *stringFormat, void *boundingBox, int *codepointsFitted, int *linesFilled);
+			int GdipCreateStringFormat(int formatFlags, unsigned short language, void **format);
+			int GdipDeleteStringFormat(void *format);
+			int GdipSetStringFormatFlags(void *format, int flags);
+			int GdipSetStringFormatAlign(void *format, int align);
+			int GdipSetStringFormatLineAlign(void *format, int align);
+			
+			// GDI+ Font Collections
+			int GdipNewPrivateFontCollection(void **fontCollection);
+			int GdipDeletePrivateFontCollection(void **fontCollection);
+			int GdipPrivateAddFontFile(void *fontCollection, const wchar_t *filename);
+			int GdipGetFontCollectionFamilyCount(void *fontCollection, int *count);
+			int GdipGetFontCollectionFamilyList(void* fontCollection, int numSought, void** gpfamilies, int* numFound);
+			int GdipStringFormatGetGenericTypographic(void **format);
+			int GdipCreateBitmapFromGraphics(int width, int height, void *targetGraphics, void **bitmap);
+
+			// GDI+ Font Metrics
+			int GdipGetCellAscent(void *family, int style, unsigned short *CellAscent);
+			int GdipGetCellDescent(void *family, int style, unsigned short *CellDescent);
+			int GdipGetEmHeight(void *family, int style, unsigned short *EmHeight);
 		",
 			"gdiplus.dll",
 		);
@@ -1309,9 +1495,11 @@ class FoxyClient
 			try {
 				switch ($msg) {
 					case 0x0002: // WM_DESTROY
-						$this->terminateGame();
-						$this->user32->PostQuitMessage(0);
-						$this->running = false;
+						if ($hwnd == $this->hwnd) {
+							$this->terminateGame();
+							$this->user32->PostQuitMessage(0);
+							$this->running = false;
+						}
 						return 0;
 					case 0x0201: // WM_LBUTTONDOWN
 						$this->needsRedraw = true;
@@ -1322,6 +1510,9 @@ class FoxyClient
 						return 0;
 					case 0x0202: // WM_LBUTTONUP
 						$this->needsRedraw = true;
+						if ($this->isDraggingScroll && $this->dragType === "ram_slider") {
+							$this->saveSettings();
+						}
 						$this->isDraggingScroll = false;
 						return 0;
 					case 0x0200: // WM_MOUSEMOVE
@@ -1402,7 +1593,7 @@ class FoxyClient
 								$maxScroll = max(0, $contentH - $listH);
 								if ($this->foxyConfigScrollTarget < 0) $this->foxyConfigScrollTarget = 0;
 								if ($this->foxyConfigScrollTarget > $maxScroll) $this->foxyConfigScrollTarget = $maxScroll;
-							} elseif ($this->foxySubTab === 4) {
+							} elseif ($this->foxySubTab === 2) {
 								$this->foxyPreviewZoom += ($delta > 0 ? 0.1 : -0.1);
 								if ($this->foxyPreviewZoom < 0.2) $this->foxyPreviewZoom = 0.2;
 								if ($this->foxyPreviewZoom > 5.0) $this->foxyPreviewZoom = 5.0;
@@ -1581,7 +1772,10 @@ class FoxyClient
 							} elseif ($char >= 32) {
 								if ($key === "ram_mb") {
 									if ($char >= 48 && $char <= 57) {
-										$this->settings[$key] .= chr($char);
+										$newVal = $this->settings[$key] . chr($char);
+										if ((int)$newVal <= $this->systemRamMB) {
+											$this->settings[$key] = $newVal;
+										}
 									}
 								} else {
 									$this->settings[$key] .= chr($char);
@@ -1695,46 +1889,81 @@ class FoxyClient
 
 		$this->user32->RegisterClassA(FFI::addr($wc));
 
-		// Create a frameless window (WS_POPUP)
-		// WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN
-		$dwStyle = 0x96000000;
-
-		$this->hwnd = $this->user32->CreateWindowExA(
-			0,
-			$className,
-			"Foxy Client",
-			$dwStyle,
-			100,
-			100,
-			$this->width,
-			$this->height,
-			null,
-			null,
-			$inst,
-			null,
-		);
-
-		$this->hdc = $this->user32->GetDC($this->hwnd);
-
+		// 1. Create Dummy Context to load extensions
+		$dummyHwnd = $this->user32->CreateWindowExA(0, $className, "Dummy", 0, 0, 0, 1, 1, null, null, $inst, null);
+		$dummyHdc = $this->user32->GetDC($dummyHwnd);
 		$pfd = $this->gdi32->new("PIXELFORMATDESCRIPTOR");
 		$pfd->nSize = FFI::sizeof($pfd);
 		$pfd->nVersion = 1;
-		$pfd->dwFlags = 0x00000001 | 0x00000004 | 0x00000020; // PFD_DOUBLEBUFFER | PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL
+		$pfd->dwFlags = 0x01 | 0x04 | 0x20;
 		$pfd->iPixelType = 0;
 		$pfd->cColorBits = 32;
-		$pfd->cDepthBits = 24;
+		$dummyFormat = $this->gdi32->ChoosePixelFormat($dummyHdc, FFI::addr($pfd));
+		$this->gdi32->SetPixelFormat($dummyHdc, $dummyFormat, FFI::addr($pfd));
+		$dummyHglrc = $this->opengl32->wglCreateContext($dummyHdc);
+		$this->opengl32->wglMakeCurrent($dummyHdc, $dummyHglrc);
 
-		$format = $this->gdi32->ChoosePixelFormat($this->hdc, FFI::addr($pfd));
-		$this->gdi32->SetPixelFormat($this->hdc, $format, FFI::addr($pfd));
+		$wglChoosePixelFormatARB = null;
+		$proc = $this->opengl32->wglGetProcAddress("wglChoosePixelFormatARB");
+		if ($proc) {
+			$wglChoosePixelFormatARB = $this->opengl32->cast("PFNWGLCHOOSEPIXELFORMATARBPROC", $proc);
+		}
+
+		$this->opengl32->wglMakeCurrent(null, null);
+		$this->opengl32->wglDeleteContext($dummyHglrc);
+		$this->user32->ReleaseDC($dummyHwnd, $dummyHdc);
+		$this->user32->DestroyWindow($dummyHwnd);
+
+		// 2. Create Real Window with MSAA
+		$dwStyle = 0x96000000;
+		$this->hwnd = $this->user32->CreateWindowExA(0, $className, "Foxy Client", $dwStyle, 100, 100, $this->width, $this->height, null, null, $inst, null);
+		$this->hdc = $this->user32->GetDC($this->hwnd);
+
+		$pixelFormat = 0;
+		if ($wglChoosePixelFormatARB) {
+			$iAttribs = FFI::new("int[21]");
+			$idx = 0;
+			$iAttribs[$idx++] = self::WGL_DRAW_TO_WINDOW_ARB; $iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_SUPPORT_OPENGL_ARB; $iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_DOUBLE_BUFFER_ARB;  $iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_PIXEL_TYPE_ARB;     $iAttribs[$idx++] = self::WGL_TYPE_RGBA_ARB;
+			$iAttribs[$idx++] = self::WGL_COLOR_BITS_ARB;    $iAttribs[$idx++] = 32;
+			$iAttribs[$idx++] = self::WGL_DEPTH_BITS_ARB;    $iAttribs[$idx++] = 24;
+			$iAttribs[$idx++] = self::WGL_STENCIL_BITS_ARB;  $iAttribs[$idx++] = 8;
+			$iAttribs[$idx++] = self::WGL_SAMPLE_BUFFERS_ARB; $iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_SAMPLES_ARB;        $iAttribs[$idx++] = 4; // 4x MSAA
+			$iAttribs[$idx++] = 0;
+
+			$numFormats = FFI::new("unsigned int[1]");
+			$validFormat = FFI::new("int[1]");
+			if ($wglChoosePixelFormatARB($this->hdc, $iAttribs, null, 1, $validFormat, $numFormats) && $numFormats[0] > 0) {
+				$pixelFormat = $validFormat[0];
+				$this->log("Hardware MSAA (4x) selected via wglChoosePixelFormatARB");
+			}
+		}
+
+		if ($pixelFormat === 0) {
+			$this->log("Falling back to standard PFD (No MSAA)");
+			$pfd = $this->gdi32->new("PIXELFORMATDESCRIPTOR");
+			$pfd->nSize = FFI::sizeof($pfd);
+			$pfd->nVersion = 1;
+			$pfd->dwFlags = 0x01 | 0x04 | 0x20;
+			$pfd->cColorBits = 32;
+			$pixelFormat = $this->gdi32->ChoosePixelFormat($this->hdc, FFI::addr($pfd));
+		}
+
+		$this->gdi32->SetPixelFormat($this->hdc, $pixelFormat, FFI::addr($pfd));
 
 		$this->hglrc = $this->opengl32->wglCreateContext($this->hdc);
 		$this->opengl32->wglMakeCurrent($this->hdc, $this->hglrc);
 
+		// Enable hardware MSAA if supported
+		$this->opengl32->glEnable(0x809D); // GL_MULTISAMPLE_ARB
 		// Enable VSync
 		try {
 			$proc = $this->opengl32->wglGetProcAddress("wglSwapIntervalEXT");
 			if ($proc) {
-				$wglSwapIntervalEXT = FFI::cast("PFNWGLSWAPINTERVALEXTPROC", $proc);
+				$wglSwapIntervalEXT = $this->opengl32->cast("PFNWGLSWAPINTERVALEXTPROC", $proc);
 				$res = $wglSwapIntervalEXT(1);
 				$this->log("VSync enabled via wglSwapIntervalEXT (Result: $res)");
 			} else {
@@ -1752,225 +1981,426 @@ class FoxyClient
 
 	private function initFonts()
 	{
+		$gp = $this->gdiplus;
+		$gdi = $this->gdi32;
+		$this->availableFonts = []; // Zero out defaults to ensure 100% accurate registry matching
+		
+		// 1. Create Private Font Collection
+		$this->fontCollection = $gp->new("void*");
+		$gp->GdipNewPrivateFontCollection(FFI::addr($this->fontCollection));
+		
+		$toWide = function($str) use ($gp) {
+			$w = mb_convert_encoding($str, "UTF-16LE", "UTF-8") . "\0\0";
+			$ptr = $gp->new("wchar_t[" . (strlen($w) / 2) . "]");
+			FFI::memcpy($ptr, $w, strlen($w));
+			return $ptr;
+		};
+
+		// 2. Load Launcher Fonts
 		$fontDir = self::DATA_DIR . "/fonts";
-		$fonts = [];
 		if (is_dir($fontDir)) {
 			foreach (glob("$fontDir/*.ttf") as $ttf) {
-				$this->gdi32->AddFontResourceExA($ttf, 0x10, null);
-				// Derive font face name from filename: "OpenSans-Regular.ttf" -> "Open Sans"
-				$base = pathinfo($ttf, PATHINFO_FILENAME);
-				$base = preg_replace(
-					'/-(Regular|Bold|Italic|Light|Medium|SemiBold|ExtraBold|Black|Thin)$/i',
-					"",
-					$base,
-				);
-				$face = preg_replace("/([a-z])([A-Z])/", '$1 $2', $base);
-				if (!in_array($face, $fonts)) {
-					$fonts[] = $face;
+				$gp->GdipPrivateAddFontFile($this->fontCollection, $toWide($ttf));
+				$gdi->AddFontResourceExA($ttf, 0x10, null); // Keep for potential GDI fallbacks
+			}
+		}
+
+		// 3. Load Icon Font
+		$iconPath = self::DATA_DIR . "/data/icon_font.ttf";
+		if (file_exists($iconPath)) {
+			$gp->GdipPrivateAddFontFile($this->fontCollection, $toWide($iconPath));
+			$gdi->AddFontResourceExA($iconPath, 0x10, null);
+		}
+
+		// 4. Discover Families in Collection
+		$count = $gp->new("int");
+		$gp->GdipGetFontCollectionFamilyCount($this->fontCollection, FFI::addr($count));
+		$this->log("Initialized Private Font Collection: {$count->cdata} families discovered.");
+		
+		if ($count->cdata > 0) {
+			$fams = $gp->new("void*[{$count->cdata}]");
+			$foundCount = $gp->new("int");
+			$gp->GdipGetFontCollectionFamilyList($this->fontCollection, $count->cdata, $fams, FFI::addr($foundCount));
+			
+			for ($i = 0; $i < $foundCount->cdata; $i++) {
+				$name = $gp->new("wchar_t[64]");
+				$gp->GdipGetFamilyName($fams[$i], $name, 1033);
+				
+				// Safely reconstruct the family name from UTF-16 wchar_t array
+				$u8Name = "";
+				for ($j = 0; $j < 64 && $name[$j] != 0; $j++) {
+					$u8Name .= mb_chr($name[$j], "UTF-8");
+				}
+				$u8Name = trim($u8Name);
+				
+				$this->log("DEBUG: Found font family in registry: [$u8Name]");
+				
+				if (str_contains($u8Name, "Material")) {
+					$this->iconFontFace = $u8Name;
+				} else {
+					if (!in_array($u8Name, $this->availableFonts)) {
+						$this->availableFonts[] = $u8Name;
+					}
+					// If this is our intended primary font, ensure it's selected
+					if ($u8Name === "Nunito") {
+						$this->log("Confirmed 'Nunito' is available for high-fidelity rendering.");
+					}
 				}
 			}
 		}
-		if (!empty($fonts)) {
-			$this->availableFonts = $fonts;
-			$this->log(
-				"Font discovery: " .
-					count($fonts) .
-					" fonts found in $fontDir.",
-			);
-		} else {
-			$this->log(
-				"No custom fonts found in $fontDir, using system fallback.",
-				"WARN",
-			);
+
+		if (empty($this->availableFonts)) {
+			$this->log("No custom fonts successfully loaded. Using system defaults.", "WARN");
 		}
-		// Build texture atlases with GDI anti-aliasing
-		$this->buildFontAtlas(1000, 20, 400); // Normal 20px
-		$this->buildFontAtlas(2000, 28, 700); // Bold 28px
-		$this->buildFontAtlas(3000, 15, 400); // Small 15px
+
+		// 4-Tier Typography System (Big/Premium Profile)
+		$this->buildFontAtlas(1000, 22, 900); // Body: 22px
+		$this->buildFontAtlas(1500, 28, 900); // Sub-Header: 28px
+		$this->buildFontAtlas(2000, 36, 900); // Heading: 36px
+		$this->buildFontAtlas(3000, 18, 900); // Caption: 18px
+
+		// Icon Atlas
+		$iconSet = [
+			0xe8b6, 0xe8b8, 0xe5cd, 0xe145, 0xe15b, 0xe872,
+			0xe2c7, 0xe88e, 0xe000, 0xe5cb, 0xe5cc, 0xe5cf,
+			0xe5ce, 0xef66, 0xe7fd, 0xe5ca, 0xe88a, 0xe5d5,
+			0xe8fd, 0xf090, 0xf091, 0xe913, 0xe838, 0xe8ac
+		];
+		$this->buildFontAtlas(4000, 24, 400, $iconSet);
 	}
 
-	private function buildFontAtlas($listBase, $fontSize, $fontWeight)
+	/**
+	 * Build a browser-fidelity font atlas with proper box-filter downsampling.
+	 *
+	 * Pipeline:
+	 *   1. Render each glyph once at 4x resolution (single-phase, no grid-fit).
+	 *   2. Box-filter downsample 4×4 blocks in linear color space (sRGB decode).
+	 *   3. Re-encode averaged alpha to sRGB for correct blending on GPU.
+	 *   4. Extract real font metrics (ascent/descent/space width) from GDI+.
+	 *   5. Store per-glyph advance widths for typographically correct spacing.
+	 */
+	private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = null)
 	{
 		$gdi = $this->gdi32;
-		$gl = $this->opengl32;
+		$gl  = $this->opengl32;
+		$gp  = $this->gdiplus;
 
-		// Create font with ANTIALIASED_QUALITY
-		$fontFace = $this->settings["font_launcher"] ?? "Open Sans";
-		$this->log(
-			"Building font atlas: $fontFace ({$fontSize}px, weight $fontWeight)",
-		);
-		$font = $gdi->CreateFontA(
-			$fontSize,
-			0,
-			0,
-			0,
-			$fontWeight,
-			0,
-			0,
-			0,
-			1,
-			4,
-			0,
-			4,
-			2,
-			$fontFace,
-		); // DEFAULT_CHARSET, OUT_TT_PRECIS, ANTIALIASED_QUALITY
+		if ($charList === null) {
+			$charList = range(32, 126);
+		}
 
-		// Create memory DC and DIB
+		$fontFace = $this->settings["font_launcher"] ?? "Nunito";
+
+		if ($fontFace === "Nunito") {
+			foreach ($this->availableFonts as $f) {
+				if (stripos($f, "Nunito") !== false) {
+					$this->log("Fuzzy matched default font 'Nunito' to registry family: '$f'");
+					$fontFace = $f;
+					break;
+				}
+			}
+		}
+
+		if ($listBase >= 4000) {
+			$fontFace = $this->iconFontFace ?? "Material Symbols Outlined";
+		}
+
+		// 4x supersampling for sharp box-filter downsampling
+		$scale = 4;
+		$renderPx = $fontSize * $scale;
+		$this->log("Building Browser-Fidelity Atlas: $fontFace ({$fontSize}px, {$scale}x box-filter)");
+
+		// ── Font setup ──
 		$memDC = $gdi->CreateCompatibleDC($this->hdc);
-		$gdi->SelectObject($memDC, $font);
+		$measGfx = $gp->new("void*");
+		$gp->GdipCreateFromHDC($memDC, FFI::addr($measGfx));
 
-		// Measure all printable ASCII chars to determine atlas width
+		$wideFace = mb_convert_encoding($fontFace, "UTF-16LE", "UTF-8") . "\0\0";
+		$widePtr = $gp->new("wchar_t[" . (strlen($wideFace) / 2) . "]");
+		FFI::memcpy($widePtr, $wideFace, strlen($wideFace));
+
+		$family = $gp->new("void*");
+		$res = $gp->GdipCreateFontFamilyFromName($widePtr, $this->fontCollection, FFI::addr($family));
+		if ($res !== 0) {
+			$this->log("Warning: Font '$fontFace' not found (Error: $res).", "WARN");
+			$gp->GdipGetGenericFontFamilySansSerif(FFI::addr($family));
+		}
+
+		$style = ($fontWeight >= 700) ? 1 : 0;
+		$font = $gp->new("void*");
+		$gp->GdipCreateFont($family, (float)$renderPx, $style, 3, FFI::addr($font));
+
+		// ── Extract Real Font Metrics ──
+		$emH = $gp->new("unsigned short");
+		$cellAsc = $gp->new("unsigned short");
+		$cellDesc = $gp->new("unsigned short");
+		$gp->GdipGetEmHeight($family, $style, FFI::addr($emH));
+		$gp->GdipGetCellAscent($family, $style, FFI::addr($cellAsc));
+		$gp->GdipGetCellDescent($family, $style, FFI::addr($cellDesc));
+
+		$emDesign = max(1, $emH->cdata);
+		$ascent  = ($cellAsc->cdata / $emDesign) * $fontSize;
+		$descent = ($cellDesc->cdata / $emDesign) * $fontSize;
+		$this->log("Font metrics: em=$emDesign ascent={$cellAsc->cdata} descent={$cellDesc->cdata} -> px ascent=" . round($ascent, 1) . " descent=" . round($descent, 1));
+
+		$strFmt = $gp->new("void*");
+		$gp->GdipStringFormatGetGenericTypographic(FFI::addr($strFmt));
+		$gp->GdipSetStringFormatFlags($strFmt, 0x800 | 0x4000); // NoFitBlackBox | MeasureTrailingSpaces
+
+		$layout = $gp->new("float[4]");
+		$bound  = $gp->new("float[4]");
+
+		// ── Measure Space Width ──
+		$spaceWc = mb_convert_encoding(" ", "UTF-16LE", "UTF-8") . "\0\0";
+		$spacePtr = $gp->new("wchar_t[2]");
+		FFI::memcpy($spacePtr, $spaceWc, 2);
+		$layout[0] = 0; $layout[1] = 0; $layout[2] = 4000.0; $layout[3] = 4000.0;
+		$gp->GdipMeasureString($measGfx, $spacePtr, 1, $font, $layout, $strFmt, $bound, null, null);
+		$spaceW = $bound[2] / $scale;
+		$this->log("Measured space advance: " . round($spaceW, 2) . "px");
+
+		// ── Measure All Glyphs (single phase) ──
+		$rawMeasures = [];
+		$maxH = 0;
+		foreach ($charList as $ch) {
+			$wc = mb_convert_encoding(mb_chr($ch, "UTF-8"), "UTF-16LE", "UTF-8") . "\0\0";
+			$wcPtr = $gp->new("wchar_t[2]");
+			FFI::memcpy($wcPtr, $wc, 2);
+
+			$layout[0] = 0; $layout[1] = 0; $layout[2] = 4000.0; $layout[3] = 4000.0;
+			$gp->GdipMeasureString($measGfx, $wcPtr, 1, $font, $layout, $strFmt, $bound, null, null);
+
+			$w = (int)ceil($bound[2]) + 4;
+			$h = (int)ceil($bound[3]) + 4;
+			if ($h > $maxH) $maxH = $h;
+			$rawMeasures[$ch] = ["w" => $w, "h" => $h, "advX" => $bound[2] / $scale];
+		}
+
+		// ── Pack Glyphs (single entry per codepoint, no phases) ──
+		// Padding must survive 4x downsample + GL_LINEAR bleed (12/4 = 3px final)
+		$pad = 12;
+		$texW = 1024;
+		if ($fontSize > 18) $texW = 2048;
+		if ($fontSize > 28) $texW = 4096;
+
+		$cx = 0; $cy = 0;
 		$glyphs = [];
-		$totalW = 0;
-		$charSize = $gdi->new("SIZE");
-		for ($ch = 32; $ch < 127; $ch++) {
-			$c = chr($ch);
-			$gdi->GetTextExtentPoint32A($memDC, $c, 1, FFI::addr($charSize));
-			$glyphs[$ch] = ["x" => $totalW, "w" => $charSize->cx];
-			$totalW += $charSize->cx + 2; // 2px spacing
+		foreach ($charList as $ch) {
+			$m = $rawMeasures[$ch];
+			if ($cx + $m["w"] + $pad > $texW) {
+				$cx = 0;
+				$cy += $maxH + $pad;
+			}
+			$glyphs[$ch] = ["tx" => $cx, "ty" => $cy, "w" => $m["w"], "advX" => $m["advX"]];
+			$cx += $m["w"] + $pad;
+		}
+		$texH = $cy + $maxH + $pad;
+
+		// ── Render white on black at 4x ──
+		$bmp = FFI::new("void*");
+		$gp->GdipCreateBitmapFromScan0($texW, $texH, 0, 0x26200a, null, FFI::addr($bmp));
+		$gfx = FFI::new("void*");
+		$gp->GdipGetImageGraphicsContext($bmp, FFI::addr($gfx));
+
+		$gp->GdipGraphicsClear($gfx, 0xFF000000);
+
+		// AntiAlias mode 4 (no grid-fit) = browser/DirectWrite-style smooth glyphs
+		$gp->GdipSetTextRenderingHint($gfx, 4);
+		$gp->GdipSetSmoothingMode($gfx, 4);
+
+		$brush = FFI::new("void*");
+		$gp->GdipCreateSolidFill(0xFFFFFFFF, FFI::addr($brush));
+
+		$rect = $gp->new("float[4]");
+		foreach ($glyphs as $ch => $g) {
+			$wc = mb_convert_encoding(mb_chr($ch, "UTF-8"), "UTF-16LE", "UTF-8") . "\0\0";
+			$wcPtr = $gp->new("wchar_t[2]");
+			FFI::memcpy($wcPtr, $wc, 2);
+
+			$rect[0] = (float)$g["tx"];
+			$rect[1] = (float)$g["ty"];
+			$rect[2] = (float)$g["w"];
+			$rect[3] = (float)$maxH;
+			$gp->GdipDrawString($gfx, $wcPtr, 1, $font, $rect, $strFmt, $brush);
+		}
+		$gp->GdipDeleteBrush($brush);
+
+		// ── Lock bits for pixel access ──
+		$bd = $gp->new("BitmapData");
+		$lockRect = FFI::new("int[4]");
+		$lockRect[0] = 0; $lockRect[1] = 0;
+		$lockRect[2] = $texW; $lockRect[3] = $texH;
+		$gp->GdipBitmapLockBits($bmp, $lockRect, 1, 0x26200a, FFI::addr($bd));
+
+		$srcN = $texW * $texH;
+		$src  = FFI::cast("unsigned char[" . ($srcN * 4) . "]", $bd->scan0);
+
+		// ── Box-filter downsample in linear color space (sRGB-correct) ──
+		$outW = (int)($texW / $scale);
+		$outH = (int)($texH / $scale);
+		$dst  = FFI::new("unsigned char[" . ($outW * $outH * 4) . "]");
+
+		// Build sRGB → linear LUT (matches Chrome/Edge/Firefox alpha blending)
+		$srgbToLinear = [];
+		for ($v = 0; $v < 256; $v++) {
+			$s = $v / 255.0;
+			$srgbToLinear[$v] = ($s <= 0.04045) ? ($s / 12.92) : pow(($s + 0.055) / 1.055, 2.4);
 		}
 
-		// Atlas dimensions (power-of-two width)
-		$atlasW = 1;
-		while ($atlasW < $totalW) {
-			$atlasW *= 2;
-		}
-		$atlasH = 1;
-		$rowH = $fontSize + 4;
-		while ($atlasH < $rowH) {
-			$atlasH *= 2;
-		}
+		$invArea = 1.0 / ($scale * $scale); // 1/16 for 4x4 box
+		for ($dy = 0; $dy < $outH; $dy++) {
+			$sy = $dy * $scale;
+			for ($dx = 0; $dx < $outW; $dx++) {
+				$sx = $dx * $scale;
+				$linSum = 0.0;
+				for ($ky = 0; $ky < $scale; $ky++) {
+					$rowOff = ($sy + $ky) * $texW;
+					for ($kx = 0; $kx < $scale; $kx++) {
+						$si = ($rowOff + $sx + $kx) * 4;
+						// Max of RGB channels as luminance
+						$lum = max($src[$si], $src[$si + 1], $src[$si + 2]);
+						$linSum += $srgbToLinear[$lum];
+					}
+				}
+				// Average in linear space, then re-encode to sRGB
+				$linAvg = $linSum * $invArea;
+				$srgbVal = ($linAvg <= 0.0031308)
+					? ($linAvg * 12.92)
+					: (1.055 * pow($linAvg, 1.0 / 2.4) - 0.055);
+				$alpha = min(255, max(0, (int)($srgbVal * 255.0 + 0.5)));
+				// Kill dust: sub-visible fragments from GDI+ AA on narrow glyphs
+				if ($alpha < 3) $alpha = 0;
 
-		// Create DIB section (top-down 32-bit BGRA)
-		$bmi = $gdi->new("BITMAPINFO");
-		$bmi->bmiHeader->biSize = FFI::sizeof($bmi->bmiHeader);
-		$bmi->bmiHeader->biWidth = $atlasW;
-		$bmi->bmiHeader->biHeight = -$atlasH; // negative = top-down
-		$bmi->bmiHeader->biPlanes = 1;
-		$bmi->bmiHeader->biBitCount = 32;
-		$bmi->bmiHeader->biCompression = 0; // BI_RGB
-
-		$ppvBits = FFI::new("void*[1]");
-		$hBitmap = $gdi->CreateDIBSection(
-			$memDC,
-			FFI::addr($bmi),
-			0,
-			FFI::addr($ppvBits[0]),
-			null,
-			0,
-		);
-		$gdi->SelectObject($memDC, $hBitmap);
-
-		// Setup text rendering: white text on black background
-		$gdi->SetBkMode($memDC, 1); // OPAQUE
-		$gdi->SetBkColor($memDC, 0x00000000); // Black
-		$gdi->SetTextColor($memDC, 0x00ffffff); // White
-
-		// Re-select font after selecting bitmap
-		$gdi->SelectObject($memDC, $font);
-
-		// Render each character
-		for ($ch = 32; $ch < 127; $ch++) {
-			$c = chr($ch);
-			$gdi->TextOutA($memDC, $glyphs[$ch]["x"], 1, $c, 1);
+				$di = ($dy * $outW + $dx) * 4;
+				$dst[$di    ] = 255; // R
+				$dst[$di + 1] = 255; // G
+				$dst[$di + 2] = 255; // B
+				$dst[$di + 3] = $alpha;
+			}
 		}
 
-		// Read DIB pixels and build RGBA texture data
-		$pixelCount = $atlasW * $atlasH;
-		$dibPixels = FFI::cast(
-			"unsigned char[" . $pixelCount * 4 . "]",
-			$ppvBits[0],
-		);
-		$texData = FFI::new("unsigned char[" . $pixelCount * 4 . "]");
+		$gp->GdipBitmapUnlockBits($bmp, FFI::addr($bd));
 
-		for ($i = 0; $i < $pixelCount; $i++) {
-			$r = $dibPixels[$i * 4 + 2]; // DIB is BGRA, R is at offset 2
-			$texData[$i * 4 + 0] = 255; // R = white
-			$texData[$i * 4 + 1] = 255; // G = white
-			$texData[$i * 4 + 2] = 255; // B = white
-			$texData[$i * 4 + 3] = $r; // A = luminance (anti-aliased alpha)
-		}
-
-		// Create OpenGL texture
-		$texIdBuf = $gl->new("UINT[1]");
-		$gl->glGenTextures(1, FFI::addr($texIdBuf[0]));
-		$texId = $texIdBuf[0];
-		$gl->glBindTexture(0x0de1, $texId); // GL_TEXTURE_2D
+		// ── Upload downsampled atlas to GL ──
+		$tid = $gl->new("UINT[1]");
+		$gl->glGenTextures(1, FFI::addr($tid[0]));
+		$texId = $tid[0];
+		$gl->glBindTexture(0x0de1, $texId);
 		$gl->glTexParameteri(0x0de1, 0x2801, 0x2601); // MIN_FILTER = LINEAR
 		$gl->glTexParameteri(0x0de1, 0x2800, 0x2601); // MAG_FILTER = LINEAR
-		$gl->glTexImage2D(
-			0x0de1,
-			0,
-			0x1908,
-			$atlasW,
-			$atlasH,
-			0,
-			0x1908,
-			0x1401,
-			$texData,
-		); // GL_RGBA, GL_UNSIGNED_BYTE
+		$gl->glTexImage2D(0x0de1, 0, 0x1908, $outW, $outH, 0, 0x1908, 0x1401, $dst);
 		$gl->glBindTexture(0x0de1, 0);
 
-		// Store atlas info
+		// ── Map glyph coordinates to downsampled atlas ──
+		$finalGlyphs = [];
+		foreach ($glyphs as $ch => $g) {
+			$finalGlyphs[$ch] = [
+				"tx"   => $g["tx"] / $scale,
+				"ty"   => $g["ty"] / $scale,
+				"tw"   => $g["w"]  / $scale,
+				"advX" => $g["advX"],
+			];
+		}
+
+		$glyphH = $maxH / $scale;
+
+		// ── Cleanup ──
+		$gp->GdipDeleteStringFormat($strFmt);
+		$gp->GdipDeleteFont($font);
+		$gp->GdipDeleteFontFamily($family);
+		$gp->GdipDeleteGraphics($measGfx);
+		$gp->GdipDeleteGraphics($gfx);
+		$gp->GdipDisposeImage($bmp);
+		$gdi->DeleteDC($memDC);
+
 		$this->fontAtlas[$listBase] = [
-			"texId" => $texId,
-			"glyphs" => $glyphs,
-			"height" => $fontSize,
-			"atlasW" => $atlasW,
-			"atlasH" => $atlasH,
+			"texId"         => $texId,
+			"glyphs"        => $finalGlyphs,
+			"height"        => $glyphH,
+			"ascent"        => $ascent,
+			"descent"       => $descent,
+			"spaceW"        => $spaceW,
+			"requestedSize" => (float)$fontSize,
+			"atlasW"        => $outW,
+			"atlasH"        => $outH,
 		];
 
-		// Cleanup GDI objects
-		$gdi->DeleteDC($memDC);
-		$gdi->DeleteObject($hBitmap);
-		$gdi->DeleteObject($font);
+		$this->log("Atlas ready: {$outW}x{$outH} texture, " . count($finalGlyphs) . " glyphs, glyphH=" . round($glyphH, 1) . "px, spaceW=" . round($spaceW, 1) . "px");
 	}
 
-	private function renderText($text, $x, $y, $color, $listBase = 1000)
+	private function renderIcon($icon, $x, $y, $color, $size = 24)
+	{
+		$char = is_int($icon) ? mb_chr($icon, "UTF-8") : $icon;
+		$this->renderText($char, $x, $y, $color, 4000);
+	}
+
+	/**
+	 * Browser-fidelity text renderer with proper advance widths.
+	 * Uses sRGB-correct downsampled atlas for smooth anti-aliased text.
+	 */
+	public function renderText($text, $x, $y, $color, $listBase = 1000, $spacing = 0, $alignment = "LE")
 	{
 		$gl = $this->opengl32;
-		if (!isset($this->fontAtlas[$listBase])) {
-			return;
-		}
-		$atlas = $this->fontAtlas[$listBase];
+		if (!isset($this->fontAtlas[$listBase])) return;
 
-		$gl->glEnable(0x0de1); // GL_TEXTURE_2D
+		$atlas = $this->fontAtlas[$listBase];
 		$gl->glBindTexture(0x0de1, $atlas["texId"]);
-		$a = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
-		$gl->glColor4f($color[0], $color[1], $color[2], $a);
+		$gl->glEnable(0x0de1);
 		$gl->glBegin(0x0007); // GL_QUADS
 
-		$curX = $x;
-		$h = $atlas["height"];
-		$aw = $atlas["atlasW"];
-		$ah = $atlas["atlasH"];
-		// y is baseline; render text from (y - h*0.8) to (y + h*0.2)
+		if ($color === null) $color = $this->colors["text"] ?? [1, 1, 1];
+		$a = (count($color) > 3 ? $color[3] : 1.0) * ($this->globalAlpha ?? 1.0);
+		$gl->glColor4f($color[0], $color[1], $color[2], $a);
+
+		$curX = (float)$x;
+		$h = $atlas["requestedSize"];
+		$glyphH = $atlas["height"];
+		$drawScale = $h / $glyphH;
+		$spaceW = $atlas["spaceW"] * $drawScale;
+
+		$aw = (float)$atlas["atlasW"];
+		$ah = (float)$atlas["atlasH"];
+
+		// Vertical positioning (backward-compatible with existing UI layout)
 		$top = $y - $h * 0.75;
 		$bot = $top + $h;
 
-		for ($i = 0; $i < strlen($text); $i++) {
-			$ch = ord($text[$i]);
-			if ($ch < 32 || $ch >= 127) {
-				$curX += 6;
-				continue;
-			}
+		// Decode UTF-8 string into codepoints for Unicode support
+		$codepoints = [];
+		$len = strlen($text);
+		for ($i = 0; $i < $len; $i++) {
+			$c = ord($text[$i]);
+			if ($c <= 0x7F) $codepoints[] = $c;
+			else if (($c & 0xE0) == 0xC0) { $codepoints[] = (($c & 0x1F) << 6) | (ord($text[++$i]) & 0x3F); }
+			else if (($c & 0xF0) == 0xE0) { $codepoints[] = (($c & 0x0F) << 12) | ((ord($text[++$i]) & 0x3F) << 6) | (ord($text[++$i]) & 0x3F); }
+			else if (($c & 0xF8) == 0xF0) { $codepoints[] = (($c & 0x07) << 18) | ((ord($text[++$i]) & 0x3F) << 12) | ((ord($text[++$i]) & 0x3F) << 6) | (ord($text[++$i]) & 0x3F); }
+		}
+
+		foreach ($codepoints as $ch) {
+			if ($ch == 9) { $curX += $spaceW * 4; continue; }
+			if ($ch == 32) { $curX += $spaceW + $spacing; continue; }
+
+			if (!isset($atlas["glyphs"][$ch])) continue;
+
 			$g = $atlas["glyphs"][$ch];
-			$u1 = $g["x"] / $aw;
-			$u2 = ($g["x"] + $g["w"]) / $aw;
-			$v1 = 0.0; // top of atlas (top-down DIB → top row at t=0)
-			$v2 = ($h + 2) / $ah;
+			$u1 = $g["tx"] / $aw;
+			$u2 = ($g["tx"] + $g["tw"]) / $aw;
+			$v1 = $g["ty"] / $ah;
+			$v2 = ($g["ty"] + $glyphH) / $ah;
+
+			$drawW = $g["tw"] * $drawScale;
+			$drawX = $curX;
 
 			$gl->glTexCoord2f($u1, $v1);
-			$gl->glVertex2f($curX, $top);
+			$gl->glVertex2f($drawX, $top);
 			$gl->glTexCoord2f($u2, $v1);
-			$gl->glVertex2f($curX + $g["w"], $top);
+			$gl->glVertex2f($drawX + $drawW, $top);
 			$gl->glTexCoord2f($u2, $v2);
-			$gl->glVertex2f($curX + $g["w"], $bot);
+			$gl->glVertex2f($drawX + $drawW, $bot);
 			$gl->glTexCoord2f($u1, $v2);
-			$gl->glVertex2f($curX, $bot);
+			$gl->glVertex2f($drawX, $bot);
 
-			$curX += $g["w"];
+			$curX += ($g["advX"] * $drawScale) + $spacing;
 		}
 
 		$gl->glEnd();
@@ -1978,22 +2408,37 @@ class FoxyClient
 		$gl->glBindTexture(0x0de1, 0);
 	}
 
-	private function getTextWidth($text, $listBase = 1000)
+	/**
+	 * Calculate string width using per-glyph advance widths.
+	 */
+	private function getTextWidth($text, $listBase = 1000, $spacing = 0)
 	{
-		if (!isset($this->fontAtlas[$listBase])) {
-			return 0;
-		}
+		if (!isset($this->fontAtlas[$listBase])) return 0;
 		$atlas = $this->fontAtlas[$listBase];
-		$w = 0;
-		for ($i = 0; $i < strlen($text); $i++) {
-			$ch = ord($text[$i]);
-			if (isset($atlas["glyphs"][$ch])) {
-				$w += $atlas["glyphs"][$ch]["w"];
-			} else {
-				$w += 6;
-			}
+		$h = $atlas["requestedSize"];
+		$glyphH = $atlas["height"];
+		$drawScale = $h / $glyphH;
+		$spaceW = $atlas["spaceW"] * $drawScale;
+
+		// Unicode decoding (Sync with renderText)
+		$codepoints = [];
+		$len = strlen((string)$text);
+		for ($i = 0; $i < $len; $i++) {
+			$c = ord($text[$i]);
+			if ($c <= 0x7F) $codepoints[] = $c;
+			else if (($c & 0xE0) == 0xC0) { $codepoints[] = (($c & 0x1F) << 6) | (ord($text[++$i]) & 0x3F); }
+			else if (($c & 0xF0) == 0xE0) { $codepoints[] = (($c & 0x0F) << 12) | ((ord($text[++$i]) & 0x3F) << 6) | (ord($text[++$i]) & 0x3F); }
+			else if (($c & 0xF8) == 0xF0) { $codepoints[] = (($c & 0x07) << 18) | ((ord($text[++$i]) & 0x3F) << 12) | ((ord($text[++$i]) & 0x3F) << 6) | (ord($text[++$i]) & 0x3F); }
 		}
-		return $w;
+
+		$totalW = 0.0;
+		foreach ($codepoints as $ch) {
+			if ($ch == 9) { $totalW += $spaceW * 4; continue; }
+			if ($ch == 32) { $totalW += $spaceW + (float)$spacing; continue; }
+			if (!isset($atlas["glyphs"][$ch])) continue;
+			$totalW += ($atlas["glyphs"][$ch]["advX"] * $drawScale) + (float)$spacing;
+		}
+		return $totalW;
 	}
 
 	// ─── Scroll helpers ───
@@ -2003,10 +2448,17 @@ class FoxyClient
 			$this->currentPage === self::PAGE_FOXYCLIENT ? 0 : $this->activeTab;
 		$mods = $this->tabs[$tabIdx]["mods"] ?? [];
 		if ($this->currentPage === self::PAGE_MODS) {
-			if ($this->modpackSubTab === 2) {
+			if ($this->modpackSubTab === 3) {
+				// installed modpacks (Index 3)
 				$modsCount = count($this->installedModpacks);
 				$contentH = $modsCount * (72 + 8) + 20;
+			} elseif ($this->modpackSubTab === 0) {
+				// installed mod (Index 0)
+				$modsCount = is_array($this->localMods) ? count($this->localMods) : 0;
+				$rows = ceil($modsCount / 2);
+				$contentH = $rows * (160 + 15) + 20; // 160=cardH, 15=gap
 			} else {
+				// Discovery Tabs (1 & 3)
 				$modsCount = count($this->modrinthSearchResults);
 				$rows = ceil($modsCount / 2);
 				$contentH = $rows * (110 + 12) + 20;
@@ -2080,6 +2532,11 @@ class FoxyClient
 			return;
 		}
 
+		if ($this->modInfoModalOpen) {
+			$this->handleModInfoModalClick($x, $y);
+			return;
+		}
+
 		if ($this->bgModalOpen) {
 			$this->handleBgModalClick($x, $y);
 			return;
@@ -2087,6 +2544,11 @@ class FoxyClient
 
 		if ($this->javaModalOpen) {
 			$this->handleJavaModalClick($x, $y);
+			return;
+		}
+
+		if ($this->logoutModalOpen) {
+			$this->handleLogoutModalClick($x, $y);
 			return;
 		}
 
@@ -2171,22 +2633,11 @@ class FoxyClient
 		switch ($this->dragType) {
 			case "mods":
 				$maxScroll = $this->getMaxScroll();
-				$viewH =
-					$this->height -
-					self::TITLEBAR_H -
-					self::HEADER_H -
-					self::TAB_H -
-					self::FOOTER_H;
+				$viewH = $this->height - self::TITLEBAR_H - self::HEADER_H - self::TAB_H - self::FOOTER_H;
 				if ($maxScroll > 0) {
-					$thumbH = max(
-						20,
-						$viewH * ($viewH / ($maxScroll + $viewH)),
-					);
+					$thumbH = max(20, ($viewH / ($maxScroll + $viewH)) * $viewH);
 					$delta = ($dy / ($viewH - $thumbH)) * $maxScroll;
-					$this->scrollTarget = max(
-						0,
-						min($maxScroll, $this->dragStartOffset + $delta),
-					);
+					$this->scrollTarget = max(0, min($maxScroll, $this->dragStartOffset + $delta));
 				}
 				break;
 			case "versions":
@@ -2194,37 +2645,60 @@ class FoxyClient
 				$viewH = $this->height - self::TITLEBAR_H - 110 - 150;
 				if ($maxScroll > 0) {
 					$filtered = $this->getFilteredVersions();
-					$contentH = count($filtered) * 40; // Matches renderScrollbarVersions logic
+					$contentH = count($filtered) * 62; // Sync with handleVersionsPageClick math
 					$thumbH = max(20, ($viewH / $contentH) * $viewH);
 					$delta = ($dy / ($viewH - $thumbH)) * $maxScroll;
-					$this->vScrollTarget = max(
-						0,
-						min($maxScroll, $this->dragStartOffset + $delta),
-					);
+					$this->vScrollTarget = max(0, min($maxScroll, $this->dragStartOffset + $delta));
 				}
 				break;
-			case "prop":
-				$maxScroll = 200; // Hardcoded max in existing mousewheel logic
-				$viewH = $this->height - self::TITLEBAR_H - 120; // Approx
-				$thumbH = max(30, $viewH * ($viewH / ($maxScroll + $viewH)));
-				$delta = ($dy / ($viewH - $thumbH)) * $maxScroll;
-				$this->propScrollTarget = max(
-					0,
-					min($maxScroll, $this->dragStartOffset + $delta),
-				);
-				break;
-			case "home_dropdown":
-				$contentH = count($this->getHomeVersions()) * 40;
-				$viewH = 200;
+			case "accounts":
+				$usableH = $this->height - self::TITLEBAR_H;
+				$listTop = 110;
+				$viewH = $usableH - ($this->getFooterVisibility() ? self::FOOTER_H : 0) - $listTop;
+				$contentH = count($this->accounts) * 70;
 				$maxScroll = max(0, $contentH - $viewH);
 				if ($maxScroll > 0) {
 					$thumbH = max(20, ($viewH / $contentH) * $viewH);
 					$delta = ($dy / ($viewH - $thumbH)) * $maxScroll;
-					$this->homeVerScrollTarget = max(
-						0,
-						min($maxScroll, $this->dragStartOffset + $delta),
-					);
+					$this->accScrollTarget = max(0, min($maxScroll, $this->dragStartOffset + $delta));
 				}
+				break;
+			case "prop":
+				$maxScroll = 200;
+				$viewH = $this->height - self::TITLEBAR_H - 120;
+				$thumbH = max(30, ($viewH / ($maxScroll + $viewH)) * $viewH);
+				$delta = ($dy / ($viewH - $thumbH)) * $maxScroll;
+				$this->propScrollTarget = max(0, min($maxScroll, $this->dragStartOffset + $delta));
+				break;
+			case "keybinds":
+			case "macros":
+			case "config":
+				$listH = $this->foxySubTab === 3 ? ($this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 10)) : ($this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 38));
+				if ($this->foxySubTab === 2) $listH -= 40;
+				$maxS = $this->getMaxScroll();
+				if ($maxS > 0) {
+					$thumbH = max(20, ($listH / ($maxS + $listH)) * $listH);
+					$delta = ($dy / ($listH - $thumbH)) * $maxS;
+					$val = max(0, min($maxS, $this->dragStartOffset + $delta));
+					if ($this->foxySubTab === 1) $this->foxyKeybindScrollTarget = $val;
+					elseif ($this->foxySubTab === 2) $this->foxyMacroScrollTarget = $val;
+					elseif ($this->foxySubTab === 3) $this->foxyConfigScrollTarget = $val;
+				}
+				break;
+			case "ram_slider":
+				$cw = $this->width - self::SIDEBAR_W;
+				$cx = $x - self::SIDEBAR_W;
+				$fieldX = $cw - self::PAD - 300;
+				$sliderW = 150; // Match renderPropertiesPage
+				$sliderX = $fieldX + 10;
+
+				$val = ($cx - $sliderX) / $sliderW;
+				$val = max(0, min(1, $val));
+				$minRam = 512;
+				$maxRam = $this->systemRamMB;
+				$mb = $minRam + $val * ($maxRam - $minRam);
+				$this->settings["ram_mb"] = (int)max(512, min($this->systemRamMB, round($mb / 256) * 256));
+				$this->needsRedraw = true;
 				break;
 		}
 	}
@@ -2233,6 +2707,26 @@ class FoxyClient
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		$usableH = $this->height - self::TITLEBAR_H;
+
+		// Scrollbar interaction
+		$maxScroll = max(0, count($this->accounts) * 70 - ($usableH - 110));
+		if ($maxScroll > 0) {
+			if ($cx >= $cw - 15 && $cx <= $cw) {
+				$listTop = 110;
+				$listH = $usableH - ($this->getFooterVisibility() ? self::FOOTER_H : 0) - $listTop;
+				$contentH = count($this->accounts) * 70;
+				$thumbH = max(20, ($listH / $contentH) * $listH);
+				$thumbY = ($this->accScrollOffset / $maxScroll) * ($listH - $thumbH);
+				$absY = $listTop + $thumbY;
+				if ($cy >= $absY && $cy <= $absY + $thumbH) {
+					$this->isDraggingScroll = true;
+					$this->dragType = "accounts";
+					$this->dragStartY = $this->mouseY;
+					$this->dragStartOffset = $this->accScrollOffset;
+					return;
+				}
+			}
+		}
 
 		// Add Button Click
 		$addBtnW = 150;
@@ -2261,19 +2755,13 @@ class FoxyClient
 				$uuid = $uuids[$idx];
 				$itemLocalY = $localY - $idx * ($itemH + $gap);
 				if ($itemLocalY <= $itemH) { 
-					// Delete button check
-					$delW = 32;
+					// Logout button check
+					$delW = 100;
 					$delX = $cw - self::PAD - $delW - 16;
 					if ($cx >= $delX) {
-						unset($this->accounts[$uuid]);
-						if ($this->activeAccount === $uuid) {
-							if (count($this->accounts) > 0) {
-								$this->selectAccount(array_key_first($this->accounts));
-							} else {
-								$this->logout();
-							}
-						}
-						$this->saveAccounts();
+						$this->pendingLogoutUuid = $uuid;
+						$this->logoutModalOpen = true;
+						$this->needsRedraw = true;
 					} else {
 						$this->selectAccount($uuid);
 						$this->switchPage(self::PAGE_HOME);
@@ -2616,31 +3104,50 @@ class FoxyClient
 			}
 		}
 	}
-
+	
 	private function handleModsPageClick($cx, $cy)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
+		
+		// 0. Scrollbar drag detection
+		$maxScroll = $this->getMaxScroll();
+		if ($maxScroll > 0 && $cx >= $cw - 15 && $cx <= $cw) {
+			$yOff = self::HEADER_H + self::TAB_H;
+			$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - $yOff;
+			$scrollH = max(30, ($listH / ($listH + $maxScroll)) * $listH);
+			$thumbY = $yOff + ($this->scrollOffset / $maxScroll) * ($listH - $scrollH);
+			if ($cy >= $thumbY && $cy <= $thumbY + $scrollH) {
+				$this->isDraggingScroll = true;
+				$this->dragType = "mods";
+				$this->dragStartY = $this->mouseY;
+				$this->dragStartOffset = $this->scrollOffset;
+				return;
+			}
+		}
 
-		// Sub-tabs (Mods, Modpacks, Installed)
+		// 1. Sub-tabs (New Order: installed mod, Mods, installed modpacks, Modpacks)
 		if ($cy >= self::HEADER_H && $cy <= self::HEADER_H + self::TAB_H) {
 			$tabX = self::PAD;
-			foreach (["Mods", "Modpacks", "Installed"] as $i => $name) {
-				$tw = $this->getTextWidth($name, 1000) + 32;
+			$labels = ["INSTALLED MODS", "MODS", "MODPACKS", "INSTALLED MODPACKS"];
+			foreach ($labels as $i => $name) {
+				$tw = $this->getTextWidth($name, 3000) + 32;
 				if ($cx >= $tabX && $cx <= $tabX + $tw) {
 					if ($this->modpackSubTab !== $i) {
 						$this->modpackSubTab = $i;
+						$this->subTabFadeStart = microtime(true);
 						$this->scrollOffset = 0;
 						$this->scrollTarget = 0;
 						$this->hoverModIndex = -1;
-						$this->modrinthAnim = 0.0; // Trigger transition
+						$this->modrinthAnim = 0.0;
 						$this->modrinthPage = 0;
-						$this->modPageTarget = 0;
-						$this->modPageDebounceTimer = 0;
-						// ALWAYS search on sub-tab switch for dedicated browser feel
-						// searchModrinth will handle cache cleanup internally
-						$this->searchModrinth();
-						if ($i === 2) {
+
+						if ($i === 0) {
+							$this->scanLocalMods();
+						} elseif ($i === 3) {
 							$this->checkModpackIcons();
+						} else {
+							// For Tab 1 (Mods) and Tab 2 (Modpacks)
+							$this->searchModrinth();
 						}
 					}
 					return;
@@ -2649,34 +3156,37 @@ class FoxyClient
 			}
 		}
 
-		// Search Bar focus
+		// 2. Search Bar focus & Clear Button
 		$searchW = 300;
 		$searchX = $cw - self::PAD - $searchW;
-		if (
-			$cx >= $searchX &&
-			$cx <= $searchX + $searchW &&
-			$cy >= 20 &&
-			$cy <= 60
-		) {
+		if ($cx >= $searchX && $cx <= $searchX + $searchW && $cy >= 15 && $cy <= 55) {
+			// Check if "Clear" button (X) was clicked (right ~32px)
+			if (!empty($this->modSearchQuery) && $cx >= $searchX + $searchW - 35) {
+				$this->modSearchQuery = "";
+				$this->searchModrinth(); // Trigger update
+				return;
+			}
 			$this->modSearchFocus = true;
 			return;
 		}
 		$this->modSearchFocus = false;
 
-		// Filter Pill Clicks
-		if ($this->modsFilterDropdown === "" && $this->modsFilterDropdownAnim <= 0.01) {
-			foreach ($this->modsFilterPillRects as $key => $rect) {
-				if ($cx >= $rect[0] && $cx <= $rect[0] + $rect[2] && 
-					$cy >= $rect[1] && $cy <= $rect[1] + $rect[3]) {
-					$this->modsFilterDropdown = $key;
+		// 3. Filter Pill Clicks (category, loader, env, version)
+		foreach ($this->modsFilterPillRects as $key => $rect) {
+			if ($cx >= $rect[0] && $cx <= $rect[0] + $rect[2] && $cy >= $rect[1] && $cy <= $rect[1] + $rect[3]) {
+				if ($this->modsFilterDropdown === $key) {
+					$this->modsFilterDropdown = ""; // Toggle close
+				} else {
+					$this->modsFilterDropdown = $key; // Switch or Open
+					$this->modsFilterDropdownAnim = 0.0;
 					$this->modsFilterScrollTarget = 0;
 					$this->modsFilterScrollOffset = 0;
-					return;
 				}
+				return;
 			}
 		}
 
-		// Dropdown interaction if open
+		// 4. Dropdown interaction
 		if ($this->modsFilterDropdown !== "") {
 			$key = $this->modsFilterDropdown;
 			$pillRect = $this->modsFilterPillRects[$key] ?? null;
@@ -2685,36 +3195,21 @@ class FoxyClient
 				$ddY = $pillRect[1] + $pillRect[3] + 4;
 				$ddW = $key === "env" ? 150 : 220;
 				
-				// Rebuild items to calculate height
 				$items = [];
 				if ($key === "category") {
 					$items[] = ["", "All Categories"];
-					foreach ($this->modsCategories as $cat) {
-						$items[] = [$cat, $this->modsCategoryLabels[$cat] ?? $cat];
-					}
+					foreach ($this->modsCategories as $cat) $items[] = [$cat, $this->modsCategoryLabels[$cat] ?? $cat];
 				} elseif ($key === "loader") {
 					$items[] = ["", "All Loaders"];
-					foreach ($this->modsLoaderList as $ld) {
-						$items[] = [$ld, $this->modsLoaderLabels[$ld] ?? ucfirst($ld)];
-					}
+					foreach ($this->modsLoaderList as $ld) $items[] = [$ld, $this->modsLoaderLabels[$ld] ?? ucfirst($ld)];
 				} elseif ($key === "env") {
 					$items = [["", "All"], ["client", "Client"], ["server", "Server"]];
 				} elseif ($key === "version") {
 					$releaseVersions = [];
-					foreach ($this->versions as $v) {
-						if (($v["type"] ?? "") === "release") {
-							$releaseVersions[] = $v["id"];
-						}
-					}
-					if (empty($releaseVersions)) {
-						$releaseVersions = [$this->config["minecraft_version"]];
-					}
-					usort($releaseVersions, function ($a, $b) {
-						return version_compare($b, $a);
-					});
-					foreach ($releaseVersions as $ver) {
-						$items[] = [$ver, $ver];
-					}
+					foreach ($this->versions as $v) if (($v["type"] ?? "") === "release") $releaseVersions[] = $v["id"];
+					if (empty($releaseVersions)) $releaseVersions = [$this->config["minecraft_version"]];
+					usort($releaseVersions, fn($a, $b) => version_compare($b, $a));
+					foreach ($releaseVersions as $ver) $items[] = [$ver, $ver];
 				}
 
 				if (!empty($items)) {
@@ -2724,119 +3219,48 @@ class FoxyClient
 
 					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $fullH) {
 						$localY = $cy - $ddY + $this->modsFilterScrollOffset;
-						$idx = (int) floor($localY / $itemH);
+						$idx = (int)floor($localY / $itemH);
 						if ($idx >= 0 && $idx < count($items)) {
 							$val = $items[$idx][0];
-							if ($key === "category") {
-								$this->modsFilterCategory = $val;
-							} elseif ($key === "loader") {
-								$this->modsFilterLoader = $val;
-							} elseif ($key === "env") {
-								$this->modsFilterEnv = $val;
-							} elseif ($key === "version") {
-								$this->setModsVersion($val);
-							}
+							if ($key === "category") $this->modsFilterCategory = $val;
+							elseif ($key === "loader") $this->modsFilterLoader = $val;
+							elseif ($key === "env") $this->modsFilterEnv = $val;
+							elseif ($key === "version") $this->setModsVersion($val);
 							
-							$this->modsFilterDropdown = ""; // Close
-							if ($this->modSearchQuery !== null) {
-								$this->searchModrinth();
-							}
+							$this->modsFilterDropdown = "";
+							if ($this->modSearchQuery !== null) $this->searchModrinth();
 							return;
 						}
-						return; // Clicked inside dropdown but not on item, still eat the click
 					}
 				}
 			}
-			// Clicked outside dropdown
 			$this->modsFilterDropdown = "";
 			return;
 		}
 
-		if ($this->modpackSubTab === 2) {
-			// Installed tab - uninstall button clicks
-			$y = self::HEADER_H + self::TAB_H + 10 - $this->scrollOffset;
-			if ($this->isInstallingModpack || $this->modpackInstallProgress !== "") {
-				$y += 46;
-			}
-			$idx = 0;
-			foreach ($this->installedModpacks as $slug => $pack) {
-				$cardH = 72;
-				$btnW = 100;
-				$btnH = 32;
-				$btnX = $cw - self::PAD * 2 - $btnW - 10;
-				$btnY2 = $y + ($cardH - $btnH) / 2;
-
-				// Play button detection
-				$pBtnW = 80;
-				$pBtnX = $cw - self::PAD * 2 - $btnW - 20 - $pBtnW;
-				if ($cx >= $pBtnX && $cx <= $pBtnX + $pBtnW && $cy >= $btnY2 && $cy <= $btnY2 + $btnH) {
-					$this->launchModpack($slug);
-					return;
-				}
-
-				// Uninstall button detection
-				if ($cx >= $btnX && $cx <= $btnX + $btnW && $cy >= $btnY2 && $cy <= $btnY2 + $btnH) {
-					$this->uninstallModpack($slug);
-					return;
-				}
-				$y += $cardH + 8;
-				$idx++;
-			}
-		}
-
+		// 5. Version Dropdown
 		if ($this->modsVerDropdownOpen) {
 			$this->modsVerDropdownOpen = false;
 			return;
 		}
 
-		$y = self::HEADER_H + self::TAB_H;
-		if ($this->currentPage === self::PAGE_MODS && ($this->modpackSubTab === 1 || $this->modpackSubTab === 2) && ($this->isInstallingModpack || $this->modpackInstallProgress !== "")) {
-			$y += 46;
-		}
-		$usableH = $this->height - self::TITLEBAR_H;
-		$showFooter = $this->getFooterVisibility();
-		$effectiveFooterH = $showFooter ? self::FOOTER_H : 0;
-		$h = $usableH - $effectiveFooterH - $y;
+		// 6. Pagination (Discovery Mode)
+		if ($this->currentPage === self::PAGE_MODS && $this->modrinthTotalHits > 20) {
+			$pgY = $this->height - self::TITLEBAR_H - ($this->getFooterVisibility() ? self::FOOTER_H : 0) - 45;
+			$pgW = 200; $pgX = ($cw - $pgW) / 2;
 
-		// Discovery Mode - Priority 1: Pagination (Fixed Window-Relative to prevent clipping)
-		if (
-			$this->currentPage === self::PAGE_MODS &&
-			$this->modrinthTotalHits > 20
-		) {
-			$pgY = $usableH - $effectiveFooterH - 45; // Fixed 5px above footer or bottom
-			$pgW = 200;
-			$pgX = ($cw - $pgW) / 2;
-
-			// Prev Button
-			if (
-				$cx >= $pgX &&
-				$cx <= $pgX + 60 &&
-				$cy >= $pgY &&
-				$cy <= $pgY + 30
-			) {
+			if ($cx >= $pgX && $cx <= $pgX + 60 && $cy >= $pgY && $cy <= $pgY + 30) {
 				if ($this->modrinthPage > 0) {
 					$this->modrinthPage--;
-					$this->modPageTarget = $this->modrinthPage;
-					$this->modPageDebounceTimer = 0;
 					$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
 					$this->needsRedraw = true;
 				}
 				return;
 			}
-
-			// Next Button
 			$nextX = $pgX + $pgW - 60;
-			if (
-				$cx >= $nextX &&
-				$cx <= $nextX + 60 &&
-				$cy >= $pgY &&
-				$cy <= $pgY + 30
-			) {
-				$totalPages = ceil($this->modrinthTotalHits / 20);
-				if ($this->modrinthPage + 1 < $totalPages) {
+			if ($cx >= $nextX && $cx <= $nextX + 60 && $cy >= $pgY && $cy <= $pgY + 30) {
+				if ($this->modrinthPage + 1 < ceil($this->modrinthTotalHits / 20)) {
 					$this->modrinthPage++;
-					$this->modPageTarget = $this->modrinthPage;
-					$this->modPageDebounceTimer = 0;
 					$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
 					$this->needsRedraw = true;
 				}
@@ -2844,101 +3268,136 @@ class FoxyClient
 			}
 		}
 
-		if (
-			$cx >= self::PAD &&
-			$cx <= $cw - self::PAD &&
-			$cy >= $y &&
-			$cy <= $y + $h
-		) {
-			if ($this->currentPage === self::PAGE_MODS) {
-				// Grid logic for Modrinth
-				$alpha = $this->modrinthAnim;
-				$slideY = (1.0 - $alpha) * 20;
-				$gridX = self::PAD;
-				$gridY = $y + 10 - $this->scrollOffset + $slideY;
-				$cardW = ($cw - self::PAD * 3) / 2;
-				$cardH = 110;
-				$gap = 12;
+		// 7. Grid/List Interaction (Managed, Installed, or Discovery)
+		$y = self::HEADER_H + self::TAB_H;
+		$usableH = $this->height - self::TITLEBAR_H;
+		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
+		$h = $usableH - $footerH - $y;
 
-				foreach ($this->modrinthSearchResults as $i => $hit) {
-					$col = $i % 2;
-					$row = floor($i / 2);
-					$itemX = $gridX + $col * ($cardW + $gap);
+		if ($cx >= self::PAD && $cx <= $cw - self::PAD && $cy >= $y && $cy <= $y + $h) {
+			if ($this->modpackSubTab === 0) {
+				// installed mod Tab (Was Managed/Index 3)
+				$cardW = ($cw - self::PAD * 3) / 2;
+				$cardH = 160; $gap = 15;
+				$gridY = $y + 10 - $this->scrollOffset;
+
+				foreach ($this->localMods as $i => $mod) {
+					$col = $i % 2; $row = floor($i / 2);
+					$itemX = self::PAD + $col * ($cardW + $gap);
 					$itemY = $gridY + $row * ($cardH + $gap);
 
 					if ($itemY + $cardH > $y && $itemY < $y + $h) {
-						$btnW = 90;
-						$btnH = 32;
-						$btnX = $itemX + $cardW - $btnW - 16;
-						$btnY2 = $itemY + 16;
-
-						// Check INSTALL button (rightmost)
-						if (
-							$cx >= $btnX &&
-							$cx <= $btnX + $btnW &&
-							$cy >= $btnY2 &&
-							$cy <= $btnY2 + $btnH
-						) {
-							$slug = $hit["slug"] ?? $hit["project_id"];
-							if (isset($this->installedModpacks[$slug]) || isset($this->installedModpacks[$hit["project_id"]])) {
-								$this->log("Modpack already installed: " . ($hit["title"] ?? $slug));
-								return;
+						$btnW = 86; $btnH = 26; $btnX = $itemX + $cardW - $btnW - 12;
+						$unBtnX = $btnX - $btnW - 8;
+						
+						// Uninstall
+						if ($cx >= $unBtnX && $cx <= $unBtnX + $btnW && $cy >= $itemY + 12 && $cy <= $itemY + 12 + $btnH) {
+							if (file_exists($mod["path"])) {
+								unlink($mod["path"]);
+								$this->scanLocalMods();
 							}
-
-							$title =
-								$hit["title"] ?? ($hit["slug"] ?? "Unknown");
-							$this->log("Installing from Modrinth: " . $title);
-							$this->installModrinthProject(
-								$hit["project_id"],
-								$hit["project_type"] ?? "mod",
-								$title,
-							);
 							return;
 						}
-
-						// Check "External" icon (browser, left of install)
-						$btnSize = 32;
-						$btnGap = 8;
-						$brX = $btnX - $btnSize - $btnGap;
-						if (
-							$cx >= $brX &&
-							$cx <= $brX + $btnSize &&
-							$cy >= $btnY2 &&
-							$cy <= $btnY2 + $btnSize
-						) {
-							$slug = $hit["slug"] ?? $hit["id"];
-							shell_exec(
-								"explorer \"https://modrinth.com/project/$slug\"",
-							);
+						// Toggle
+						if ($cx >= $btnX && $cx <= $btnX + $btnW && $cy >= $itemY + 12 && $cy <= $itemY + 12 + $btnH) {
+							$this->toggleLocalMod($mod["path"]);
+							return;
+						}
+						// Info Modal
+						if ($cx >= $itemX && $cx <= $itemX + $cardW && $cy >= $itemY && $cy <= $itemY + $cardH) {
+							$this->modInfoSelected = $mod;
+							$this->modInfoModalOpen = true;
+							$this->modInfoAlpha = 0.0;
 							return;
 						}
 					}
 				}
-			} else {
-				// Local Mods Mode
-				$mods = $this->tabs[$this->activeTab]["mods"] ?? [];
-				$itemY = $y + 10 - $this->scrollOffset;
-				foreach ($mods as $i => $mod) {
-					if ($itemY + self::CARD_H > $y && $itemY < $y + $h) {
-						if (
-							$cx >= self::PAD &&
-							$cx <= $cw - self::PAD &&
-							$cy >= $itemY &&
-							$cy <= $itemY + self::CARD_H
-						) {
-							$this->tabs[$this->activeTab]["mods"][$i][
-								"checked"
-							] = !$mod["checked"];
-							$this->saveConfig();
+			} elseif ($this->modpackSubTab === 3) {
+				// installed modpacks Tab (Index 3)
+				$gridY = $y + 10 - $this->scrollOffset;
+				foreach ($this->installedModpacks as $slug => $pack) {
+					$packH = 72;
+					if ($cy >= $gridY && $cy <= $gridY + $packH) {
+						$lBtnW = 100; $lBtnH = 32; $lBtnX = $cw - self::PAD - $lBtnW - 10;
+						$lBtnY = $gridY + ($packH - $lBtnH) / 2;
+						$uBtnW = 100; $uBtnX = $lBtnX - 10 - $uBtnW;
+
+						// Launch
+						if ($cx >= $lBtnX && $cx <= $lBtnX + $lBtnW && $cy >= $lBtnY && $cy <= $lBtnY + $lBtnH) {
+							$this->launchModpack($slug);
+							return;
+						}
+
+						// Uninstall
+						if ($cx >= $uBtnX && $cx <= $uBtnX + $uBtnW && $cy >= $lBtnY && $cy <= $lBtnY + $lBtnH) {
+							$instPath = $pack["install_path"] ?? null;
+							if ($instPath) {
+								$fullPath = $this->getAbsolutePath($instPath);
+								if (is_dir($fullPath)) {
+									$this->deleteDirectory($fullPath);
+								}
+							}
+							unset($this->installedModpacks[$slug]);
+							$this->saveSettings(); // Ensure change is persisted if modpacks are in settings
+							return;
+						}
+
+						// Info Modal
+						if ($cx >= self::PAD && $cx <= $cw - self::PAD && $cy >= $gridY && $cy <= $gridY + $packH) {
+							$this->modInfoSelected = [
+								"title" => $pack["name"] ?? $slug,
+								"project_id" => $slug,
+								"description" => $pack["description"] ?? "Local modpack installation.",
+								"author" => $pack["author"] ?? "Unknown",
+								"installed" => true,
+								"icon_path" => $pack["icon_path"] ?? null
+							];
+							$this->modInfoModalOpen = true;
+							$this->modInfoAlpha = 0.0;
 							return;
 						}
 					}
-					$itemY += self::CARD_H + self::CARD_GAP;
+					$gridY += $packH + 8;
+				}
+			} else {
+				// Discovery Mode (Index 1: Mods, Index 3: Modpacks)
+				$gridY = $y + 10 - $this->scrollOffset;
+				$cardW = ($cw - self::PAD * 3) / 2;
+				$cardH = 110; $gap = 12;
+
+				foreach ($this->modrinthSearchResults as $i => $hit) {
+					$col = $i % 2; $row = floor($i / 2);
+					$itemX = self::PAD + $col * ($cardW + $gap);
+					$itemY = $gridY + $row * ($cardH + $gap);
+
+					if ($itemY + $cardH > $y && $itemY < $y + $h) {
+						$btnW = 90; $btnH = 32; $btnX = $itemX + $cardW - $btnW - 16;
+						$btnY2 = $itemY + 16;
+						// Install
+						if ($cx >= $btnX && $cx <= $btnX + $btnW && $cy >= $btnY2 && $cy <= $btnY2 + $btnH) {
+							$slug = $hit["slug"] ?? $hit["project_id"];
+							$this->installModrinthProject($hit["project_id"], $hit["project_type"] ?? "mod", $hit["title"] ?? "Unknown");
+							return;
+						}
+						// External
+						$brX = $btnX - 32 - 8;
+						if ($cx >= $brX && $cx <= $brX + 32 && $cy >= $btnY2 && $cy <= $btnY2 + 32) {
+							$slug = $hit["slug"] ?? $hit["project_id"];
+							$this->openUrl("https://modrinth.com/project/$slug");
+							return;
+						}
+						// Info Modal
+						if ($cx >= $itemX && $cx <= $itemX + $cardW && $cy >= $itemY && $cy <= $itemY + $cardH) {
+							$this->modInfoSelected = $hit;
+							$this->modInfoModalOpen = true;
+							$this->modInfoAlpha = 0.0;
+							return;
+						}
+					}
 				}
 			}
 		}
 	}
-
 	private function toggleVersion()
 	{
 		// Toggle version dropdown open/closed
@@ -3499,7 +3958,7 @@ class FoxyClient
 				if (!empty($downloadQueue)) {
 					$mh = curl_multi_init();
 					$activeHandles = [];
-					$maxConcurrency = 24;
+					$maxConcurrency = 64; // Increased from 24 for faster parallel mod downloads
 					$queueIdx = 0;
 
 					$addNext = function() use (&$queueIdx, &$downloadQueue, $mh, &$activeHandles, $cacert) {
@@ -3512,6 +3971,8 @@ class FoxyClient
 						curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/ModpackInstaller");
 						curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 						curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+						curl_setopt($ch, CURLOPT_BUFFERSIZE, 524288); // 512KB buffer for higher throughput
+						curl_setopt($ch, CURLOPT_TCP_KEEPALIVE, 1);
 						if (file_exists($cacert)) curl_setopt($ch, CURLOPT_CAINFO, $cacert);
 						
 						curl_multi_add_handle($mh, $ch);
@@ -4047,6 +4508,11 @@ class FoxyClient
 		$iconsToDownload = [];
 		foreach ($this->installedModpacks as $slug => $pack) {
 			if (!empty($pack["icon_url"]) && !isset($this->modpackIconCache[$slug])) {
+				$cachePath = $this->getIconCachePath($slug);
+				if (file_exists($cachePath)) {
+					$this->modpackIconCache[$slug] = $this->createTextureFromFile($cachePath);
+					continue;
+				}
 				$iconsToDownload[$slug] = ["url" => $pack["icon_url"], "is_modpack" => true];
 			}
 		}
@@ -4165,6 +4631,13 @@ class FoxyClient
 
 		$activeAcc = $this->accounts[$this->activeAccount] ?? [];
 		$accType = $activeAcc["Type"] ?? self::ACC_OFFLINE;
+
+		// Refresh token if expired before launching the game
+		if ($accType !== self::ACC_OFFLINE) {
+			$this->refreshTokenIfExpired();
+			// Re-fetch the account data after potential refresh
+			$activeAcc = $this->accounts[$this->activeAccount] ?? [];
+		}
 
 		// Ensure authlib-injector for FoxyClient/Ely.by skins (and Offline accounts)
 		if (
@@ -4717,18 +5190,30 @@ class FoxyClient
 				$status = proc_get_status($proc);
 				$ch->send(["type" => "pid", "pid" => $status["pid"]]);
 
+				$batch = [];
+				$lastFlush = microtime(true);
+
 				while (!feof($pipes[1])) {
 					$line = fgets($pipes[1]);
 					if ($line !== false) {
 						$line = trim($line);
 						if ($line !== "") {
-							// All output safely merged to stdout
-							$ch->send(["type" => "log", "isError" => false, "msg" => $line]);
+							$batch[] = $line;
 						}
+					}
+
+					$now = microtime(true);
+					if (!empty($batch) && (count($batch) >= 20 || ($now - $lastFlush) >= 0.005)) {
+						$ch->send(["type" => "log_batch", "isError" => false, "msg" => $batch]);
+						$batch = [];
+						$lastFlush = $now;
 					}
 
 					$status = proc_get_status($proc);
 					if (!$status["running"] && feof($pipes[1])) {
+						if (!empty($batch)) {
+							$ch->send(["type" => "log_batch", "isError" => false, "msg" => $batch]);
+						}
 						$ch->send(["type" => "exit", "code" => $status["exitcode"]]);
 						break;
 					}
@@ -4878,12 +5363,12 @@ class FoxyClient
 
 		$this->updateOverlay();
 		try {
-			// Process events with a frame-time budget to prevent UI stutter (max 8ms boundary)
+			// Process events with a frame-time budget to prevent UI stutter
 			$pollStartTime = microtime(true);
 			$processed = 0;
-			while ($processed < 50 && ($event = $this->pollEvents->poll())) {
+			// Increased limit from 500 to 2000 for significantly faster log/stdout processing
+			while ($processed < 2000 && ($event = $this->pollEvents->poll())) {
 				$processed++;
-				$this->needsRedraw = true; // Any async event might change the UI state
 				// Determine source channel and re-add
 				$val = $event->value;
 				if (is_string($val)) {
@@ -4944,6 +5429,10 @@ class FoxyClient
 							}
 						} elseif ($data["type"] === "log") {
 							$this->log(($data["isError"] ? "[Game/Stderr] " : "[Game/Stdout] ") . $data["msg"], $data["isError"] ? "WARN" : "INFO");
+						} elseif ($data["type"] === "log_batch") {
+							foreach ($data["msg"] as $line) {
+								$this->log(($data["isError"] ? "[Game/Stderr] " : "[Game/Stdout] ") . $line, $data["isError"] ? "WARN" : "INFO");
+							}
 						} elseif ($data["type"] === "error") {
 							$this->log("Failed to start game process.", "ERROR");
 							$this->assetMessage = "FAILED TO START";
@@ -5123,14 +5612,25 @@ class FoxyClient
 							// Dispatch icon downloads
 							$iconsToDownload = [];
 							foreach ($res as $hit) {
-								if (!empty($hit["icon_url"]) && !isset($this->modIconCache[$hit["project_id"]])) {
-									$iconsToDownload[$hit["project_id"]] = $hit["icon_url"];
+								$id = $hit["project_id"];
+								if (!empty($hit["icon_url"]) && !isset($this->modIconCache[$id])) {
+									$cachePath = $this->getIconCachePath($id);
+									if (file_exists($cachePath)) {
+										$this->modIconCache[$id] = $this->createTextureFromFile($cachePath);
+										continue;
+									}
+									$iconsToDownload[$id] = $hit["icon_url"];
 								}
 							}
 							
 							// Also check installed modpacks for icons
 							foreach ($this->installedModpacks as $slug => $pack) {
 								if (!empty($pack["icon_url"]) && !isset($this->modpackIconCache[$slug])) {
+									$cachePath = $this->getIconCachePath($slug);
+									if (file_exists($cachePath)) {
+										$this->modpackIconCache[$slug] = $this->createTextureFromFile($cachePath);
+										continue;
+									}
 									$iconsToDownload[$slug] = ["url" => $pack["icon_url"], "is_modpack" => true];
 								}
 							}
@@ -5463,14 +5963,21 @@ class FoxyClient
 							$memData = $data["data"];
 							$id = $data["id"];
 							$isMp = $data["is_modpack"] ?? false;
-							$tex = $this->createTextureFromMemory($memData);
+
+							// Persistent Cache & Conversion
+							$cachePath = $this->processIconData($id, $memData);
+							if ($cachePath && file_exists($cachePath)) {
+								$tex = $this->createTextureFromFile($cachePath);
+							} else {
+								$tex = $this->createTextureFromMemory($memData);
+							}
+
 							if ($isMp) {
 								$this->modpackIconCache[$id] = $tex;
 							} else {
 								$this->modIconCache[$id] = $tex;
 							}
 							$this->modIconAlpha[$id] = 0.0; // Start fade-in animation
-							$this->needsRedraw = true;
 						}
 					} elseif (
 						isset($data["type"]) &&
@@ -5662,7 +6169,6 @@ class FoxyClient
 						$this->log("CA Update error: " . $this->updateMessage, "ERROR");
 					} elseif (isset($data["type"]) && $data["type"] === "ca_update_progress") {
 						$this->caUpdateProgress = (float)($data["pct"] ?? 0);
-						$this->needsRedraw = true;
 					}
 				}
 				
@@ -5670,6 +6176,10 @@ class FoxyClient
 				if (microtime(true) - $pollStartTime > 0.008) {
 					break;
 				}
+			}
+
+			if ($processed > 0) {
+				$this->needsRedraw = true;
 			}
 		} catch (\parallel\Events\Error\Timeout $e) {
 			// Ignore non-blocking timeout
@@ -7276,16 +7786,20 @@ class FoxyClient
 		$level = strtoupper($level);
 		$messageformated = sprintf(
 			"[%s] [%s] %s\n",
-			date("Y-m-d H:i:s"),
+			date("H:i:s"),
 			$level,
 			$message,
 		);
 
-		// Optional: Console color coding for Windows if supported, or just plain echo
 		echo $messageformated;
 
-		$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
-		@file_put_contents($logPath, $messageformated, FILE_APPEND);
+		if ($this->logHandle) {
+			fwrite($this->logHandle, $messageformated);
+			fflush($this->logHandle);
+		} else {
+			$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
+			@file_put_contents($logPath, $messageformated, FILE_APPEND);
+		}
 	}
 
 	private function logNetwork(
@@ -7476,7 +7990,7 @@ class FoxyClient
 		$ch = curl_init($url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-		curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/" . self::VERSION);
+		curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36");
 		curl_setopt($ch, CURLOPT_POST, true);
 		curl_setopt(
 			$ch,
@@ -7495,6 +8009,14 @@ class FoxyClient
 
 		$res = curl_exec($ch);
 		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		
+		if ($res === false) {
+			$err = curl_error($ch);
+			$this->log("Network POST failed to $url: CURL Error: $err (HTTP $httpCode)", "ERROR");
+		} elseif ($httpCode >= 400 || $res === "") {
+			$this->log("Network POST to $url returned HTTP $httpCode. Body length: " . strlen($res), "WARNING");
+		}
+		
 		curl_close($ch);
 
 		$this->logNetwork($url, "POST", $data, $res, $httpCode);
@@ -7506,7 +8028,7 @@ class FoxyClient
 		$ch = curl_init($url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-		curl_setopt($ch, CURLOPT_USERAGENT, "FoxyClient/" . self::VERSION);
+		curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36");
 		if (!empty($headers)) {
 			curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 		}
@@ -7519,6 +8041,12 @@ class FoxyClient
 
 		$res = curl_exec($ch);
 		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+		if ($res === false) {
+			$err = curl_error($ch);
+			$this->log("Network GET failed to $url: CURL Error: $err (HTTP $httpCode)", "ERROR");
+		}
+
 		curl_close($ch);
 
 		$this->logNetwork($url, "GET", null, $res, $httpCode);
@@ -7558,8 +8086,8 @@ class FoxyClient
 
 	private function startMicrosoftOAuth()
 	{
-		$clientId = "00000000402b5328"; // Minecraft Launcher Client ID
-		$scope = "service::user.auth.xboxlive.com::MBI_SSL";
+		$clientId = "00000000402b5328"; // Minecraft Launcher
+		$scope = "XboxLive.signin offline_access";
 
 		$res = $this->httpPost("https://login.live.com/oauth20_connect.srf", [
 			"client_id" => $clientId,
@@ -7574,6 +8102,12 @@ class FoxyClient
 			$this->msVerificationUri = $data["verification_uri"];
 			$this->msPollingInterval = $data["interval"] ?? 5;
 			$this->loginStep = 1;
+
+			// Seamless clipboard integration
+			if ($this->msUserCode) {
+				$code = trim($this->msUserCode);
+				pclose(popen("powershell -c \"Set-Clipboard -Value '{$code}'\"", "r"));
+			}
 
 			// Automatically open the browser for the user
 			if ($this->msVerificationUri) {
@@ -7602,6 +8136,7 @@ class FoxyClient
 			"client_id" => $clientId,
 			"grant_type" => "urn:ietf:params:oauth:grant-type:device_code",
 			"device_code" => $this->msDeviceCode,
+			"scope" => "XboxLive.signin offline_access",
 		]);
 
 		$data = json_decode($res, true);
@@ -7618,33 +8153,51 @@ class FoxyClient
 				$this->loginStep = 0;
 				$this->log(
 					"Microsoft login polling failed: " .
-						($data["error_description"] ?? $data["error"]),
+						($data["error_description"] ?? $data["error"]) . " Body: " . $res,
+					"ERROR"
 				);
 			}
 		}
 	}
 
-	private function completeMicrosoftLogin($accessToken, $refreshToken)
+	private function attemptXblAuth($accessToken, $prefix = "")
 	{
-		$this->log("Attempting Microsoft login...");
-		// 1. Authenticate with XBL
-		$xblRes = $this->httpPost(
+		return $this->httpPost(
 			"https://user.auth.xboxlive.com/user/authenticate",
 			json_encode([
 				"Properties" => [
 					"AuthMethod" => "RPS",
 					"SiteName" => "user.auth.xboxlive.com",
-					"RpsTicket" => "d=" . $accessToken,
+					"RpsTicket" => $prefix . $accessToken,
 				],
 				"RelyingParty" => "http://auth.xboxlive.com",
 				"TokenType" => "JWT",
 			], JSON_UNESCAPED_SLASHES),
-			["Content-Type: application/json", "Accept: application/json"],
+			[
+				"Content-Type: application/json",
+				"Accept: application/json",
+				"x-xbl-contract-version: 1"
+			]
 		);
+	}
 
+	private function completeMicrosoftLogin($accessToken, $refreshToken)
+	{
+		$this->log("Attempting Microsoft login (XBL stage)...");
+		
+		// Attempt with 'd=' prefix first (standard for modern OAuth device code scope)
+		$xblRes = $this->attemptXblAuth($accessToken, "d=");
 		$xblData = json_decode($xblRes, true);
+
+		// Fallback without prefix if first attempt fails
 		if (!isset($xblData["Token"])) {
-			$this->log("Microsoft login failed: XBL authentication failed. Response: " . $xblRes, "ERROR");
+			$this->log("XBL stage 1 failed, trying without 'd=' prefix...", "INFO");
+			$xblRes = $this->attemptXblAuth($accessToken, "");
+			$xblData = json_decode($xblRes, true);
+		}
+
+		if (!isset($xblData["Token"])) {
+			$this->log("Microsoft login failed: XBL authentication failed. Final response: " . $xblRes, "ERROR");
 			$this->msError = "XBL authentication failed.";
 			$this->loginStep = 0;
 			return;
@@ -7663,7 +8216,11 @@ class FoxyClient
 				"RelyingParty" => "rp://api.minecraftservices.com/",
 				"TokenType" => "JWT",
 			], JSON_UNESCAPED_SLASHES),
-			["Content-Type: application/json", "Accept: application/json"],
+			[
+				"Content-Type: application/json",
+				"Accept: application/json",
+				"x-xbl-contract-version: 2"
+			]
 		);
 		$xstsData = json_decode($xstsRes, true);
 		if (!isset($xstsData["Token"])) {
@@ -7795,6 +8352,67 @@ class FoxyClient
 		return false;
 	}
 
+	private function refreshTokenIfExpired()
+	{
+		if (!$this->isLoggedIn || empty($this->activeAccount)) {
+			return;
+		}
+
+		$activeAcc = $this->accounts[$this->activeAccount] ?? [];
+		$now = time();
+
+		// Check if token is expired or about to expire (within 5 minutes)
+		$expiresAt = $activeAcc["ExpiresAt"] ?? 0;
+		if ($expiresAt > $now + 300) {
+			// Token is still valid for more than 5 minutes
+			return;
+		}
+
+		$type = $activeAcc["Type"] ?? self::ACC_OFFLINE;
+		$refreshToken = $activeAcc["RefreshToken"] ?? "";
+
+		if (!$refreshToken || $refreshToken === "") {
+			$this->log("Token expired but no refresh token available for account: " . ($activeAcc["Username"] ?? "Unknown"), "WARN");
+			return;
+		}
+
+		$this->log("Token expiring soon for account: " . ($activeAcc["Username"] ?? "Unknown") . ". Attempting refresh...");
+
+		switch ($type) {
+			case self::ACC_MICROSOFT:
+				$this->refreshMicrosoftToken($refreshToken);
+				break;
+			default:
+				// Offline or Mojang accounts don't need refresh
+				break;
+		}
+	}
+
+	private function refreshMicrosoftToken($refreshToken)
+	{
+		$clientId = "00000000402b5328"; // Minecraft Launcher
+		$res = $this->httpPost("https://login.live.com/oauth20_token.srf", [
+			"client_id" => $clientId,
+			"grant_type" => "refresh_token",
+			"refresh_token" => $refreshToken,
+			"scope" => "XboxLive.signin offline_access",
+		]);
+
+		$data = json_decode($res, true);
+		if (isset($data["access_token"])) {
+			// Get the XBL and XSTS tokens, then Minecraft token
+			$this->completeMicrosoftLogin(
+				$data["access_token"],
+				$data["refresh_token"] ?? $refreshToken,
+			);
+			$this->log("Microsoft token refresh successful");
+		} else {
+			$error = $data["error_description"] ?? $data["error"] ?? "Unknown error";
+			$this->log("Microsoft token refresh failed: " . $error, "ERROR");
+		}
+	}
+
+
 	private function initGL()
 	{
 		$gl = $this->opengl32;
@@ -7807,6 +8425,10 @@ class FoxyClient
 		$gl->glEnable(0x0be2); // GL_BLEND
 		$gl->glBlendFunc(0x0302, 0x0303); // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
 		$gl->glEnable(0x0c11); // GL_SCISSOR_TEST
+		
+		// Anti-aliasing
+		$gl->glEnable(0x0B41); // GL_POLYGON_SMOOTH
+		$gl->glEnable(0x0B20); // GL_LINE_SMOOTH
 	}
 
 	private function ensureAuthlibInjector()
@@ -7958,7 +8580,8 @@ class FoxyClient
 
 				$sDiff = $this->sidebarTargetY - $this->sidebarIndicatorY;
 				if (abs($sDiff) > 0.1) {
-					$this->sidebarIndicatorY += $sDiff * 0.2;
+					// Use snappy Cubic Out easing for sidebar glide
+					$this->sidebarIndicatorY += $sDiff * 0.25;
 				} else {
 					$this->sidebarIndicatorY = $this->sidebarTargetY;
 				}
@@ -7995,68 +8618,27 @@ class FoxyClient
 					}
 				}
 
-				$this->pageAnim = min(1.0, $this->pageAnim + 0.1);
+				// Premium Multi-Axis Transitions
+				// Cubic Out Eased Page Alpha and Slide
+				if ($this->pageAnim < 1.0) {
+					$this->pageAnim = min(1.0, $this->pageAnim + 0.08); 
+				}
 				$this->modrinthAnim = min(1.0, $this->modrinthAnim + 0.16); // Snappier Results Fade-In
 
-				if ($this->homeAccDropdownOpen) {
-					$this->homeAccDropdownAnim = min(
-						1.0,
-						$this->homeAccDropdownAnim + 0.15,
-					);
-				} else {
-					$this->homeAccDropdownAnim = max(
-						0.0,
-						$this->homeAccDropdownAnim - 0.15,
-					);
-				}
+				$easeAnim = function(&$anim, $target, $speed) {
+					if (abs($anim - $target) > 0.005) {
+						$anim += ($target - $anim) * $speed;
+					} else {
+						$anim = $target;
+					}
+				};
 
-				if ($this->homeVerDropdownOpen) {
-					$this->homeVerDropdownAnim = min(
-						1.0,
-						$this->homeVerDropdownAnim + 0.1,
-					);
-				} else {
-					$this->homeVerDropdownAnim = max(
-						0.0,
-						$this->homeVerDropdownAnim - 0.1,
-					);
-				}
-
-				if ($this->javaModalDropdownOpen) {
-					$this->javaModalDropdownAnim = min(
-						1.0,
-						$this->javaModalDropdownAnim + 0.15,
-					);
-				} else {
-					$this->javaModalDropdownAnim = max(
-						0.0,
-						$this->javaModalDropdownAnim - 0.15,
-					);
-				}
-
-				if ($this->modsVerDropdownOpen) {
-					$this->modsVerDropdownAnim = min(
-						1.0,
-						$this->modsVerDropdownAnim + 0.15,
-					);
-				} else {
-					$this->modsVerDropdownAnim = max(
-						0.0,
-						$this->modsVerDropdownAnim - 0.15,
-					);
-				}
-
-				if ($this->modsFilterDropdown !== "") {
-					$this->modsFilterDropdownAnim = min(
-						1.0,
-						$this->modsFilterDropdownAnim + 0.15,
-					);
-				} else {
-					$this->modsFilterDropdownAnim = max(
-						0.0,
-						$this->modsFilterDropdownAnim - 0.15,
-					);
-				}
+				$easeAnim($this->homeAccDropdownAnim, $this->homeAccDropdownOpen ? 1.0 : 0.0, 0.25);
+				$easeAnim($this->homeVerDropdownAnim, $this->homeVerDropdownOpen ? 1.0 : 0.0, 0.25);
+				$easeAnim($this->javaModalDropdownAnim, $this->javaModalDropdownOpen ? 1.0 : 0.0, 0.25);
+				$easeAnim($this->modsVerDropdownAnim, $this->modsVerDropdownOpen ? 1.0 : 0.0, 0.25);
+				$easeAnim($this->modsFilterDropdownAnim, $this->modsFilterDropdown !== "" ? 1.0 : 0.0, 0.25);
+				$easeAnim($this->propDropdownAnim, ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen) ? 1.0 : 0.0, 0.25);
 
 				$this->buttonPulse += 0.03;
 				if ($this->buttonPulse > 6.283) {
@@ -8097,94 +8679,50 @@ class FoxyClient
 
 				// Lifecycle / Redraw Logic
 				$animating = false;
-				$animating =
-					$animating ||
-					abs($this->scrollTarget - $this->scrollOffset) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->vScrollTarget - $this->vScrollOffset) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->propScrollTarget - $this->propScrollOffset) >
-						0.5;
-				$animating =
-					$animating ||
-					abs(
-						$this->homeVerScrollTarget - $this->homeVerScrollOffset,
-					) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->modsFilterScrollTarget - $this->modsFilterScrollOffset) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->accScrollTarget - $this->accScrollOffset) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->foxyKeybindScrollTarget - $this->foxyKeybindScrollOffset) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->foxyMacroScrollTarget - $this->foxyMacroScrollOffset) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->foxyConfigScrollTarget - $this->foxyConfigScrollOffset) > 0.5;
-				$animating =
-					$animating ||
-					abs($this->sidebarTargetY - $this->sidebarIndicatorY) > 0.5;
+				$animating = $animating || abs($this->scrollTarget - $this->scrollOffset) > 0.5;
+				$animating = $animating || abs($this->vScrollTarget - $this->vScrollOffset) > 0.5;
+				$animating = $animating || abs($this->propScrollTarget - $this->propScrollOffset) > 0.5;
+				$animating = $animating || abs($this->accScrollTarget - $this->accScrollOffset) > 0.5;
+				$animating = $animating || abs($this->foxyKeybindScrollTarget - $this->foxyKeybindScrollOffset) > 0.5;
+				$animating = $animating || abs($this->foxyMacroScrollTarget - $this->foxyMacroScrollOffset) > 0.5;
+				$animating = $animating || abs($this->foxyConfigScrollTarget - $this->foxyConfigScrollOffset) > 0.5;
+				foreach ($this->toggleAnims as $id => $val) {
+					$target = 0.0;
+					// This is a bit tricky as we don't know the target here easily without re-evaluating logic
+					// but we can assume if it's in the array and not 0 or 1, it's animating.
+					// We'll actually handle the interpolation inside drawToggleSwitch and just stay awake if anything is != 0 and != 1
+					if ($val > 0.001 && $val < 0.999) {
+						$animating = true;
+						break;
+					}
+				}
+				$animating = $animating || abs($this->homeVerScrollTarget - $this->homeVerScrollOffset) > 0.5;
+				$animating = $animating || abs($this->modsFilterScrollTarget - $this->modsFilterScrollOffset) > 0.5;
+				$animating = $animating || abs($this->sidebarTargetY - $this->sidebarIndicatorY) > 0.1;
+				$animating = $animating || abs($this->sidebarHoverTargetY - $this->sidebarHoverY) > 0.1;
+				$animating = $animating || ($this->sidebarHover !== -1 && $this->sidebarHover !== 99 && $this->sidebarHoverAlpha < 1.0);
+				$animating = $animating || (($this->sidebarHover === -1 || $this->sidebarHover === 99) && $this->sidebarHoverAlpha > 0.0);
 				$animating = $animating || $this->pageAnim < 1.0;
 				$animating = $animating || $this->modrinthAnim < 1.0;
-				$animating =
-					$animating ||
-					($this->homeAccDropdownOpen &&
-						$this->homeAccDropdownAnim < 1.0);
-				$animating =
-					$animating ||
-					(!$this->homeAccDropdownOpen &&
-						$this->homeAccDropdownAnim > 0.01);
-				$animating =
-					$animating ||
-					($this->homeVerDropdownOpen &&
-						$this->homeVerDropdownAnim < 1.0);
-				$animating =
-					$animating ||
-					(!$this->homeVerDropdownOpen &&
-						$this->homeVerDropdownAnim > 0.01);
-				$animating =
-					$animating ||
-					($this->javaModalDropdownOpen &&
-						$this->javaModalDropdownAnim < 1.0);
-				$animating =
-					$animating ||
-					(!$this->javaModalDropdownOpen &&
-						$this->javaModalDropdownAnim > 0.01);
-				$animating =
-					$animating ||
-					($this->modsVerDropdownOpen &&
-						$this->modsVerDropdownAnim < 1.0);
-				$animating =
-					$animating ||
-					(!$this->modsVerDropdownOpen &&
-						$this->modsVerDropdownAnim > 0.01);
-				$animating =
-					$animating ||
-					($this->modsFilterDropdown !== "" &&
-						$this->modsFilterDropdownAnim < 1.0);
-				$animating =
-					$animating ||
-					($this->modsFilterDropdown === "" &&
-						$this->modsFilterDropdownAnim > 0.01);
-				$animating =
-					$animating ||
-					$this->isLaunching ||
-					$this->isDownloadingAssets;
-				$animating =
-					$animating ||
-					$this->gameProcess !== null ||
-					$this->isStoppingOverlay;
-				$animating =
-					$animating ||
-					$this->isSearchingModrinth ||
-					$this->isCheckingCompat;
 				$animating = $animating || $this->windowAnim < 1.0;
+				$animating = $animating || ($this->homeAccDropdownOpen && $this->homeAccDropdownAnim < 1.0);
+				$animating = $animating || (!$this->homeAccDropdownOpen && $this->homeAccDropdownAnim > 0.01);
+				$animating = $animating || ($this->homeVerDropdownOpen && $this->homeVerDropdownAnim < 1.0);
+				$animating = $animating || (!$this->homeVerDropdownOpen && $this->homeVerDropdownAnim > 0.01);
+				$animating = $animating || ($this->javaModalDropdownOpen && $this->javaModalDropdownAnim < 1.0);
+				$animating = $animating || (!$this->javaModalDropdownOpen && $this->javaModalDropdownAnim > 0.01);
+				$animating = $animating || ($this->modsVerDropdownOpen && $this->modsVerDropdownAnim < 1.0);
+				$animating = $animating || (!$this->modsVerDropdownOpen && $this->modsVerDropdownAnim > 0.01);
+				$animating = $animating || ($this->modsFilterDropdown !== "" && $this->modsFilterDropdownAnim < 1.0);
+				$animating = $animating || ($this->modsFilterDropdown === "" && $this->modsFilterDropdownAnim > 0.01);
+				$animating = $animating || ($this->modInfoModalOpen && $this->modInfoAlpha < 1.0);
+				$animating = $animating || (!$this->modInfoModalOpen && $this->modInfoAlpha > 0.01);
+				
+				$isPropDropdownOpen = ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen);
+				$animating = $animating || ($isPropDropdownOpen && $this->propDropdownAnim < 1.0);
+				$animating = $animating || (!$isPropDropdownOpen && $this->propDropdownAnim > 0.01);
+				
+				$animating = $animating || $this->isLaunching || $this->isDownloadingAssets || $this->gameProcess !== null || $this->isStoppingOverlay || $this->isSearchingModrinth || $this->isCheckingCompat;
 
 				if ($animating) {
 					$this->needsRedraw = true;
@@ -8231,6 +8769,11 @@ class FoxyClient
 			return;
 		}
 
+		if ($this->modInfoModalOpen) {
+			$this->modInfoButtonHover = ""; // Handled dynamically in render for simplicity
+			return;
+		}
+
 		if ($this->bgModalOpen) {
 			$this->computeBgModalHover($x, $y);
 			return;
@@ -8238,6 +8781,11 @@ class FoxyClient
 
 		if ($this->javaModalOpen) {
 			$this->computeJavaModalHover($x, $y);
+			return;
+		}
+
+		if ($this->logoutModalOpen) {
+			$this->computeLogoutModalHover($x, $y);
 			return;
 		}
 
@@ -8317,8 +8865,8 @@ class FoxyClient
 				$uuid = $uuids[$idx];
 				$itemLocalY = $localY - $idx * ($itemH + $gap);
 				if ($itemLocalY <= $itemH) { 
-					// Delete button bounds
-					$delW = 32;
+					// Logout button bounds
+					$delW = 100;
 					$delH = 32;
 					$delX = $cw - self::PAD - $delW - 16;
 					$itemScreenY = $listTop + $idx * ($itemH + $gap) - $this->accScrollOffset;
@@ -8418,7 +8966,7 @@ class FoxyClient
 		// Sub-tabs (6 tabs)
 		if ($cy >= self::HEADER_H && $cy <= self::HEADER_H + self::TAB_H) {
 			$tabX = self::PAD;
-			foreach (["Modpack", "Keybinds", "Macros", "Config", "Cosmetics", "OSD"] as $i => $name) {
+			foreach (["Modpacks", "Keybinds", "Macros", "Config", "Cosmetics", "OSD"] as $i => $name) {
 				$tw = $this->getTextWidth($name, 1000) + 32;
 				if ($cx >= $tabX && $cx <= $tabX + $tw) {
 					$this->subTabHoverIdx = 100 + $i;
@@ -8444,47 +8992,7 @@ class FoxyClient
 					}
 				}
 				break;
-			case 1: // Keybinds
-				// Search bar hover
-				$searchW = 250;
-				$searchX = $cw - self::PAD - $searchW;
-				if ($cx >= $searchX && $cx <= $searchX + $searchW && $cy >= self::HEADER_H + self::TAB_H + 1 && $cy <= self::HEADER_H + self::TAB_H + 33) {
-					// We can add a generic hover flag if needed, but the search bar rendering handles its own focus state.
-					return;
-				}
-
-				$listTop = self::HEADER_H + self::TAB_H + 68;
-				$itemH = 48;
-				$localY = $cy - $listTop + $this->foxyKeybindScrollOffset;
-				$idx = (int) floor($localY / $itemH);
-
-				$filteredKeys = [];
-				foreach (array_keys($this->foxyKeybindData) as $k) {
-					if ($this->foxyKeybindSearchQuery === "" || stripos($k, $this->foxyKeybindSearchQuery) !== false) {
-						$filteredKeys[] = $k;
-					}
-				}
-
-				if ($cy >= $listTop && $idx >= 0 && $idx < count($filteredKeys)) {
-					$this->foxyKeybindHoverIdx = $idx;
-				}
-				break;
-			case 2: // Macros
-				$listTop = self::HEADER_H + self::TAB_H + 38;
-				$keys = array_keys($this->foxyMacroData);
-				$itemH = 44;
-				$localY = $cy - $listTop + $this->foxyMacroScrollOffset;
-				$idx = (int) floor($localY / $itemH);
-				$usableH = $this->height - self::TITLEBAR_H;
-				$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
-				$addBtnY = $usableH - $footerH - 40;
-				if ($cy >= $addBtnY && $cy <= $addBtnY + 36 && $cx >= self::PAD && $cx <= self::PAD + 150) {
-					$this->foxyMacroHoverIdx = -2;
-				} elseif ($cy >= $listTop && $idx >= 0 && $idx < count($keys)) {
-					$this->foxyMacroHoverIdx = $idx;
-				}
-				break;
-			case 3: // Config
+			case 1: // Config
 				$listTop = self::HEADER_H + self::TAB_H + 10;
 				$hiddenKeys = ["skinName", "capeName", "slimModel", "customMusicName", "customFontName", "customBackgroundName", "customSkinPath", "customFontPath", "customBackgroundPath", "customMusicPath"];
 				$keys = array_values(array_filter(array_keys($this->foxyConfigData), function($k) use ($hiddenKeys) {
@@ -8504,25 +9012,9 @@ class FoxyClient
 					}
 				}
 				break;
-			case 4: // Cosmetics
+			case 2: // Cosmetics
 				$this->foxyCosmeticsHoverIdx = -1;
-				$sy = self::HEADER_H + self::TAB_H + 60;
-				// Skin btn
-				if ($cx >= self::PAD + 14 && $cx <= self::PAD + 114 && $cy >= $sy + 32 && $cy <= $sy + 64) {
-					$this->foxyCosmeticsHoverIdx = 1;
-				}
-				// Model btn
-				if ($cx >= self::PAD + 124 && $cx <= self::PAD + 244 && $cy >= $sy + 32 && $cy <= $sy + 64) {
-					$this->foxyCosmeticsHoverIdx = 0;
-				}
-				// Browse skin btn hover
-				if (($this->foxyConfigData["skinName"] ?? "Default") === "Custom") {
-					if ($cx >= self::PAD + 254 && $cx <= self::PAD + 334 && $cy >= $sy + 32 && $cy <= $sy + 64) {
-						$this->foxyCosmeticsHoverIdx = 3;
-					}
-				}
-
-				$cy2 = $sy + 95;
+				$cy2 = self::HEADER_H + self::TAB_H + 60;
 				// Cape btn
 				if ($cx >= self::PAD + 14 && $cx <= self::PAD + 114 && $cy >= $cy2 + 32 && $cy <= $cy2 + 64) {
 					$this->foxyCosmeticsHoverIdx = 2;
@@ -8534,7 +9026,7 @@ class FoxyClient
 					}
 				}
 				break;
-			case 5: // OSD
+			case 3: // OSD
 				for ($i = 0; $i < 4; $i++) {
 					$ty = 130 + $i * 60;
 					if ($cx >= 20 && $cx <= $cw - 20 && $cy >= $ty && $cy <= $ty + 40) {
@@ -8609,7 +9101,7 @@ class FoxyClient
 		$cw = $this->width - self::SIDEBAR_W;
 
 		// Buttons at Top Right
-		$installBtnW = 180;
+		$installBtnW = 240;
 		$installBtnX = $cw - self::PAD - $installBtnW;
 		
 		$updateBtnW = 180;
@@ -8629,14 +9121,38 @@ class FoxyClient
 			}
 		}
 
-		// Sub-tabs (6 tabs)
+		// Scrollbar interaction for scrollable tabs (Config)
+		$isScrollTab = ($this->foxySubTab === 1);
+		if ($isScrollTab && $cx >= $cw - 15 && $cx <= $cw) {
+			$yOff = self::HEADER_H + self::TAB_H + 10;
+			$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - $yOff;
+			
+			$maxS = $this->getMaxScroll();
+			if ($maxS > 0) {
+				$offset = $this->foxyConfigScrollOffset;
+				
+				$thumbH = max(20, ($listH / ($maxS + $listH)) * $listH);
+				$thumbY = $yOff + ($offset / $maxS) * ($listH - $thumbH);
+				
+				if ($cy >= $thumbY && $cy <= $thumbY + $thumbH) {
+					$this->isDraggingScroll = true;
+					$this->dragType = ($this->foxySubTab === 1) ? "keybinds" : (($this->foxySubTab === 2) ? "macros" : "config");
+					$this->dragStartY = $this->mouseY;
+					$this->dragStartOffset = $offset;
+					return;
+				}
+			}
+		}
+
+		// Sub-tabs (4 tabs)
 		if ($cy >= self::HEADER_H && $cy <= self::HEADER_H + self::TAB_H) {
 			$tabX = self::PAD;
-			foreach (["Modpack", "Keybinds", "Macros", "Config", "Cosmetics", "OSD"] as $i => $name) {
+			foreach (["Modpacks", "Config", "Cosmetics", "OSD"] as $i => $name) {
 				$tw = $this->getTextWidth($name, 1000) + 32;
 				if ($cx >= $tabX && $cx <= $tabX + $tw) {
 					if ($this->foxySubTab !== $i) {
 						$this->foxySubTab = $i;
+						$this->subTabFadeStart = microtime(true);
 						$this->scrollOffset = 0;
 						$this->scrollTarget = 0;
 						$this->hoverModIndex = -1;
@@ -8661,9 +9177,11 @@ class FoxyClient
 					$itemY = $y + 10 - $this->scrollOffset;
 					foreach ($mods as $i => &$mod) {
 						if ($cy >= $itemY && $cy < $itemY + self::CARD_H) {
-							if ($cx >= $cw - self::PAD * 2 - 50) {
-								$mod["checked"] = !$mod["checked"];
+							// Ensure the toggle area is clickable (70px covers track + label gap)
+							if ($cx >= self::PAD && $cx <= self::PAD + 70) {
+								$mod["checked"] = !($mod["checked"] ?? false);
 								$this->saveConfig();
+								$this->needsRedraw = true;
 								return;
 							}
 						}
@@ -8672,100 +9190,7 @@ class FoxyClient
 				}
 				break;
 
-			case 1: // Keybinds
-				// Search bar focus
-				$searchW = 250;
-				$searchX = $cw - self::PAD - $searchW;
-				$searchY = self::HEADER_H + self::TAB_H + 1;
-				if ($cx >= $searchX && $cx <= $searchX + $searchW && $cy >= $searchY && $cy <= $searchY + 32) {
-					$this->foxyKeybindSearchFocus = true;
-					$this->needsRedraw = true;
-					return;
-				}
-				$this->foxyKeybindSearchFocus = false;
-
-				$listTop = self::HEADER_H + self::TAB_H + 68;
-				$itemH = 48;
-				$localY = $cy - $listTop + $this->foxyKeybindScrollOffset;
-				$idx = (int) floor($localY / $itemH);
-
-				$filteredKeys = [];
-				foreach (array_keys($this->foxyKeybindData) as $k) {
-					if ($this->foxyKeybindSearchQuery === "" || stripos($k, $this->foxyKeybindSearchQuery) !== false) {
-						$filteredKeys[] = $k;
-					}
-				}
-
-				if ($cy >= $listTop && $idx >= 0 && $idx < count($filteredKeys)) {
-					$moduleName = $filteredKeys[$idx];
-					if ($cx >= $cw - self::PAD - 238 && $cx <= $cw - self::PAD - 50) {
-						$this->foxyKeybindEditIdx = $idx;
-						$this->foxyKeybindListenMode = true;
-						$this->needsRedraw = true;
-						return;
-					}
-					$toggleX = $cw - self::PAD - 50;
-					if ($cx >= $toggleX) {
-						$this->foxyKeybindData[$moduleName]["enabled"] = !($this->foxyKeybindData[$moduleName]["enabled"] ?? false);
-						$this->saveFoxyKeybinds();
-						$this->needsRedraw = true;
-						return;
-					}
-				}
-				break;
-
-			case 2: // Macros
-				$usableH = $this->height - self::TITLEBAR_H;
-				$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
-				$addBtnY = $usableH - $footerH - 40;
-				if ($cy >= $addBtnY && $cy <= $addBtnY + 36 && $cx >= self::PAD && $cx <= self::PAD + 150) {
-					$newKey = "0";
-					while (isset($this->foxyMacroData[$newKey])) {
-						$newKey = (string)((int)$newKey + 1);
-					}
-					$this->foxyMacroData[$newKey] = "/help";
-					$this->saveFoxyMacros();
-					$this->needsRedraw = true;
-					return;
-				}
-				$listTop = self::HEADER_H + self::TAB_H + 38;
-				$keys = array_keys($this->foxyMacroData);
-				$itemH = 44;
-				$localY = $cy - $listTop + $this->foxyMacroScrollOffset;
-				$idx = (int) floor($localY / $itemH);
-				if ($cy >= $listTop && $idx >= 0 && $idx < count($keys)) {
-					$delX = $cw - self::PAD - 40;
-					if ($cx >= $delX) {
-						unset($this->foxyMacroData[$keys[$idx]]);
-						$this->saveFoxyMacros();
-						$this->needsRedraw = true;
-						return;
-					}
-					// Key badge click - enter listen mode to rebind
-					$badgeX = self::PAD + 8;
-					if ($cx >= $badgeX && $cx <= $badgeX + 100) {
-						$this->foxyMacroEditIdx = $idx;
-						$this->foxyMacroListenMode = true;
-						$this->needsRedraw = true;
-						return;
-					}
-					// Command click - enter edit mode for text
-					$cmdX = self::PAD + 120;
-					if ($cx > $badgeX + 100 && $cx < $delX) {
-						$this->foxyMacroEditCommandIdx = $idx;
-						$this->needsRedraw = true;
-						return;
-					}
-				}
-				
-				// Deselect if clicking elsewhere in Macros tab
-				if ($this->foxyMacroEditCommandIdx !== -1) {
-					$this->foxyMacroEditCommandIdx = -1;
-					$this->needsRedraw = true;
-				}
-				break;
-
-			case 3: // Config
+			case 1: // Config
 				$listTop = self::HEADER_H + self::TAB_H + 10;
 				$hiddenKeys = ["skinName", "capeName", "slimModel", "customMusicName", "customFontName", "customBackgroundName", "customSkinPath", "customFontPath", "customBackgroundPath", "customMusicPath"];
 				$keys = array_values(array_filter(array_keys($this->foxyConfigData), function($k) use ($hiddenKeys) {
@@ -8851,49 +9276,14 @@ class FoxyClient
 				}
 				break;
 
-			case 4: // Cosmetics
-				$sy = self::HEADER_H + self::TAB_H + 60;
-				// Skin btn
-				if ($cx >= self::PAD + 14 && $cx <= self::PAD + 114 && $cy >= $sy + 32 && $cy <= $sy + 64) {
-					$curr = $this->foxyConfigData["skinName"] ?? "Default";
-					$this->foxyConfigData["skinName"] = $curr === "Default" ? "Custom" : "Default";
-					$this->saveFoxyConfig();
-					$this->needsRedraw = true;
-					return;
-				}
-				// Model btn
-				if ($cx >= self::PAD + 124 && $cx <= self::PAD + 244 && $cy >= $sy + 32 && $cy <= $sy + 64) {
-					$this->foxyConfigData["slimModel"] = !($this->foxyConfigData["slimModel"] ?? false);
-					$this->saveFoxyConfig();
-					$this->needsRedraw = true;
-					return;
-				}
-				// Browse skin btn
-				if (($this->foxyConfigData["skinName"] ?? "Default") === "Custom") {
-					if ($cx >= self::PAD + 254 && $cx <= self::PAD + 334 && $cy >= $sy + 32 && $cy <= $sy + 64) {
-						$chosen = $this->openFileChooser("PNG Files\0*.png\0All Files\0*.*\0");
-						if ($chosen) {
-							$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? ".");
-							$dest = $gameDir . DIRECTORY_SEPARATOR . "config" . DIRECTORY_SEPARATOR . "foxyclient" . DIRECTORY_SEPARATOR . "custom_skin.png";
-							$dir = dirname($dest);
-							if (!is_dir($dir)) mkdir($dir, 0777, true);
-							@copy($chosen, $dest);
-							$this->foxyConfigData["skinName"] = "Custom";
-							$this->saveFoxyConfig();
-							$this->foxySkinTexPathCache = null; // Force reload
-						}
-						$this->needsRedraw = true;
-						return;
-					}
-				}
-
-				$cy2 = $sy + 95;
+			case 2: // Cosmetics
+				$cy2 = self::HEADER_H + self::TAB_H + 60;
 				// Cape btn
 				if ($cx >= self::PAD + 14 && $cx <= self::PAD + 114 && $cy >= $cy2 + 32 && $cy <= $cy2 + 64) {
 					$curr = $this->foxyConfigData["capeName"] ?? "None";
 					if ($curr === "None") $next = "Default";
 					elseif ($curr === "Default") $next = "Custom";
-					else $next = "None"; // Custom -> None
+					else $next = "None"; 
 					$this->foxyConfigData["capeName"] = $next;
 					$this->saveFoxyConfig();
 					$this->needsRedraw = true;
@@ -8902,16 +9292,15 @@ class FoxyClient
 				// Browse cape btn
 				if (($this->foxyConfigData["capeName"] ?? "None") === "Custom") {
 					if ($cx >= self::PAD + 124 && $cx <= self::PAD + 204 && $cy >= $cy2 + 32 && $cy <= $cy2 + 64) {
-						$chosen = $this->openFileChooser("PNG Files\0*.png\0All Files\0*.*\0");
-						if ($chosen) {
+						$file = $this->openFileChooser("PNG Files\0*.png\0All Files\0*.*\0");
+						if ($file) {
 							$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? ".");
 							$dest = $gameDir . DIRECTORY_SEPARATOR . "config" . DIRECTORY_SEPARATOR . "foxyclient" . DIRECTORY_SEPARATOR . "custom_cape.png";
-							$dir = dirname($dest);
-							if (!is_dir($dir)) mkdir($dir, 0777, true);
-							@copy($chosen, $dest);
 							$this->foxyConfigData["capeName"] = "Custom";
+							if (!is_dir(dirname($dest))) mkdir(dirname($dest), 0777, true);
+							@copy($file, $dest);
 							$this->saveFoxyConfig();
-							$this->foxyCapeTexPathCache = null; // Force reload
+							$this->foxyCapeTexId = null; // Force reload
 						}
 						$this->needsRedraw = true;
 						return;
@@ -8922,7 +9311,7 @@ class FoxyClient
 				$previewW = min(300, $cw - self::PAD * 2);
 				$previewX = ($cw - $previewW) / 2;
 				$previewY = $cy2 + 80;
-				// Handle dynamic H just for boundary check
+				
 				$yOrig = self::HEADER_H + self::TAB_H;
 				$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 				$usableH = $this->height - self::TITLEBAR_H;
@@ -8936,13 +9325,14 @@ class FoxyClient
 				}
 				break;
 
-			case 5: // OSD
+			case 3: // OSD
 				for ($i = 0; $i < 4; $i++) {
 					$ty = 130 + $i * 60;
 					if ($cx >= 20 && $cx <= $cw - 20 && $cy >= $ty && $cy <= $ty + 40) {
 						$key = ["overlay_cpu", "overlay_gpu", "overlay_ram", "overlay_vram"][$i];
 						$this->settings[$key] = !($this->settings[$key] ?? false);
-						$this->saveSettings();
+						$this->saveConfig();
+						$this->needsRedraw = true;
 						return;
 					}
 				}
@@ -9206,6 +9596,21 @@ class FoxyClient
 	private function handlePropertiesPageClick($cx, $cy)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
+
+		// Scrollbar drag
+		if ($cx >= $cw - 15 && $cx <= $cw) {
+			$maxScroll = 200;
+			$viewH = $this->height - self::TITLEBAR_H - 120;
+			$thumbH = max(30, ($viewH / ($maxScroll + $viewH)) * $viewH);
+			$thumbY = 80 + ($this->propScrollOffset / $maxScroll) * ($viewH - $thumbH);
+			if ($cy >= $thumbY && $cy <= $thumbY + $thumbH) {
+				$this->isDraggingScroll = true;
+				$this->dragType = "prop";
+				$this->dragStartY = $this->mouseY;
+				$this->dragStartOffset = $this->propScrollOffset;
+				return;
+			}
+		}
 		$usableH = $this->height - self::TITLEBAR_H;
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$btnAreaY = $usableH - $footerH - 60;
@@ -9240,7 +9645,10 @@ class FoxyClient
 			foreach ($cats as $i => $cat) {
 				$tw = strlen($cat) * 8 + 30;
 				if ($cx >= $tx && $cx < $tx + $tw) {
-					$this->propSubTab = $i;
+					if ($this->propSubTab !== $i) {
+						$this->propSubTab = $i;
+						$this->subTabFadeStart = microtime(true);
+					}
 					$this->propScrollTarget = 0;
 					$this->propScrollOffset = 0;
 					$this->propActiveField = "";
@@ -9385,17 +9793,39 @@ class FoxyClient
 					$this->javaModalDropdownOpen = false;
 				}
 			} elseif ($idx === 3) {
-				// RAM MB
-				// Buttons: -256 at fieldX, +256 at fieldX + 260
-				$cur = (int) $this->settings["ram_mb"];
-				if ($cx >= $fieldX && $cx <= $fieldX + 40) {
-					$this->settings["ram_mb"] = max(512, $cur - 256);
-					$this->saveSettings();
-				} elseif ($cx >= $fieldX + 260 && $cx <= $fieldX + 300) {
-					$this->settings["ram_mb"] = min(32768, $cur + 256);
-					$this->saveSettings();
-				} elseif ($cx >= $fieldX + 50 && $cx <= $fieldX + 250) {
+				// RAM MB Interaction
+				$sliderW = 150;
+				$sliderX = $fieldX + 10;
+				$sliderHitH = 30;
+				$rowY = $contentTop + $idx * $rowH - $this->propScrollOffset;
+				$sliderHitTop = $rowY + ($rowH - $sliderHitH) / 2;
+				
+				// Check for slider interaction
+				if ($cy >= $sliderHitTop && $cy <= $sliderHitTop + $sliderHitH) {
+					if ($cx >= $sliderX - 10 && $cx <= $sliderX + $sliderW + 10) {
+						$this->isDraggingScroll = true;
+						$this->dragType = "ram_slider";
+						
+						$val = ($cx - $sliderX) / $sliderW;
+						$val = max(0, min(1, $val));
+						$minRam = 512;
+						$maxRam = $this->systemRamMB;
+						$mb = $minRam + $val * ($maxRam - $minRam);
+						$this->settings["ram_mb"] = max(512, min($this->systemRamMB, round($mb / 256) * 256));
+						$this->needsRedraw = true;
+						$this->saveSettings();
+						return; 
+					}
+				}
+				
+				// Check for text field click
+				$tfX = $sliderX + $sliderW + 15;
+				$tfW = 80;
+				$tfH = 36;
+				$tfY = $rowY + (50 - $tfH) / 2;
+				if ($cx >= $tfX && $cx <= $tfX + $tfW && $cy >= $tfY && $cy <= $tfY + $tfH) {
 					$this->propActiveField = "ram_mb";
+					$this->needsRedraw = true;
 				}
 			} elseif ($idx >= 4 && $idx <= 7) {
 				// Open folder buttons
@@ -9421,21 +9851,39 @@ class FoxyClient
 			}
 		} elseif ($this->propSubTab === 1) {
 			// Launcher Config
-			// Font dropdown item click interception
-			if ($this->propFontDropdownOpen !== "") {
+			// Dropdown item click interception (Language + Fonts)
+			if ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen) {
 				$cw = $this->width - self::SIDEBAR_W;
 				$ddX = $cw - self::PAD - 300;
 				$ddW = 300;
-				$rowIdx = $this->propFontDropdownOpen === "launcher" ? 4 : 5;
+				
+				$rowIdx = 2; // Default for language
+				if ($this->propFontDropdownOpen === "launcher") $rowIdx = 4;
+				elseif ($this->propFontDropdownOpen === "overlay") $rowIdx = 5;
+				
 				$contentTop = self::HEADER_H + self::TAB_H + 20;
-				$ddY =
-					$contentTop +
-					($rowIdx + 1) * 60 -
-					(int) $this->propScrollOffset;
-				$fonts = $this->availableFonts;
-				$itemH = 32;
-				$ddH = count($fonts) * $itemH;
+				$ddY = $contentTop + ($rowIdx + 1) * 60 - (int)$this->propScrollOffset;
+				
+				if ($this->propLangDropdownOpen) {
+					$items = ["English (en)", "Thai (th)", "Russian (ru)", "Japanese (ja)"];
+					$ddH = count($items) * 32;
+					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $ddH) {
+						$li = (int) floor(($cy - $ddY) / 32);
+						if (isset($items[$li])) {
+							$this->settings["language"] = $items[$li];
+							$this->saveSettings();
+							$this->propLangDropdownOpen = false;
+							$this->needsRedraw = true;
+						}
+						return;
+					}
+				}
 
+				if ($this->propFontDropdownOpen !== "") {
+					$fonts = $this->availableFonts;
+					$itemH = 32;
+					$ddH = count($fonts) * $itemH;
+				}
 				if (
 					$cx >= $ddX &&
 					$cx <= $ddX + $ddW &&
@@ -9490,7 +9938,11 @@ class FoxyClient
 				}
 			} elseif ($idx === 2) {
 				// Language
-				// Currently only English, clicking does nothing
+				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
+					$this->propLangDropdownOpen = !$this->propLangDropdownOpen;
+					if ($this->propLangDropdownOpen) $this->propDropdownAnim = 0.0;
+					$this->propFontDropdownOpen = ""; // Close fonts
+				}
 			} elseif ($idx === 3) {
 				// Show Modified Versions
 				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
@@ -9507,7 +9959,9 @@ class FoxyClient
 						$this->propFontDropdownOpen === "launcher"
 							? ""
 							: "launcher";
+					if ($this->propFontDropdownOpen !== "") $this->propDropdownAnim = 0.0;
 					$this->propFontDropdownHover = -1;
+					$this->propLangDropdownOpen = false; // Close language
 				}
 			} elseif ($idx === 5) {
 				// Overlay Font
@@ -9809,7 +10263,10 @@ class FoxyClient
 			$gl->glPushMatrix();
 			$gl->glTranslatef(self::SIDEBAR_W, self::TITLEBAR_H, 0);
 			$this->globalAlpha = $contEased * $this->pageAnim;
-			$gl->glTranslatef(0, (1.0 - $this->pageAnim) * 10, 0);
+			// Unified Page Emergence (Fade + 30px Slide Up)
+			$this->globalAlpha = 1.0 - pow(1.0 - $this->pageAnim, 3); // Cubic Alpha
+			$pageSlide = (1.0 - $this->globalAlpha) * 30.0;
+			$gl->glTranslatef(0, $pageSlide, 0);
 
 			switch ($this->currentPage) {
 				case self::PAGE_HOME:
@@ -9858,11 +10315,17 @@ class FoxyClient
 
 			// Modals
 			$this->globalAlpha = $revWA > 0.9 ? 1.0 : 0.0;
+			if ($this->modInfoModalOpen || $this->modInfoAlpha > 0.01) {
+				$this->renderModInfoModal();
+			}
 			if ($this->javaModalOpen) {
 				$this->renderJavaModal();
 			}
 			if ($this->bgModalOpen) {
 				$this->renderBgModal();
+			}
+			if ($this->logoutModalOpen) {
+				$this->renderLogoutModal();
 			}
 		}
 
@@ -9874,103 +10337,112 @@ class FoxyClient
 		$cw = $this->width - self::SIDEBAR_W;
 		$y = self::HEADER_H;
 
-		// Tab bar background
+		// Clean Navbar Base
 		$this->drawRect(0, $y, $cw, self::TAB_H, $this->colors["tab_bg"]);
-		$this->drawRect(
-			0,
-			$y + self::TAB_H - 1,
-			$cw,
-			1,
-			$this->colors["divider"],
-		);
 
+		// Animation Logic
+		$now = microtime(true);
+		$progress = min(1.0, ($now - $this->subTabFadeStart) / 0.25);
+		$eased = 1.0 - pow(1.0 - $progress, 3); // Cubic Out Easing
+
+		// Calculate geometrical targets for all tabs first
+		$tabMetrics = [];
 		$tabX = self::PAD;
 		foreach ($tabs as $i => $name) {
 			$tw = $this->getTextWidth($name, 1000) + 32;
+			$tabMetrics[$i] = ["x" => $tabX, "w" => $tw];
+			$tabX += $tw + 6;
+		}
+
+		// Sliding Indicator Logic
+		$levelKey = "lvl_" . $hoverIdxBase;
+		$lastIdx = $this->lastKnownActiveIdx[$levelKey] ?? $activeIdx;
+		if ($lastIdx !== $activeIdx) {
+			// If indices don't match, we are in transition
+			$src = $tabMetrics[$lastIdx] ?? $tabMetrics[0];
+			$target = $tabMetrics[$activeIdx] ?? $tabMetrics[0];
+			
+			$indicatorX = $src["x"] + ($target["x"] - $src["x"]) * $eased;
+			$indicatorW = $src["w"] + ($target["w"] - $src["w"]) * $eased;
+			
+			if ($progress >= 1.0) {
+				$this->lastKnownActiveIdx[$levelKey] = $activeIdx;
+			}
+		} else {
+			$indicatorX = $tabMetrics[$activeIdx]["x"];
+			$indicatorW = $tabMetrics[$activeIdx]["w"];
+		}
+
+		// Draw Floating Indicator
+		$btnH = 26;
+		$btnY = $y + (self::TAB_H - $btnH) / 2;
+		$this->drawRoundedRect($indicatorX, $btnY, $indicatorW, $btnH, $btnH / 2, $this->colors["pill_active"], $this->colors["primary"]);
+
+		// Render Tabs
+		foreach ($tabs as $i => $name) {
+			$metric = $tabMetrics[$i];
 			$isActive = $i === $activeIdx;
 			$isHover = $this->subTabHoverIdx === $hoverIdxBase + $i;
 
-			if ($isActive) {
-				$this->drawRect(
-					$tabX,
-					$y,
-					$tw,
-					self::TAB_H,
-					$this->colors["tab_active"],
-				);
-				$this->drawRect(
-					$tabX,
-					$y + self::TAB_H - 3,
-					$tw,
-					3,
-					$this->colors["primary"],
-				);
-				$this->renderText(
-					$name,
-					$tabX + 16,
-					$y + 26,
-					$this->colors["text"],
-					1000,
-				);
-			} else {
-				if ($isHover) {
-					$this->drawRect(
-						$tabX,
-						$y,
-						$tw,
-						self::TAB_H,
-						$this->colors["subtab"],
-					);
-				}
-				$this->renderText(
-					$name,
-					$tabX + 16,
-					$y + 26,
-					$this->colors["text_dim"],
-					1000,
-				);
+			if (!$isActive && $isHover) {
+				// Glassy Hover Capsule
+				$this->drawRoundedRect($metric["x"], $btnY, $metric["w"], $btnH, $btnH / 2, [1, 1, 1, 0.05]);
 			}
-			$tabX += $tw + 8;
+
+			// Text color: Primary if active, dim if not, bright if hover
+			$tc = $isActive ? $this->colors["text"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$tabAlpha = $isActive ? 1.0 : ($isHover ? 0.9 : 0.7);
+			
+			$this->renderText($name, $metric["x"] + 16, $y + 24, $tc, 1000, $tabAlpha);
 		}
 	}
 
-	private function renderSearchBar($x, $y, $w, $h, &$query, $isFocused)
+	/**
+	 * Renders a modernized, glassmorphic search bar with UHF Material Symbols.
+	 */
+	private function renderSearchBar($x, $y, $w, $h, &$query, $isFocused, $placeholder = "Search...")
 	{
-		$bgColor = $isFocused
-			? $this->colors["input_bg_active"]
-			: $this->colors["input_bg"];
-		$this->drawRect($x, $y, $w, $h, $bgColor);
-		$borderColor = $isFocused
-			? $this->colors["primary"]
-			: $this->colors["divider"];
-		$this->drawRect($x, $y + $h - 2, $w, 2, $borderColor);
+		$isLight = ($this->settings["theme"] ?? "dark") === "light";
+		$bgColor = $isFocused ? $this->colors["input_bg_active"] : $this->colors["input_bg"];
+		
+		// 1. Draw Glassmorphic Base
+		$borderAlpha = $isFocused ? 0.3 : 0.08;
+		$borderColor = $isFocused ? $this->colors["primary"] : ($isLight ? [0,0,0, $borderAlpha] : [1,1,1, $borderAlpha]);
+		
+		// Focus Glow
+		if ($isFocused) {
+			$glowColor = [$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.15];
+			$this->drawRoundedRect($x - 2, $y - 2, $w + 4, $h + 4, 10, $glowColor);
+		}
+		
+		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColor, $borderColor);
+		
+		// 2. Render Search Icon (High-Fidelity Material Symbol 0xe8b6)
+		$iconColor = $isFocused ? $this->colors["primary"] : $this->colors["text_dim"];
+		$this->renderIcon(0xe8b6, $x + 16, $y + ($h/2) + 2, $iconColor, 20);
 
-		// Search icon placeholder
-		$this->renderText(
-			"🔍",
-			$x + 10,
-			$y + 26,
-			$this->colors["text_dim"],
-			3000,
-		);
-
-		$displayText = $query . ($isFocused ? "_" : "");
+		// 3. Render Placeholder or Query
+		$textX = $x + 48;
+		$textY = $y + ($h/2) + 6;
+		
 		if (empty($query) && !$isFocused) {
-			$this->renderText(
-				"Search Modrinth...",
-				$x + 35,
-				$y + 26,
-				$this->colors["text_dim"],
-				1000,
-			);
+			$this->renderText($placeholder, $textX, $textY, $this->colors["text_dim"], 1000);
 		} else {
-			$this->renderText(
-				$displayText,
-				$x + 35,
-				$y + 26,
-				$this->colors["text"],
-				1000,
-			);
+			$this->renderText($query, $textX, $textY, $this->colors["text"], 1000);
+			
+			// 4. Blinking Cursor
+			if ($isFocused && fmod(microtime(true), 1.0) < 0.5) {
+				$cursorX = $textX + $this->getTextWidth($query, 1000) + 2;
+				$this->drawRect($cursorX, $y + 10, 2, $h - 20, $this->colors["primary"]);
+			}
+		}
+
+		// 5. Clear Button (X icon 0xe5cd) - appears when text is present
+		if (!empty($query)) {
+			$clearHover = ($this->mouseX >= $x + $w - 32 && $this->mouseX <= $x + $w - 8 && 
+						   $this->mouseY >= $y + 8 && $this->mouseY <= $y + $h - 8);
+			$clearColor = $clearHover ? $this->colors["status_error"] : $this->colors["text_dim"];
+			$this->renderIcon(0xe5cd, $x + $w - 20, $y + ($h/2), $clearColor, 18);
 		}
 	}
 
@@ -10001,9 +10473,9 @@ class FoxyClient
 			$this->colors["divider"],
 		);
 
-		// Logo area
+		// Premium Brand Logo with Typographic Tracking
 		$this->drawTexture($this->logoTex, 20, 20, 48, 48); // 48x48 icon
-		$this->renderText("FoxyClient", 75, 52, $this->colors["primary"], 2000);
+		$this->renderText("FoxyClient", 75, 53, $this->colors["primary"], 2000, 1.8);
 
 		// Sidebar Items
 		$itemH = 50;
@@ -10027,48 +10499,41 @@ class FoxyClient
 		}
 
 		if ($hasActiveTab) {
-			$this->drawRect(
-				5,
-				$this->sidebarIndicatorY,
-				$sw - 10,
-				$itemH,
+			// Subtle glow behind the active capsule
+			$this->drawGlow(8, $this->sidebarIndicatorY + 2, $sw - 16, $itemH - 4, 10, $this->colors["primary"], 0.4);
+			// The active capsule
+			$this->drawRoundedRect(
+				8,
+				$this->sidebarIndicatorY + 2,
+				$sw - 16,
+				$itemH - 4,
+				10,
 				$this->colors["sidebar_active"],
-			);
-			$this->drawRect(
-				0,
-				$this->sidebarIndicatorY,
-				4,
-				$itemH,
-				$this->colors["primary"],
+				[$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.8]
 			);
 		}
 
-		// Hover Highlight
+		// Hover Highlight (Capsule)
 		if ($this->sidebarHoverAlpha > 0.001) {
 			$hC = $this->colors["sidebar_hover"];
-			$this->drawRect(5, $this->sidebarHoverY, $sw - 10, $itemH, [
-				$hC[0],
-				$hC[1],
-				$hC[2],
-				$this->sidebarHoverAlpha,
+			$this->drawRoundedRect(8, $this->sidebarHoverY + 2, $sw - 16, $itemH - 4, 10, [
+				$hC[0], $hC[1], $hC[2], $this->sidebarHoverAlpha
 			]);
 		}
 
 		foreach ($this->sidebarItems as $i => $item) {
 			$isActive = $this->currentPage === $item["id"];
+			$color = $isActive ? $this->colors["text"] : $this->colors["text_dim"];
 
-			$color = $isActive
-				? $this->colors["text"]
-				: $this->colors["text_dim"];
-
-			// Icon
+			// Sidebar Item Content
 			$icon = $sidebarIcons[$item["id"]] ?? "";
 			if ($icon !== "") {
-				$iconColor = $isActive ? $this->colors["primary"] : $this->colors["text_dim"];
-				$this->renderText($icon, 18, $y + 32, $iconColor, 1000);
+				$iconColor = $isActive ? $this->colors["primary"] : [$color[0], $color[1], $color[2], 0.6];
+				$this->renderText($icon, 22, $y + 32, $iconColor, 1000, 1.5);
 			}
 
-			$this->renderText($item["name"], 40, $y + 32, $color, 1000);
+			// Body style for items
+			$this->renderText($item["name"], 48, $y + 32, $color, 1000, 0.6);
 			$y += $itemH + 5;
 		}
 
@@ -10126,11 +10591,10 @@ class FoxyClient
 			$this->renderText($dispName, 25, $profileY + 38, $accColor, 1000);
 		}
 
-		// Version badge
+		// Version badge - Small Metadata Style
 		$verText = "v" . self::VERSION;
-		$verW = $this->getTextWidth($verText, 3000) + 10;
-		$this->drawRect($sw - $verW - 12, $profileY + 38, $verW, 16, [0, 0, 0, 0.2]);
-		$this->renderText($verText, $sw - $verW - 7, $profileY + 49, $this->colors["text_dim"], 3000);
+		$verW = $this->getTextWidth($verText, 3000, 0.5); 
+		$this->renderText($verText, $sw - $verW - 12, $profileY + 49, $this->colors["text_dim"], 3000, 0.5);
 	}
 
 	// ─── HOME PAGE ENGINE ───
@@ -10524,22 +10988,18 @@ class FoxyClient
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 
-		// Header with Logo
+		// Cinematic Branding
 		$this->drawTexture($this->logoTex, ($cw - 80) / 2, 20, 80, 80);
-		$this->renderText(
-			"FOXY CLIENT",
-			($cw - 154) / 2,
-			125,
-			$this->colors["primary"],
-			2000,
-		);
-		$this->renderText(
-			"Ready to play.",
-			($cw - 126) / 2,
-			155,
-			$this->colors["text_dim"],
-			$this->hasUiUpdate ? 0 : 1000, // Hide if update available
-		);
+		
+		$logoText = "FOXY CLIENT";
+		$lw = $this->getTextWidth($logoText, 2000, 2.0);
+		$this->renderText($logoText, ($cw - $lw) / 2, 125, $this->colors["primary"], 2000, 2.0);
+		
+		$subText = "Ready to play.";
+		if (!$this->hasUiUpdate) {
+			$sw = $this->getTextWidth($subText, 3000, 1.2);
+			$this->renderText($subText, ($cw - $sw) / 2, 155, $this->colors["text_dim"], 3000, 1.2);
+		}
 
 		// Update Badge
 		if ($this->hasUiUpdate) {
@@ -10555,33 +11015,25 @@ class FoxyClient
 
 		// Account Section
 		$accLabel = "ACCOUNT";
-		$this->renderText(
-			$accLabel,
-			$ax - $this->getTextWidth($accLabel, 3000) - 10,
-			$ay + 18,
-			$this->colors["text_dim"],
-			3000,
-		);
+		$accLabelW = $this->getTextWidth($accLabel, 3000, 0.8);
+		$this->renderText($accLabel, $ax - $accLabelW - 10, $ay + 18, $this->colors["text_dim"], 3000, 0.8);
 		$dispName = $this->accountName ?: "Not Logged In";
 		$isAccHover = $this->homeHoverIdx === 0;
-		$this->drawDropdownSelector($ax, $ay, $aw, $ah, $dispName, $this->homeAccDropdownOpen, $isAccHover);
 
-		// Account icon overlay
+		$accIconTex = 0;
 		if ($this->isLoggedIn && $this->activeAccount) {
 			$accData = $this->accounts[$this->activeAccount] ?? [];
 			$type = $accData["Type"] ?? self::ACC_OFFLINE;
-			$tex = null;
 			if ($type === self::ACC_MICROSOFT) {
-				$tex = $this->mojangTex;
+				$accIconTex = $this->mojangTex;
 			} elseif ($type === self::ACC_ELYBY) {
-				$tex = $this->elybyTex;
+				$accIconTex = $this->elybyTex;
 			} elseif ($type === self::ACC_FOXY) {
-				$tex = $this->logoTex;
-			}
-			if ($tex) {
-				$this->drawTexture($tex, $ax + $aw - 50, $ay + 8, 24, 24);
+				$accIconTex = $this->logoTex;
 			}
 		}
+
+		$this->drawDropdownSelector($ax, $ay, $aw, $ah, $dispName, $this->homeAccDropdownOpen, $isAccHover, $accIconTex);
 
 
 		// Version Section
@@ -10625,7 +11077,17 @@ class FoxyClient
 			$dispVer .= $isInstalled ? " (Installed)" : " (Available)";
 		}
 		$isVerHover = $this->homeHoverIdx === 1;
-		$this->drawDropdownSelector($vx, $vy, $vw, $vh, $dispVer, $this->homeVerDropdownOpen, $isVerHover);
+
+		// Parse mod loader logic from name
+		$idLow = strtolower($this->selectedVersion ?? "");
+		$modLoader = "vanilla";
+		if (strpos($idLow, "fabric") !== false) $modLoader = "fabric";
+		elseif (strpos($idLow, "optifine") !== false) $modLoader = "optifine";
+		elseif (strpos($idLow, "forge") !== false) $modLoader = "forge";
+		elseif (strpos($idLow, "quilt") !== false) $modLoader = "quilt";
+		$iconTex = $this->verIcons[$modLoader] ?? 0;
+
+		$this->drawDropdownSelector($vx, $vy, $vw, $vh, $dispVer, $this->homeVerDropdownOpen, $isVerHover, $iconTex);
 
 		// Modpack Toggle — only show for Fabric versions
 		$isFabricVersion = stripos($this->selectedVersion, "fabric") !== false;
@@ -10636,7 +11098,7 @@ class FoxyClient
 				(bool) ($this->settings["enable_modpack"] ?? false);
 			$cbHover = $this->homeHoverIdx === 3;
 
-			$this->drawToggleSwitch($cbX, $cbY, $modpackEnabled, $cbHover);
+			$this->drawToggleSwitch($cbX, $cbY, $modpackEnabled, $cbHover, "home:optimize");
 
 			$mpLabelColor = $cbHover
 				? $this->colors["text"]
@@ -10713,17 +11175,18 @@ class FoxyClient
 		if ($this->homeAccDropdownOpen || $this->homeAccDropdownAnim > 0.01) {
 			$maxH = (count($this->accounts) + 1) * 40; // +1 for Logout
 			$ddH = $maxH * $this->homeAccDropdownAnim;
-			$dY = $ay + $ah;
+			$dY = $ay + $ah - 1; // Overlap by 1px to close gaps
 
 			$gl->glEnable(0x0c11); // SCISSOR
 			$gl->glScissor(
 				self::SIDEBAR_W + $ax,
-				$this->height - ($dY + self::TITLEBAR_H + $ddH),
+				$this->height - ($dY + self::TITLEBAR_H + $ddH + 1), // Adjust scissor for overlap
 				$aw,
 				$ddH,
 			);
 
-			$this->drawRect($ax, $dY, $aw, $maxH, $this->colors["dropdown_bg"], 8);
+			$this->drawRoundedRect($ax, $dY, $aw, $maxH, 8, $this->colors["dropdown_bg"]);
+			$this->drawRect($ax, $dY, $aw, 8, $this->colors["dropdown_bg"]);
 			$this->drawRect($ax, $dY, $aw, 1, $this->colors["divider"]);
 
 			$i = 0;
@@ -10772,18 +11235,19 @@ class FoxyClient
 			$filtered = $this->getHomeVersions();
 			$fullDDH = min(200, count($filtered) * 40);
 			$ddH = $fullDDH * $this->homeVerDropdownAnim;
-			$dY = $vy + $vh;
+			$dY = $vy + $vh - 1; // Overlap by 1px to close gaps
 
-			$this->drawRect($vx, $dY, $vw, $ddH, $this->colors["panel"]);
+			$this->drawRect($vx, $dY + 1, $vw, $ddH, $this->colors["panel"]); // Draw slightly below overlap
 
 			$gl->glEnable(0x0c11); // SCISSOR
 			$gl->glScissor(
 				self::SIDEBAR_W + $vx,
-				$this->height - ($dY + self::TITLEBAR_H + $ddH),
+				$this->height - ($dY + self::TITLEBAR_H + $ddH + 1), // Adjust scissor for overlap
 				$vw,
 				$ddH,
 			);
-			$this->drawRect($vx, $dY, $vw, $fullDDH, $this->colors["dropdown_bg"], 8);
+			$this->drawRoundedRect($vx, $dY, $vw, $fullDDH, 8, $this->colors["dropdown_bg"]);
+			$this->drawRect($vx, $dY, $vw, 8, $this->colors["dropdown_bg"]);
 			$this->drawRect($vx, $dY, $vw, 1, $this->colors["divider"]);
 
 			$itemY = $dY - $this->homeVerScrollOffset;
@@ -10799,9 +11263,32 @@ class FoxyClient
 					
 					$jarP = $this->settings["game_dir"] . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $v["id"] . DIRECTORY_SEPARATOR . $v["id"] . ".jar";
 					$isInst = file_exists($jarP);
-					$textC = $isInst ? $this->colors["text"] : $this->colors["text_dim"];
+					
+					$idLow = strtolower($v["id"]);
+					$modLoader = "vanilla";
+					if (strpos($idLow, "fabric") !== false) $modLoader = "fabric";
+					elseif (strpos($idLow, "optifine") !== false) $modLoader = "optifine";
+					elseif (strpos($idLow, "forge") !== false) $modLoader = "forge";
+					elseif (strpos($idLow, "quilt") !== false) $modLoader = "quilt";
+
+					$iconTex = $this->verIcons[$modLoader] ?? 0;
+					$textX = $vx + 16;
+					if ($iconTex && $iconTex > 0) {
+						// Set explicit white color for texture blending
+						$this->opengl32->glColor4f(1.0, 1.0, 1.0, 1.0);
+						$this->drawTexture($iconTex, $textX, $itemY + 12, 16, 16);
+						$textX += 24;
+					}
+
+					// Green for installed, gray for not installed
+					if ($isInst) {
+						$textC = $isHover ? [0.4, 0.9, 0.5] : [0.3, 0.8, 0.4];
+					} else {
+						$textC = $isHover ? $this->colors["text"] : $this->colors["text_dim"];
+					}
+
 					$label = $v["id"] . ($isInst ? " (Installed)" : "");
-					$this->renderText($label, $vx + 16, $itemY + 26, $textC, 1000);
+					$this->renderText($label, $textX, $itemY + 26, $textC, 1000);
 				}
 				$itemY += 40;
 			}
@@ -10836,14 +11323,14 @@ class FoxyClient
 	private function renderFoxyClientPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		$gl = $this->opengl32;
+		
+		// Sub-Tab Alpha (Fade In)
+		$subTabAlpha = min(1.0, (microtime(true) - $this->subTabFadeStart) / 0.25);
 
 		$descs = [
 			"Manage built-in optimization mods",
-			"Configure module keybinds",
-			"Manage chat macros",
 			"FoxyClient mod settings",
-			"Customize skin and cape",
+			"Customize your cape",
 			"System overlay and display settings",
 		];
 		$desc = $descs[$this->foxySubTab] ?? $descs[0];
@@ -10898,8 +11385,8 @@ class FoxyClient
 				"UPDATE MODS", $this->foxyUpdateBtnHover);
 		}
 
-		// Sub-tabs: 6 tabs
-		$tabNames = ["Modpack", "Keybinds", "Macros", "Config", "Cosmetics", "OSD"];
+		// Sub-tabs: 4 tabs
+		$tabNames = ["Modpacks", "Config", "Cosmetics", "OSD"];
 		$this->renderSubTabs($tabNames, $this->foxySubTab, 100);
 
 		$y = self::HEADER_H + self::TAB_H;
@@ -10911,19 +11398,13 @@ class FoxyClient
 			case 0: // Modpack
 				$this->renderFoxyModpackTab($y, $h, $cw);
 				break;
-			case 1: // Keybinds
-				$this->renderFoxyKeybindsTab($y, $h, $cw);
-				break;
-			case 2: // Macros
-				$this->renderFoxyMacrosTab($y, $h, $cw);
-				break;
-			case 3: // Config
+			case 1: // Config
 				$this->renderFoxyConfigTab($y, $h, $cw);
 				break;
-			case 4: // Cosmetics
+			case 2: // Cosmetics
 				$this->renderFoxyCosmeticsTab($y, $h, $cw);
 				break;
-			case 5: // OSD
+			case 3: // OSD
 				$y = 130;
 				$y = $this->renderSettingsToggle($y, "Display CPU Usage", 0, "overlay_cpu");
 				$y = $this->renderSettingsToggle($y, "Display GPU Usage", 1, "overlay_gpu");
@@ -11489,10 +11970,6 @@ class FoxyClient
 		$slimModel = $config["slimModel"] ?? false;
 		$capeName = $config["capeName"] ?? "None";
 
-		// Title
-		$this->renderText("SKIN & CAPE", self::PAD, $y + 35, $this->colors["text"], 2000);
-		$this->drawRect(self::PAD, $y + 42, 120, 2, $this->colors["primary"]);
-
 		// Resolve actual paths for preview
 		$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? ".");
 		$foxyConfigDir = $gameDir . DIRECTORY_SEPARATOR . "config" . DIRECTORY_SEPARATOR . "foxyclient";
@@ -11501,13 +11978,9 @@ class FoxyClient
 		if ($skinName === "Custom") {
 			$actualSkinPath = $foxyConfigDir . DIRECTORY_SEPARATOR . "custom_skin.png";
 		} else {
-			// Default -> AuthLib / Cache
-			// Get current account username
 			$acc = $this->accounts[$this->activeAccount] ?? null;
 			if ($acc && !empty($acc["Username"])) {
 				$accType = $acc["Type"] ?? self::ACC_OFFLINE;
-				// Do not block UI thread long, but file_get_contents is simple enough if cached.
-				// In a full async client, this should be Background. For now, try fetching it.
 				$actualSkinPath = $this->downloadDefaultSkin($acc["Username"], $accType);
 			}
 		}
@@ -11515,35 +11988,13 @@ class FoxyClient
 		$actualCapePath = "";
 		if ($capeName === "Custom") {
 			$actualCapePath = $foxyConfigDir . DIRECTORY_SEPARATOR . "custom_cape.png";
-		} // Default cape could be mojang cape, but usually we just skip or load empty. None = empty.
-
-		// Skin section
-		$sy = $y + 60;
-
-		// Skin card
-		$cardW = $cw - self::PAD * 2;
-		$this->drawRect(self::PAD, $sy, $cardW, 80, $this->colors["card"]);
-		$this->drawRect(self::PAD, $sy, 3, 80, $this->colors["primary"]);
-
-		$this->renderText("Skin Selection", self::PAD + 14, $sy + 24, $this->colors["text_dim"], 3000);
-		
-		$skinHover = $this->foxyCosmeticsHoverIdx === 1;
-		$this->drawStyledButton(self::PAD + 14, $sy + 32, 100, 32, $skinName, $skinHover, "secondary");
-
-		$modelLabel = $slimModel ? "Slim (Alex)" : "Classic";
-		$modelHover = $this->foxyCosmeticsHoverIdx === 0;
-		$this->drawStyledButton(self::PAD + 124, $sy + 32, 120, 32, $modelLabel, $modelHover, "secondary");
-
-		// Browse button for custom skin
-		if ($skinName === "Custom") {
-			$browseHover = $this->foxyCosmeticsHoverIdx === 3;
-			$this->drawStyledButton(self::PAD + 254, $sy + 32, 80, 32, "Browse", $browseHover, "secondary");
 		}
 
 		// Cape section
-		$cy2 = $sy + 95;
+		$cy2 = $y + 60;
+		$cardW = $cw - self::PAD * 2;
 
-		$this->drawRect(self::PAD, $cy2, $cardW, 80, $this->colors["card"]); // Increased height to 80 for path text
+		$this->drawRect(self::PAD, $cy2, $cardW, 80, $this->colors["card"]);
 		$this->drawRect(self::PAD, $cy2, 3, 80, $this->colors["accent"]);
 		$this->renderText("Cape Selection", self::PAD + 14, $cy2 + 24, $this->colors["text_dim"], 3000);
 		
@@ -11769,7 +12220,7 @@ class FoxyClient
 		$tx = $cw - self::PAD - 44;
 		$ty = $y + 14;
 
-		$this->drawToggleSwitch($tx, $ty, $val, $isHover);
+		$this->drawToggleSwitch($tx, $ty, $val, $isHover, "osd:" . $settingKey);
 
 
 		return $y + 50;
@@ -12065,52 +12516,49 @@ class FoxyClient
 		switch ($style) {
 			case "danger":
 				$c1 = $isHover ? [0.85, 0.2, 0.15] : [0.7, 0.15, 0.1];
-				$c2 = $isHover ? [0.65, 0.1, 0.08] : [0.5, 0.08, 0.05];
+				$c2 = $isHover ? [0.75, 0.1, 0.08] : [0.6, 0.08, 0.05];
 				$textColor = [1, 1, 1];
 				break;
 			case "secondary":
 				$c1 = $isHover
-					? ($isLight ? [0.82, 0.84, 0.88] : [0.2, 0.22, 0.26])
-					: ($isLight ? [0.88, 0.9, 0.93] : [0.14, 0.16, 0.2]);
+					? ($isLight ? [0.82, 0.84, 0.88] : [0.25, 0.25, 0.28])
+					: ($isLight ? [0.88, 0.9, 0.93] : [0.20, 0.20, 0.22]);
 				$c2 = $isHover
-					? ($isLight ? [0.78, 0.8, 0.84] : [0.16, 0.18, 0.22])
-					: ($isLight ? [0.84, 0.86, 0.89] : [0.1, 0.12, 0.16]);
+					? ($isLight ? [0.78, 0.8, 0.84] : [0.22, 0.22, 0.25])
+					: ($isLight ? [0.84, 0.86, 0.89] : [0.18, 0.18, 0.20]);
 				$textColor = $this->colors["text"];
 				break;
 			case "success":
 				$c1 = $isHover ? [0.15, 0.75, 0.4] : [0.1, 0.6, 0.3];
-				$c2 = $isHover ? [0.08, 0.55, 0.25] : [0.05, 0.45, 0.2];
+				$c2 = $isHover ? [0.08, 0.65, 0.25] : [0.05, 0.55, 0.2];
 				$textColor = [1, 1, 1];
 				break;
 			default: // primary
-				$c1 = $isHover
-					? $this->colors["button_hover"]
-					: $this->colors["button"];
-				$c2 = $isHover
-					? $this->colors["primary"]
-					: $this->colors["primary_dim"];
-				$textColor = $this->colors["button_text"];
+				$p = $this->colors["primary"];
+				$pd = $this->colors["primary_dim"];
+				$c1 = $isHover ? [$p[0]*1.1, $p[1]*1.1, $p[2]*1.1] : $p;
+				$c2 = $isHover ? $p : $pd;
+				$textColor = [1, 1, 1]; // Keep white for contrast on blue
 				break;
 		}
 
-		// Hover glow (subtle outer glow)
+		// Draw smooth rounded pill button
+		$radius = min(8, $h / 2); // Rounded rectangle like Lunar Client
+		
+		// Fill
+		$this->drawRoundedGradientRect($x, $y, $w, $h, $radius, $c1, $c2);
+
+		// Subtle overlay outline if hovered
 		if ($isHover) {
-			$glowColor = [$c1[0], $c1[1], $c1[2], 0.15];
-			$this->drawRect($x - 2, $y - 2, $w + 4, $h + 4, $glowColor);
+			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1.0, 1.0, 1.0, 0.05]);
 		}
 
-		// Gradient fill
-		$this->drawGradientRect($x, $y, $w, $h, $c1, $c2);
-
-		// Top highlight line (subtle glass effect)
-		$highlightColor = [1.0, 1.0, 1.0, $isHover ? 0.15 : 0.08];
-		$this->drawRect($x, $y, $w, 1, $highlightColor);
-
-		// Text (centered)
-		$textW = $this->getTextWidth($label, $fontSize);
+		// Text (centered with modern spacing)
+		$spacing = ($fontSize === 2000) ? 1.5 : 0.8;
+		$textW = $this->getTextWidth($label, $fontSize, $spacing);
 		$textX = $x + ($w - $textW) / 2;
-		$textY = $y + $h / 2 + ($fontSize === 2000 ? 10 : 6);
-		$this->renderText($label, $textX, $textY, $textColor, $fontSize);
+		$textY = $y + $h / 2 + 6;
+		$this->renderText($label, $textX, $textY, $textColor, $fontSize, $spacing);
 	}
 
 	/**
@@ -12119,24 +12567,18 @@ class FoxyClient
 	private function drawPageHeader($title, $subtitle, $rightContent = null)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
-
-		// Gradient header background
-		$hc1 = $isLight ? [0.94, 0.95, 0.98, 0.9] : [0.06, 0.07, 0.1, 0.9];
-		$hc2 = $isLight ? [0.9, 0.92, 0.95, 0.7] : [0.03, 0.04, 0.06, 0.7];
-		$this->drawGradientRect(0, 0, $cw, self::HEADER_H, $hc1, $hc2);
-
-		// Top accent strip (primary color - 2px)
-		$this->drawRect(0, 0, $cw, 2, $this->colors["primary"]);
-
-		// Bottom divider
+		
+		// Header background with bottom divider
+		$this->drawRect(0, 0, $cw, self::HEADER_H, $this->colors["header_bg"]);
 		$this->drawRect(0, self::HEADER_H - 1, $cw, 1, $this->colors["divider"]);
 
-		// Title
-		$this->renderText($title, self::PAD, 38, $this->colors["primary"], 2000);
-
-		// Subtitle
-		$this->renderText($subtitle, self::PAD, 58, $this->colors["text_dim"], 1000);
+		// Title: Sub-Header (Semi-Bold 18px)
+		$this->renderText($title, self::PAD, 35, $this->colors["primary"], 1500, 0.8);
+		
+		// Subtitle: Caption (Light 12px)
+		if ($subtitle !== "") {
+			$this->renderText($subtitle, self::PAD, 55, $this->colors["text_dim"], 3000, 0.5);
+		}
 	}
 
 	/**
@@ -12145,94 +12587,139 @@ class FoxyClient
 	private function drawCard($x, $y, $w, $h, $isHover = false, $isActive = false)
 	{
 		$isLight = ($this->settings["theme"] ?? "dark") === "light";
-
-		// Hover glow (subtle outer)
-		if ($isHover) {
-			$glowC = $this->colors["primary"];
-			$this->drawRect($x - 1, $y - 1, $w + 2, $h + 2, [$glowC[0], $glowC[1], $glowC[2], 0.08]);
-		}
+		$radius = 8;
 
 		// Card background
 		$bgColor = $isActive
-			? ($isLight ? [0.88, 0.9, 0.96, 0.6] : [0.12, 0.16, 0.22, 0.6])
+			? ($isLight ? [0.92, 0.94, 1.0, 0.8] : [0.12, 0.16, 0.22, 0.8])
 			: ($isHover ? $this->colors["card_hover"] : $this->colors["card"]);
-		$this->drawRect($x, $y, $w, $h, $bgColor);
+			
+		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bgColor);
 
-		// Top divider line
-		$this->drawRect($x, $y, $w, 1, $this->colors["divider"]);
+		// Responsive border highlight
+		if ($isHover || $isActive) {
+			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1, 1, 1, 0.06]);
+		} else {
+			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1, 1, 1, 0.03]);
+		}
 
-		// Active accent bar (left edge)
+		// Active accent bar (left edge pill indicator)
 		if ($isActive) {
-			$this->drawRect($x, $y, 3, $h, $this->colors["primary"]);
+			// Center an accent bar on the left
+			$this->drawRoundedRect($x + 2, $y + $h/2 - 12, 4, 24, 2, $this->colors["primary"]);
 		}
 	}
 
 	/**
 	 * Modern pill-shaped toggle switch.
 	 */
-	private function drawToggleSwitch($x, $y, $isOn, $isHover = false)
+	private function drawToggleSwitch($x, $y, $isOn, $isHover = false, $id = null)
 	{
 		$trackW = 44;
 		$trackH = 22;
 		$knobSize = 16;
 		$padding = 3;
 
-		// Track background
-		if ($isOn) {
-			$trackColor = $isHover ? $this->colors["button_hover"] : $this->colors["primary"];
-		} else {
-			$trackColor = $isHover ? $this->colors["card_hover"] : $this->colors["check_off"];
+		$target = $isOn ? 1.0 : 0.0;
+		$current = $target;
+
+		if ($id !== null) {
+			if (!isset($this->toggleAnims[$id])) {
+				$this->toggleAnims[$id] = $target;
+			}
+			$current = $this->toggleAnims[$id];
+			if (abs($current - $target) > 0.01) {
+				$this->toggleAnims[$id] += ($target - $current) * 0.25;
+				$current = $this->toggleAnims[$id];
+				$this->needsRedraw = true;
+			} else {
+				$this->toggleAnims[$id] = $target;
+				$current = $target;
+			}
 		}
-		$this->drawRect($x, $y, $trackW, $trackH, $trackColor);
 
-		// Subtle inner border
-		$borderColor = $isOn ? [1, 1, 1, 0.1] : [1, 1, 1, 0.05];
-		$this->drawRect($x, $y, $trackW, 1, $borderColor);
+		// Track background (Lerp color)
+		$cOff = $this->colors["check_off"];
+		$offColor = $isHover ? [min($cOff[0]*1.2, 1.0), min($cOff[1]*1.2, 1.0), min($cOff[2]*1.2, 1.0)] : $cOff;
+		
+		$cOn = $this->colors["primary"];
+		$onColor = $isHover ? [min($cOn[0]*1.15, 1.0), min($cOn[1]*1.15, 1.0), min($cOn[2]*1.15, 1.0)] : $cOn;
+		
+		$trackColor = [
+			$offColor[0] + ($onColor[0] - $offColor[0]) * $current,
+			$offColor[1] + ($onColor[1] - $offColor[1]) * $current,
+			$offColor[2] + ($onColor[2] - $offColor[2]) * $current,
+			($offColor[3] ?? 1.0) + (($onColor[3] ?? 1.0) - ($offColor[3] ?? 1.0)) * $current
+		];
 
-		// Knob position (animate would need lerp, for now snap)
-		$knobX = $isOn ? $x + $trackW - $knobSize - $padding : $x + $padding;
+		// Draw rounded track
+		$this->drawRoundedRect($x, $y, $trackW, $trackH, $trackH / 2, $trackColor);
+
+		// Knob position (Lerp X)
+		$minX = $x + $padding;
+		$maxX = $x + $trackW - $knobSize - $padding;
+		$knobX = $minX + ($maxX - $minX) * $current;
 		$knobY = $y + $padding;
-		$knobColor = $isOn ? [1, 1, 1] : [0.6, 0.6, 0.65];
+		
+		$knobOff = [0.7, 0.7, 0.75];
+		$knobOn = [1, 1, 1];
+		$knobColor = [
+			$knobOff[0] + ($knobOn[0] - $knobOff[0]) * $current,
+			$knobOff[1] + ($knobOn[1] - $knobOff[1]) * $current,
+			$knobOff[2] + ($knobOn[2] - $knobOff[2]) * $current
+		];
 
-		$this->drawRect($knobX, $knobY, $knobSize, $knobSize, $knobColor);
+		// Subtle shadow under the knob (drawn first so knob paints over it)
+		$this->drawRoundedRect($knobX, $knobY + 1, $knobSize, $knobSize, $knobSize / 2, [0, 0, 0, 0.2]);
 
-		// Knob highlight
-		$this->drawRect($knobX, $knobY, $knobSize, 1, [1, 1, 1, 0.3]);
+		// Draw smooth circular knob
+		$this->drawRoundedRect($knobX, $knobY, $knobSize, $knobSize, $knobSize / 2, $knobColor);
 	}
 
 	/**
 	 * Glassmorphic dropdown selector box with arrow indicator.
 	 */
-	private function drawDropdownSelector($x, $y, $w, $h, $label, $isOpen = false, $isHover = false)
+	private function drawDropdownSelector($x, $y, $w, $h, $label, $isOpen = false, $isHover = false, $iconTex = 0)
 	{
 		$isLight = ($this->settings["theme"] ?? "dark") === "light";
-
-		// Hover glow
-		if ($isHover && !$isOpen) {
-			$glowC = $this->colors["primary"];
-			$this->drawRect($x - 1, $y - 1, $w + 2, $h + 2, [$glowC[0], $glowC[1], $glowC[2], 0.06]);
-		}
-
-		// Background
+		$radius = 6;
+		
+		// Background transition
 		$bg = $isOpen
-			? ($isLight ? [0.86, 0.88, 0.92] : [0.1, 0.12, 0.16])
+			? ($isLight ? [0.86, 0.88, 0.92] : [0.12, 0.14, 0.18])
 			: ($isHover
 				? $this->colors["card_hover"]
 				: $this->colors["card"]);
-		$this->drawRect($x, $y, $w, $h, $bg);
+		
+		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bg);
 
-		// Left accent bar
-		$this->drawRect($x, $y, 2, $h, $this->colors["primary"]);
+		// Clean outline for hover state (LunarClient styled hover on borders)
+		if ($isHover && !$isOpen) {
+			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1, 1, 1, 0.05]);
+		}
 
-		// Top glass highlight
-		$this->drawRect($x, $y, $w, 1, [1, 1, 1, 0.06]);
+		if ($isOpen) {
+			// Flatten bottom corners to connect seamlessly to the dropdown list overlay
+			$this->drawRect($x, $y + $h - $radius, $w, $radius, $bg);
+		}
 
-		// Label text
-		$this->renderText($label, $x + 14, $y + $h / 2 + 6, $this->colors["text"], 1000);
+		// Label text (brighter if hover or open)
+		$textColor = ($isHover || $isOpen) ? $this->colors["text"] : $this->colors["text_dim"];
+		$textX = $x + 14;
 
-		// Arrow indicator
+		// Inject Left Icon if provided
+		if ($iconTex && $iconTex > 0) {
+			$this->opengl32->glColor4f(1.0, 1.0, 1.0, 1.0);
+			$this->drawTexture($iconTex, $textX, $y + $h / 2 - 8, 16, 16);
+			$textX += 24;
+		}
+
+		$this->renderText($label, $textX, $y + $h / 2 + 6, $textColor, 1000);
+
+		// Arrow indicator styling
+		$arrowColor = $isOpen ? $this->colors["primary"] : $this->colors["text_dim"];
 		$arrow = $isOpen ? "▴" : "▾";
-		$this->renderText($arrow, $x + $w - 24, $y + $h / 2 + 6, $this->colors["text_dim"], 1000);
+		$this->renderText($arrow, $x + $w - 24, $y + $h / 2 + 6, $arrowColor, 1000);
 	}
 
 	private function renderLoginPage()
@@ -12264,7 +12751,7 @@ class FoxyClient
 			$y = 120;
 			$types = [
 				["id" => self::ACC_OFFLINE, "name" => "OFFLINE ACCOUNT"],
-				["id" => self::ACC_MICROSOFT, "name" => "MICROSOFT ACCOUNT"],
+				["id" => self::ACC_MICROSOFT, "name" => "MICROSOFT / MOJANG ACCOUNT"],
 				["id" => self::ACC_FOXY, "name" => "FOXYCLIENT ACCOUNT"],
 				["id" => self::ACC_ELYBY, "name" => "ELY.BY ACCOUNT"],
 			];
@@ -12446,15 +12933,23 @@ class FoxyClient
 				$this->renderText(
 					$this->msUserCode,
 					$boxX,
-					260,
-					$this->colors["text"],
+					250,
+					$this->colors["primary"],
 					2000,
+				);
+
+				$this->renderText(
+					"(Code automatically copied to clipboard!)",
+					$boxX,
+					280,
+					[0.3, 0.8, 0.4],
+					1000,
 				);
 
 				$this->renderText(
 					"Waiting for authentication...",
 					$boxX,
-					300,
+					315,
 					$this->colors["text_dim"],
 					3000,
 				);
@@ -12570,7 +13065,7 @@ class FoxyClient
 				$textColor = $isSelected || $isHover ? $this->colors["text"] : $this->colors["text_dim"];
 				$this->renderText($v["id"], self::PAD + 16, $vy + 32, $textColor, 2000);
 
-				$statusText = $isVersionInstalled ? "Installed" : "Available";
+				$statusText = $isVersionInstalled ? "INSTALLED" : "AVAILABLE";
 				$statusColor = $isVersionInstalled ? $this->colors["status_update"] : $this->colors["text_dim"];
 				
 				// Status text
@@ -12600,7 +13095,7 @@ class FoxyClient
 			$jarPath = $this->settings["game_dir"] . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $this->selectedVersion . DIRECTORY_SEPARATOR . $this->selectedVersion . ".jar";
 			$isInstalled = file_exists($jarPath);
 		}
-		$statusBadge = $this->selectedVersion ? ($isInstalled ? "(Installed)" : "(Available)") : "";
+		$statusBadge = $this->selectedVersion ? ($isInstalled ? "(INSTALLED)" : "(AVAILABLE)") : "";
 		$this->renderText("Current Selection: " . ($this->selectedVersion ?: "None") . " " . $statusBadge, self::PAD, $actionY + 25, $this->colors["text"], 1000);
 
 		if ($this->isDownloadingAssets) {
@@ -12661,27 +13156,157 @@ class FoxyClient
 		return $out;
 	}
 
+	private function scanLocalMods()
+	{
+		if ($this->isScanningLocalMods) return;
+		$this->isScanningLocalMods = true;
+
+		$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
+		$modsDir = $gameDir . DIRECTORY_SEPARATOR . "mods";
+		if (!is_dir($modsDir)) {
+			$this->localMods = [];
+			$this->isScanningLocalMods = false;
+			return;
+		}
+
+		$files = scandir($modsDir);
+		$results = [];
+
+		foreach ($files as $file) {
+			if ($file === "." || $file === "..") continue;
+			$isJar = str_ends_with($file, ".jar") || str_ends_with($file, ".jar.disabled");
+			if (!$isJar) continue;
+
+			$filePath = $modsDir . DIRECTORY_SEPARATOR . $file;
+			$results[] = $this->extractModMetadata($filePath);
+		}
+
+		$this->localMods = $results;
+		$this->isScanningLocalMods = false;
+	}
+
+	private function extractModMetadata($path)
+	{
+		$filename = basename($path);
+		$meta = [
+			"id" => $filename,
+			"name" => $filename,
+			"version" => "Unknown",
+			"author" => "Unknown",
+			"description" => "No description found in file.",
+			"icon_path" => null,
+			"enabled" => !str_ends_with($path, ".disabled"),
+			"path" => $path
+		];
+
+		if (!class_exists('ZipArchive')) return $meta;
+
+		$zip = new \ZipArchive();
+		if ($zip->open($path) === true) {
+			// 1. Try Fabric (fabric.mod.json)
+			$fabricJson = $zip->getFromName("fabric.mod.json");
+			if ($fabricJson) {
+				$data = @json_decode($fabricJson, true);
+				if ($data) {
+					$meta["name"] = $data["name"] ?? ($data["id"] ?? $filename);
+					$meta["version"] = $data["version"] ?? "Unknown";
+					$meta["author"] = is_array($data["authors"] ?? null) ? implode(", ", array_map(fn($v) => is_string($v) ? $v : ($v["name"] ?? "Unknown"), $data["authors"])) : ($data["authors"] ?? "Unknown");
+					$meta["description"] = $data["description"] ?? "No description.";
+					
+					$iconPath = $data["icon"] ?? null;
+					if ($iconPath) {
+						$iconData = $zip->getFromName($iconPath);
+						if ($iconData) {
+							$meta["icon_path"] = $this->processIconData("local_" . md5($path), $iconData);
+						}
+					}
+				}
+			} else {
+				// 2. Try Quilt (quilt.mod.json)
+				$quiltJson = $zip->getFromName("quilt.mod.json");
+				if ($quiltJson) {
+					$data = @json_decode($quiltJson, true);
+					$quiltMeta = $data["quilt_loader"]["metadata"] ?? null;
+					if ($quiltMeta) {
+						$meta["name"] = $quiltMeta["name"] ?? ($data["quilt_loader"]["id"] ?? $filename);
+						$meta["version"] = $quiltMeta["version"] ?? "Unknown";
+						$meta["description"] = $quiltMeta["description"] ?? "No description.";
+						
+						$iconPath = $quiltMeta["icon"] ?? null;
+						if ($iconPath) {
+							$iconData = $zip->getFromName($iconPath);
+							if ($iconData) {
+								$meta["icon_path"] = $this->processIconData("local_" . md5($path), $iconData);
+							}
+						}
+					}
+				} else {
+					// 3. Try Forge/NeoForge (mods.toml)
+					$modsToml = $zip->getFromName("META-INF/mods.toml");
+					if ($modsToml) {
+						if (preg_match('/displayName\s*=\s*"([^"]+)"/i', $modsToml, $m)) $meta["name"] = $m[1];
+						if (preg_match('/version\s*=\s*"([^"]+)"/i', $modsToml, $m)) $meta["version"] = $m[1];
+						if (preg_match('/authors\s*=\s*"([^"]+)"/i', $modsToml, $m)) $meta["author"] = $m[1];
+						
+						if (preg_match('/description\s*=\s*"""([\s\S]*?)"""/m', $modsToml, $m)) {
+							$meta["description"] = trim($m[1]);
+						} elseif (preg_match('/description\s*=\s*"([^"]+)"/i', $modsToml, $m)) {
+							$meta["description"] = $m[1];
+						}
+						
+						if (preg_match('/logoFile\s*=\s*"([^"]+)"/i', $modsToml, $m)) {
+							$iconPath = $m[1];
+							$iconData = $zip->getFromName($iconPath);
+							if ($iconData) {
+								$meta["icon_path"] = $this->processIconData("local_" . md5($path), $iconData);
+							}
+						}
+					}
+				}
+			}
+			$zip->close();
+		}
+
+		return $meta;
+	}
+
+	private function toggleLocalMod($path)
+	{
+		$newPath = str_ends_with($path, ".disabled") 
+			? substr($path, 0, -strlen(".disabled"))
+			: $path . ".disabled";
+
+		if (file_exists($path)) {
+			if (@rename($path, $newPath)) {
+				$this->log("Toggled mod: " . basename($path) . " -> " . basename($newPath));
+				$this->scanLocalMods(); // Refresh list
+			} else {
+				$this->log("Failed to toggle mod: " . basename($path), "ERROR");
+			}
+		}
+	}
+
 	private function renderScrollbarVersions($y, $h)
 	{
 		$maxScroll = $this->getMaxVersionScroll();
-		if ($maxScroll <= 0) {
-			return;
-		}
+		if ($maxScroll <= 0) return;
 
 		$cw = $this->width - self::SIDEBAR_W;
 		$barX = $cw - 12;
 		$barW = 6;
 
-		// Track
-		$this->drawRect($barX, $y, $barW, $h, $this->colors["card"]);
+		// High-Fidelity Glassy Track
+		$this->drawRoundedRect($barX, $y, $barW, $h, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
 
-		// Thumb
+		// Premium Primary Capsule Thumb
 		$filtered = $this->getFilteredVersions();
 		$contentH = count($filtered) * 40;
-		$thumbH = max(20, ($h / $contentH) * $h);
+		$thumbH = max(32, ($h / max(1, $contentH)) * $h);
 		$thumbY = $y + ($this->vScrollOffset / $maxScroll) * ($h - $thumbH);
 
-		$this->drawRect($barX, $thumbY, $barW, $thumbH, $this->colors["scrollbar"]);
+		$pc = $this->colors["primary"];
+		$this->drawRoundedRect($barX, $thumbY, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
+		$this->drawGlow($barX, $thumbY, $barW, $thumbH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
 	}
 
 	private function loadVersions()
@@ -12807,15 +13432,15 @@ class FoxyClient
 
 				if ($type === self::ACC_MICROSOFT) {
 					$tex = $this->mojangTex;
-					$typeLabel = "Microsoft User";
+					$typeLabel = "Microsoft";
 					$typeColor = [0.1, 0.7, 0.4];
 				} elseif ($type === self::ACC_ELYBY) {
 					$tex = $this->elybyTex;
-					$typeLabel = "Ely.by User";
+					$typeLabel = "Ely.by";
 					$typeColor = [0.2, 0.5, 0.9];
 				} elseif ($type === self::ACC_FOXY) {
 					$tex = $this->logoTex;
-					$typeLabel = "Foxy User";
+					$typeLabel = "FoxyClient";
 					$typeColor = $this->colors["primary"];
 				}
 
@@ -12834,13 +13459,13 @@ class FoxyClient
 				$this->drawRect(self::PAD + 64, $y + 38, $badgeW, 16, [0.0, 0.0, 0.0, 0.2]);
 				$this->renderText($typeLabel, self::PAD + 70, $y + 49, $typeColor, 3000);
 
-				// Delete button
-				$delW = 32;
+				// Log Out button
+				$delW = 100;
 				$delH = 32;
 				$delX = $cw - self::PAD - $delW - 16;
 				$delY = $y + ($itemH - $delH) / 2;
 				$isDelHover = $this->accHoverIndex === $uuid . "_del";
-				$this->drawStyledButton($delX, $delY, $delW, $delH, "X", $isDelHover, "danger");
+				$this->drawStyledButton($delX, $delY, $delW, $delH, "LOG OUT", $isDelHover, "danger", 3000);
 
 			}
 			$y += $itemH + $gap;
@@ -12848,20 +13473,32 @@ class FoxyClient
 
 
 
-		// Scrollbar
+		// Premium Capsule Scrollbar
 		$contentH = count($this->accounts) * ($itemH + $gap);
 		if ($contentH > $listH) {
+			$barW = 6;
+			$barX = $cw - 12;
+			
+			// Glassy Track
+			$this->drawRoundedRect($barX, $listTop, $barW, $listH, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
+			
+			// Primary Capsule Thumb
 			$thumbH = max(30, ($listH / $contentH) * $listH);
 			$scrollRatio = $this->accScrollOffset / max(1, $contentH - $listH);
 			$thumbY = $listTop + ($listH - $thumbH) * $scrollRatio;
-			$this->drawRect($cw - 6, $listTop, 6, $listH, $this->colors["card"]);
-			$this->drawRect($cw - 5, $thumbY, 4, $thumbH, $this->colors["scrollbar"]);
+			
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($barX, $thumbY, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
+			$this->drawGlow($barX, $thumbY, $barW, $thumbH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
 		}
 	}
 
 	private function renderPropertiesPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
+		
+		// Sub-Tab Alpha (Fade In)
+		$subTabAlpha = min(1.0, (microtime(true) - $this->subTabFadeStart) / 0.25);
 		$this->renderText(
 			"PROPERTIES",
 			self::PAD,
@@ -12896,47 +13533,18 @@ class FoxyClient
 			$tw = strlen($cat) * 8 + 30;
 
 			if ($isActive) {
-				$this->drawRect(
-					$tx,
-					$y,
-					$tw,
-					self::TAB_H,
-					$this->colors["tab_active"],
-				);
-				$this->drawRect(
-					$tx,
-					$y + self::TAB_H - 3,
-					$tw,
-					3,
-					$this->colors["primary"],
-				);
-				$this->renderText(
-					$cat,
-					$tx + 15,
-					$y + 26,
-					$this->colors["text"],
-					1000,
-				);
+				// Premium Active Tab Capsule
+				$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 8, $this->colors["tab_active"]);
+				$this->drawRect($tx + ($tw - 20) / 2, $y + self::TAB_H - 3, 20, 3, $this->colors["primary"]);
+				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text"], 1000);
 			} else {
 				if ($isHover) {
-					$isLight = ($this->settings["theme"] ?? "dark") === "light";
-					$this->drawRect(
-						$tx,
-						$y,
-						$tw,
-						self::TAB_H,
-						$isLight ? [0.85, 0.88, 0.92] : [0.11, 0.11, 0.12],
-					);
+					// Soft Glassy Hover
+					$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 8, [1, 1, 1, 0.05]);
 				}
-				$this->renderText(
-					$cat,
-					$tx + 15,
-					$y + 26,
-					$this->colors["text_dim"],
-					1000,
-				);
+				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text_dim"], 1000);
 			}
-			$tx += $tw + 4;
+			$tx += $tw + 12; // Increased spacing for capsules
 		}
 
 		// Content Area
@@ -12970,22 +13578,48 @@ class FoxyClient
 
 		$gl->glDisable(0x0c11);
 
+		// Render Multi-Dropdown Overlay (Outside Scissor to prevent clipping)
+		if ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen) {
+			$cw = $this->width - self::SIDEBAR_W;
+			$ddW = 300;
+			$ddX = $cw - self::PAD - $ddW;
+			
+			$rowIdx = 2; // Language
+			if ($this->propFontDropdownOpen === "launcher") $rowIdx = 4;
+			elseif ($this->propFontDropdownOpen === "overlay") $rowIdx = 5;
+			
+			$contentTop = self::HEADER_H + self::TAB_H + 20;
+			$ddY = $contentTop + ($rowIdx * 60) + 44 - (int)$this->propScrollOffset;
 
-		// Simple scrollbar logic
+			if ($this->propLangDropdownOpen) {
+				$items = ["English (en)", "Thai (th)", "Russian (ru)", "Japanese (ja)"];
+				$cur = $this->settings["language"] ?? "English (en)";
+				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $items, $cur, $this->propFontDropdownHover, $this->propDropdownAnim);
+			} elseif ($this->propFontDropdownOpen !== "") {
+				$fonts = $this->availableFonts;
+				$cur = ($this->propFontDropdownOpen === "launcher") ? ($this->settings["font_launcher"] ?? "Open Sans") : ($this->settings["font_overlay"] ?? "Consolas");
+				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $fonts, $cur, $this->propFontDropdownHover, $this->propDropdownAnim);
+			}
+		}
+
+
+		// Premium Capsule Scrollbar logic
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$maxScroll = 400; // Increased for more rows
 		if ($this->propScrollTarget > 0 || $this->propScrollOffset > 0) {
-			$barX = $cw - 6;
-			$this->drawRect($barX, $contentTop, 4, $clipH, $this->colors["card"]);
-			$size = max(20, $clipH * ($clipH / ($maxScroll + $clipH)));
-			$pos = ($clipH - $size) * ($this->propScrollOffset / $maxScroll);
-			$this->drawRect(
-				$barX,
-				$contentTop + $pos,
-				4,
-				$size,
-				$this->colors["scrollbar"],
-			);
+			$barW = 6;
+			$barX = $cw - 12;
+
+			// Glassy Track
+			$this->drawRoundedRect($barX, $contentTop, $barW, $clipH, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
+
+			// Primary Capsule Thumb
+			$thumbH = max(32, $clipH * ($clipH / ($maxScroll + $clipH)));
+			$pos = ($clipH - $thumbH) * ($this->propScrollOffset / $maxScroll);
+			
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($barX, $contentTop + $pos, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
+			$this->drawGlow($barX, $contentTop + $pos, $barW, $thumbH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
 		}
 	}
 
@@ -12994,31 +13628,24 @@ class FoxyClient
 		$cw = $this->width - self::SIDEBAR_W;
 		$rowH = 50;
 
-		// Hover bg
+		// Premium Row Hover with Glassy Capsule and Left Accent
 		if ($this->propFieldHover === $idx) {
-			$this->drawRect(
-				self::PAD,
-				$y,
-				$cw - self::PAD * 2,
-				$rowH,
-				$this->colors["card_hover"],
+			$hC = $this->colors["card_hover"];
+			$this->drawRoundedRect(
+				self::PAD - 5,
+				$y - 2,
+				$cw - self::PAD * 2 + 10,
+				$rowH + 4,
+				10,
+				[$hC[0], $hC[1], $hC[2], 0.3]
 			);
+			// Left primary accent bar (Pill shape)
+			$this->drawRoundedRect(self::PAD - 5, $y + 5, 3, $rowH - 10, 1.5, $this->colors["primary"]);
 		}
 
-		$this->renderText(
-			$label,
-			self::PAD + 10,
-			$y + 20,
-			$this->colors["text"],
-			1000,
-		);
-		$this->renderText(
-			$desc,
-			self::PAD + 10,
-			$y + 36,
-			$this->colors["text_dim"],
-			3000,
-		);
+		// Align text within the capsule
+		$this->renderText($label, self::PAD + 10, $y + 18, $this->colors["text"], 1000, 0.4);
+		$this->renderText($desc, self::PAD + 10, $y + 36, $this->colors["text_dim"], 3000, 0.2);
 
 		$fieldX = $cw - self::PAD - 300;
 		$controlRenderer($fieldX, $y + 5, 300, 40);
@@ -13035,14 +13662,12 @@ class FoxyClient
 		$placeholder = "",
 	) {
 		$isActive = $this->propActiveField === $key;
-		$borderColor = $isActive
-			? $this->colors["primary"]
-			: $this->colors["divider"];
+		$borderColor = $isActive ? $this->colors["primary"] : [1, 1, 1, 0.1];
+		$bg = $isActive ? [0, 0, 0, 0.4] : [0, 0, 0, 0.2];
 
-		$this->drawRect($x, $y, $w, $h, $this->colors["card"]);
-		$this->drawRect($x, $y + $h - 2, $w, 2, $borderColor);
+		$this->drawRoundedRect($x, $y, $w, $h, 6, $bg, $borderColor);
 
-		$val = $this->settings[$key];
+		$val = $this->settings[$key] ?? "";
 		$display = $val . ($isActive ? "_" : "");
 
 		if (empty($val) && !$isActive) {
@@ -13102,7 +13727,7 @@ class FoxyClient
 			"Window Size",
 			"Resolution of Minecraft window (W x H)",
 			function ($x, $cy, $w, $h) {
-				$this->renderPropTextField($x, $cy, 130, $h, "window_w", "854");
+				$this->renderPropTextField($x, $cy, 130, $h, "window_w", "1280");
 				$this->renderText(
 					"x",
 					$x + 145,
@@ -13116,7 +13741,7 @@ class FoxyClient
 					130,
 					$h,
 					"window_h",
-					"480",
+					"720",
 				);
 			},
 		);
@@ -13140,26 +13765,56 @@ class FoxyClient
 			"RAM for Minecraft game (in MB)",
 			function ($x, $cy, $w, $h) {
 				$cur = (int) $this->settings["ram_mb"];
+				
+				$sliderW = 160;
+				$sliderH = 8;
+				$sliderX = $x + 10;
+				$sliderY = $cy + ($h - $sliderH) / 2;
 
-				// - btn
-				$isMinusHover = $this->mouseX >= $x + self::SIDEBAR_W && $this->mouseX <= $x + self::SIDEBAR_W + 40 &&
-							   $this->mouseY >= $cy + self::TITLEBAR_H && $this->mouseY <= $cy + self::TITLEBAR_H + $h;
-				$this->drawStyledButton($x, $cy, 40, $h, "-", $isMinusHover, "secondary");
+				$minRam = 512;
+				$maxRam = $this->systemRamMB;
+				$pct = ($cur - $minRam) / (max(1, $maxRam - $minRam));
+				$pct = max(0, min(1, $pct));
 
-				// value center (editable)
-				$this->renderPropTextField(
-					$x + 50,
-					$cy,
-					$w - 100,
-					$h,
-					"ram_mb",
-					"2048",
-				);
+				// Track (Glassy)
+				$this->drawRoundedRect($sliderX, $sliderY, $sliderW, $sliderH, 4, [1, 1, 1, 0.05], [1, 1, 1, 0.1]);
+				
+				// Fill (Glowing Primary)
+				$fillW = $sliderW * $pct;
+				$pc = $this->colors["primary"];
+				if ($fillW > 0) {
+					$this->drawRoundedRect($sliderX, $sliderY, $fillW, $sliderH, 4, [$pc[0], $pc[1], $pc[2], 0.8]);
+					// Soft Glow
+					$this->drawGlow($sliderX, $sliderY, $fillW, $sliderH, 10, [$pc[0], $pc[1], $pc[2], 0.2]);
+				}
 
-				// + btn
-				$isPlusHover = $this->mouseX >= $x + $w - 40 + self::SIDEBAR_W && $this->mouseX <= $x + $w + self::SIDEBAR_W &&
-							  $this->mouseY >= $cy + self::TITLEBAR_H && $this->mouseY <= $cy + self::TITLEBAR_H + $h;
-				$this->drawStyledButton($x + $w - 40, $cy, 40, $h, "+", $isPlusHover, "secondary");
+				// Thumb (Premium Handle)
+				$thumbSize = 18;
+				$thumbX = $sliderX + $fillW - $thumbSize / 2;
+				$thumbY = $sliderY + ($sliderH - $thumbSize) / 2;
+				
+				$absMouseX = $this->mouseX - self::SIDEBAR_W;
+				$absMouseY = $this->mouseY - self::TITLEBAR_H;
+				$isHover = $absMouseX >= $sliderX - 10 && $absMouseX <= $sliderX + $sliderW + 10 && $absMouseY >= $cy + ($h - 30) / 2 && $absMouseY <= $cy + ($h + 30) / 2;
+				$isDragging = $this->isDraggingScroll && $this->dragType === "ram_slider";
+				
+				// Hover/Drag Halo
+				if ($isHover || $isDragging) {
+					$haloAlpha = $isDragging ? 0.3 : 0.15;
+					$this->drawRoundedRect($thumbX - 6, $thumbY - 6, $thumbSize + 12, $thumbSize + 12, ($thumbSize+12)/2, [1, 1, 1, $haloAlpha]);
+				}
+				
+				// Thumb Body
+				$thumbColor = $isDragging ? [1, 1, 1] : ($isHover ? [0.95, 0.95, 1.0] : [0.9, 0.9, 0.95]);
+				$this->drawRoundedRect($thumbX, $thumbY, $thumbSize, $thumbSize, $thumbSize/2, $thumbColor, [0, 0, 0, 0.2]);
+				// Inner Dot
+				$this->drawRect($thumbX + ($thumbSize - 4)/2, $thumbY + ($thumbSize - 4)/2, 4, 4, [0.4, 0.4, 0.5], 2);
+				
+				// Editable text field for RAM (Aligned)
+				$tfW = 90;
+				$tfH = 34;
+				$this->renderPropTextField($sliderX + $sliderW + 20, $cy + ($h - $tfH) / 2, $tfW, $tfH, "ram_mb");
+				$this->renderText("MB", $sliderX + $sliderW + $tfW + 30, $cy + 24, $this->colors["text_dim"], 3000, 0.4);
 			},
 		);
 
@@ -13201,7 +13856,7 @@ class FoxyClient
 			function ($x, $cy, $w, $h) {
 				$isDark = $this->settings["theme"] === "dark";
 				$isHover = $this->propFieldHover === 1;
-				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $isDark, $isHover);
+				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $isDark, $isHover, "prop:theme");
 				
 				$text = $isDark ? "DARK THEME" : "LIGHT THEME";
 				$color = $this->colors["text_dim"];
@@ -13221,8 +13876,10 @@ class FoxyClient
 			"Language",
 			"Current Launcher Language",
 			function ($x, $cy, $w, $h) {
+				$isOpen = $this->propLangDropdownOpen;
 				$isHover = $this->propFieldHover === 2;
-				$this->drawDropdownSelector($x, $cy, $w, $h, "English (en)", false, $isHover);
+				$label = $this->settings["language"] ?? "English (en)";
+				$this->drawDropdownSelector($x, $cy, $w, $h, $label, $isOpen, $isHover);
 			},
 		);
 
@@ -13234,7 +13891,7 @@ class FoxyClient
 			function ($x, $cy, $w, $h) {
 				$showMod = (bool) ($this->settings["show_modified_versions"] ?? false);
 				$isHover = $this->propFieldHover === 3;
-				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $showMod, $isHover);
+				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $showMod, $isHover, "prop:show_modified");
 			},
 		);
 
@@ -13272,50 +13929,55 @@ class FoxyClient
 			function ($x, $cy, $w, $h) {
 				$enabled = (bool) ($this->settings["separate_modpack_folder"] ?? false);
 				$isHover = $this->propFieldHover === 6;
-				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $enabled, $isHover);
+				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $enabled, $isHover, "prop:separate_folders");
 			},
 		);
 
 
-		// Render Font Dropdown Overlay
-		if ($this->propFontDropdownOpen !== "") {
-			$cw = $this->width - self::SIDEBAR_W;
-			$ddX = $cw - self::PAD - 300;
-			$ddW = 300;
-			$rowIdx = $this->propFontDropdownOpen === "launcher" ? 4 : 5;
-			$contentTop = self::HEADER_H + self::TAB_H + 20;
-			$ddY =
-				$contentTop +
-				($rowIdx + 1) * 60 -
-				(int) $this->propScrollOffset;
+	}
 
-			$fonts = $this->availableFonts;
-			$itemH = 32;
-			$ddH = count($fonts) * $itemH;
+	private function renderPropertiesDropdownList($x, $y, $w, $items, $curVal, $hoverIdx, $alpha)
+	{
+		$itemH = 32;
+		$fullH = count($items) * $itemH;
+		$ddH = $fullH * $alpha;
+		$gl = $this->opengl32;
 
-			// Panel background (Glassy)
-			$this->drawRect($ddX, $ddY, $ddW, $ddH, $this->colors["dropdown_bg"], 8);
-			$this->drawRect($ddX, $ddY, $ddW, 1, $this->colors["divider"]);
+		// Panel background (High-Fidelity Glass)
+		$bgColor = $this->colors["dropdown_bg"];
+		$this->drawRoundedRect($x, $y, $w, $ddH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.1 * $alpha]);
+		if ($alpha > 0.5) $this->drawRect($x, $y, $w, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha]);
 
-			$curFont =
-				$this->propFontDropdownOpen === "launcher"
-					? $this->settings["font_launcher"] ?? "Open Sans"
-					: $this->settings["font_overlay"] ?? "Consolas";
+		$gl->glEnable(0x0c11); // GL_SCISSOR_TEST
+		$gl->glScissor(
+			self::SIDEBAR_W + $x,
+			$this->height - ($y + self::TITLEBAR_H + $ddH),
+			$w,
+			$ddH
+		);
 
-			foreach ($fonts as $fi => $fname) {
-				$iy = $ddY + $fi * $itemH;
-				$isActive = $fname === $curFont;
-				$isItemHover = $this->propFontDropdownHover === $fi;
+		$isLight = ($this->settings["theme"] ?? "dark") === "light";
+		foreach ($items as $i => $item) {
+			$iy = $y + $i * $itemH;
+			$isActive = $item === $curVal;
+			$isHover = $hoverIdx === $i;
 
-				if ($isActive || $isItemHover) {
-					$vBg = $isActive ? $this->colors["primary"] : $this->colors["dropdown_hover"];
-					$this->drawRect($ddX + 4, $iy + 2, $ddW - 8, $itemH - 4, $vBg, 4);
-				}
-
-				$color = $isActive ? $this->colors["button_text"] : ($isItemHover ? $this->colors["text"] : $this->colors["text_dim"]);
-				$this->renderText($fname, $ddX + 12, $iy + 22, $color, 1000);
+			if ($isActive) {
+				// Premium Selection Capsule with Glow
+				$pc = $this->colors["primary"];
+				$this->drawRoundedRect($x + 6, $iy + 2, $w - 12, $itemH - 4, 8, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
+				$this->drawGlow($x + 6, $iy + 2, $w - 12, $itemH - 4, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
+			} elseif ($isHover) {
+				// Soft Glassy Hover Capsule
+				$hoverColor = $isLight ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+				$this->drawRoundedRect($x + 6, $iy + 2, $w - 12, $itemH - 4, 8, $hoverColor);
 			}
+
+			$color = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$this->renderText($item, $x + 16, $iy + 22, $color, 1000, $alpha);
 		}
+
+		$gl->glDisable(0x0c11);
 	}
 
 	private function renderPropertiesUpdate($y)
@@ -13461,30 +14123,38 @@ class FoxyClient
 	private function renderModsPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-
-		// Gradient header (Themed Glassy Look)
-		$c1 = $this->colors["header_bg"];
-		$c2 = $this->colors["bg"];
 		
-		// If using background texture, add transparency
-		if ($this->bgTex) {
-			$c1 = [$c1[0], $c1[1], $c1[2], 0.8];
-			$c2 = [$c2[0], $c2[1], $c2[2], 0.6];
+		// Sub-Tab Alpha (Fade In)
+		$subTabAlpha = min(1.0, (microtime(true) - $this->subTabFadeStart) / 0.25);
+
+		$this->drawPageHeader("MODS BROWSER", "Explore and install community mods or modpacks seamlessly.");
+		
+		$this->renderSubTabs(["INSTALLED MODS", "MODS", "MODPACKS", "INSTALLED MODPACKS"], $this->modpackSubTab, 3000);
+
+		// Determine dynamic placeholder based on sub-tab
+		$placeholder = "Search Modrinth...";
+		if ($this->modpackSubTab === 0) $placeholder = "Search installed mods...";
+		elseif ($this->modpackSubTab === 2) $placeholder = "Search modpacks...";
+		elseif ($this->modpackSubTab === 3) $placeholder = "Search installed packs...";
+
+		$searchW = 300;
+		$searchX = $cw - self::PAD - $searchW;
+		$this->renderSearchBar($searchX, 15, $searchW, 40, $this->modSearchQuery, $this->modSearchFocus, $placeholder);
+
+		if ($this->modpackSubTab === 0) {
+			if ($this->localMods === null && !$this->isScanningLocalMods) {
+				$this->scanLocalMods();
+			}
+			$this->renderManagedModsTab(self::HEADER_H + self::TAB_H, $subTabAlpha);
+			return;
 		}
 
-		$this->drawGradientRect(0, 0, $cw, self::HEADER_H, $c1, $c2);
-		$this->drawRect(0, 0, $cw, 2, $this->colors["primary"]); // Subtle top accent
-		$this->drawRect(0, self::HEADER_H - 1, $cw, 1, $this->colors["divider"]); // Bottom divider
+		if ($this->modpackSubTab === 3) {
+			$this->renderInstalledModpacks(self::HEADER_H + self::TAB_H, $subTabAlpha);
+			return;
+		}
 
-		$this->renderText(
-			"MODPACKS BROWSER",
-			self::PAD,
-			35,
-			$this->colors["primary"],
-			2000,
-		);
-
-		// Filter Pills Data
+		// Filter Pills Data (Only show for Discovery tabs 1 & 2)
 		$cleanVer = str_replace(
 			["Fabric ", "Forge ", "Quilt ", "NeoForge "],
 			"",
@@ -13517,17 +14187,12 @@ class FoxyClient
 		}
 		$totalW += ($pillGap * (count($pills) - 1));
 
-		// Search bar metrics
-		$searchW = 300;
-		$searchX = $cw - self::PAD - $searchW;
-		
 		// Rendering pills
 		$pillH = 24;
-		$pillY = 23; // Vertically center with search bar (Y=15, H=40 -> center Y=35 -> PillY=35-12)
-		$pillX = $searchX - 15 - $totalW; // Align to the left of the search bar
+		$pillY = 23; 
+		$pillX = $searchX - 15 - $totalW; 
 
-		$pillR = 4;
-		$this->modsFilterPillRects = []; // Store pill rects for click handling
+		$this->modsFilterPillRects = []; 
 		foreach ($pills as $pi => $pill) {
 			$key = $pill[1];
 			$display = $pill[0] . ": " . $pill[2];
@@ -13539,49 +14204,31 @@ class FoxyClient
 
 			// Pill background
 			$bg = $isOpen ? $this->colors["primary"] : ($isActive ? $this->colors["pill_active"] : $this->colors["pill_bg"]);
-			$this->drawRect($pillX, $pillY, $tw, $pillH, $bg, $pillR);
+			$this->drawRoundedRect($pillX, $pillY, $tw, $pillH, 6, $bg, $isOpen ? null : [1, 1, 1, 0.05]);
 
 			// Pill text
 			$tc = $isOpen ? [1, 1, 1] : ($isActive ? $this->colors["primary"] : $this->colors["text_dim"]);
-			$this->renderText($display, $pillX + 10, $pillY + 17, $tc, 3000);
+			$this->renderText($display, $pillX + 10, $pillY + 16, $tc, 3000, 0.4);
 
-			// Down arrow indicator
+			// Down arrow
 			$arrowX = $pillX + $tw - 12;
-			$this->renderText($isOpen ? "▴" : "▾", $arrowX, $pillY + 17, $tc, 3000);
+			$this->renderText($isOpen ? "▴" : "▾", $arrowX, $pillY + 16, $tc, 3000);
 
 			$this->modsFilterPillRects[$key] = [$pillX, $pillY, $tw, $pillH];
 			$pillX += $tw + $pillGap;
 		}
-
-		// Search Bar (Glassy)
-		$searchW = 300;
-		$searchX = $cw - self::PAD - $searchW;
-		$this->renderSearchBar(
-			$searchX,
-			15,
-			$searchW,
-			40,
-			$this->modSearchQuery,
-			$this->modSearchFocus,
-		);
-
-		$this->renderSubTabs(["Mods", "Modpacks", "Installed"], $this->modpackSubTab, 200);
 
 		$y = self::HEADER_H + self::TAB_H;
 		$usableH = $this->height - self::TITLEBAR_H;
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$h = $usableH - $footerH - $y;
 
-		// Trigger discovery if haven't searched yet AND NOT currently searching
+		// Trigger discovery if needed
 		if ($this->lastModrinthQuery === null && !$this->isSearchingModrinth) {
 			$this->searchModrinth("");
 		}
 
-		if ($this->modpackSubTab === 2) {
-			$this->renderInstalledModpacks();
-		} else {
-			$this->renderModList();
-		}
+		$this->renderModList();
 
 		// Install progress overlay (Always show if installing a modpack)
 		if ($this->isInstallingModpack || (isset($this->modpackInstallProgress) && $this->modpackInstallProgress !== "")) {
@@ -13630,6 +14277,7 @@ class FoxyClient
 	{
 		$gl = $this->opengl32;
 		$key = $this->modsFilterDropdown;
+		$alpha = $this->modsFilterDropdownAnim;
 		
 		// Determine pill rect for positioning
 		$pillRect = $this->modsFilterPillRects[$key] ?? null;
@@ -13650,21 +14298,21 @@ class FoxyClient
 		$items = [];
 		$selected = "";
 		if ($key === "category") {
-			$items[] = ["", "All Categories"];
+			$items[] = ["", $this->t("all_categories")];
 			foreach ($this->modsCategories as $cat) {
-				$items[] = [$cat, $this->modsCategoryLabels[$cat] ?? $cat];
+				$items[] = [$cat, $this->t($cat)];
 			}
 			$selected = $this->modsFilterCategory;
 		} elseif ($key === "loader") {
-			$items[] = ["", "All Loaders"];
+			$items[] = ["", $this->t("all_loaders")];
 			foreach ($this->modsLoaderList as $ld) {
 				$items[] = [$ld, $this->modsLoaderLabels[$ld] ?? ucfirst($ld)];
 			}
 			$selected = $this->modsFilterLoader;
 		} elseif ($key === "env") {
-			$items = [["", "All"], ["client", "Client"], ["server", "Server"]];
+			$items = [["", $this->t("all_envs")], ["client", $this->t("client")], ["server", $this->t("server")]];
 			$selected = $this->modsFilterEnv;
-			$ddW = 150;
+			$ddW = 180; // Slightly wider for translations
 		} elseif ($key === "version") {
 			$releaseVersions = [];
 			foreach ($this->versions as $v) {
@@ -13710,9 +14358,10 @@ class FoxyClient
 			$ddH,
 		);
 
-		// Panel background (Glassy)
-		$this->drawRect($ddX, $ddY, $ddW, $fullH, $this->colors["dropdown_bg"], 8);
-		$this->drawRect($ddX, $ddY, $ddW, 1, $this->colors["divider"]);
+		// Panel background (High-Fidelity Glass)
+		$bgColor = $this->colors["dropdown_bg"];
+		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $this->modsFilterDropdownAnim], [1, 1, 1, 0.1 * $this->modsFilterDropdownAnim]);
+		if ($this->modsFilterDropdownAnim > 0.5) $this->drawRect($ddX, $ddY, $ddW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $this->modsFilterDropdownAnim]);
 
 		// Render items
 		$iy = $ddY - $this->modsFilterScrollOffset;
@@ -13725,20 +14374,36 @@ class FoxyClient
 			$isSelected = $item[0] === $selected;
 			$isHover = $this->modsFilterHoverIdx === $idx;
 
-			if ($isSelected || $isHover) {
-				$ibg = $isSelected ? $this->colors["primary"] : $this->colors["card_hover"];
-				$this->drawRect($ddX + 4, $itemY + 2, $ddW - 8, $itemH - 4, $ibg, 4);
+			if ($isSelected) {
+				// Premium Selection Capsule with Glow
+				$pc = $this->colors["primary"];
+				$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, $itemH - 4, 8, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
+				$this->drawGlow($ddX + 6, $itemY + 2, $ddW - 12, $itemH - 4, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
+			} elseif ($isHover) {
+				// Soft Glassy Hover Capsule
+				$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+				$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, $itemH - 4, 8, $sh);
 			}
 
 			$itc = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
-			$this->renderText($item[1], $ddX + 12, $itemY + 20, $itc, 3000);
+			$this->renderText($item[1], $ddX + 16, $itemY + 22, $itc, 1000, $alpha);
 		}
 
-		// Scroll indicator
+		// Premium Capsule Scrollbar (Inside)
 		if ($totalH > $fullH) {
+			$barW = 4;
+			$barX = $ddX + $ddW - 8;
+			
+			// Glassy Track
+			$this->drawRoundedRect($barX, $ddY, $barW, $fullH, 2, [1, 1, 1, 0.03 * $alpha], [1, 1, 1, 0.05 * $alpha]);
+			
+			// Primary Capsule Thumb
 			$barH = max(20, ($fullH / $totalH) * $fullH);
 			$barY = $ddY + ($this->modsFilterScrollOffset / $maxScroll) * ($fullH - $barH);
-			$this->drawRect($ddX + $ddW - 4, $barY, 3, $barH, [1, 1, 1, 0.2]);
+			
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($barX, $barY, $barW, $barH, 2, [$pc[0], $pc[1], $pc[2], 0.7 * $alpha]);
+			$this->drawGlow($barX, $barY, $barW, $barH, 8, [$pc[0], $pc[1], $pc[2], 0.15 * $alpha]);
 		}
 
 		$gl->glDisable(0x0c11);
@@ -13746,11 +14411,10 @@ class FoxyClient
 
 	private function renderModsVersionDropdown()
 	{
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
-		// Existing logic for version dropdown...
-		// (I'll refactor this into its own method to keep renderModsPage clean)
 		$cw = $this->width - self::SIDEBAR_W;
 		$gl = $this->opengl32;
+		$alpha = $this->modsVerDropdownAnim;
+		
 		$ddX = self::PAD;
 		$ddY = 70;
 		$ddW = 300;
@@ -13770,7 +14434,7 @@ class FoxyClient
 
 		$maxItems = min(8, count($releaseVersions));
 		$fullDDH = $maxItems * 35;
-		$ddH = $fullDDH * $this->modsVerDropdownAnim;
+		$ddH = $fullDDH * $alpha;
 
 		$gl->glEnable(0x0c11); // SCISSOR
 		$gl->glScissor(
@@ -13779,8 +14443,11 @@ class FoxyClient
 			$ddW,
 			$ddH,
 		);
-		$this->drawRect($ddX, $ddY, $ddW, $fullDDH, $this->colors["dropdown_bg"], 8);
-		$this->drawRect($ddX, $ddY, $ddW, 1, $this->colors["divider"]);
+		
+		// High-Fidelity Glassy Panel
+		$bgColor = $this->colors["dropdown_bg"];
+		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullDDH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.1 * $alpha]);
+		if ($alpha > 0.5) $this->drawRect($ddX, $ddY, $ddW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha]);
 
 		$lx = $ddX + 6;
 		foreach ($this->modsLoaderOptions as $li => $loaderOpt) {
@@ -13788,13 +14455,16 @@ class FoxyClient
 			$isActive = $this->config["loader"] === $loaderOpt;
 			$isHover = $this->modsVerHoverIdx === 500 + $li;
 			
-			$lBg = $isActive ? $this->colors["primary"] : ($isHover ? $this->colors["card_hover"] : [0,0,0,0]);
-			$lTextColor = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
-			
-			if ($lBg !== [0,0,0,0]) {
-				$this->drawRect($lx, $ddY + 4, $ltw, 24, $lBg, 4);
+			if ($isActive) {
+				$pc = $this->colors["primary"];
+				$this->drawRoundedRect($lx, $ddY + 4, $ltw, 24, 6, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
+			} elseif ($isHover) {
+				$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+				$this->drawRoundedRect($lx, $ddY + 4, $ltw, 24, 6, $sh);
 			}
-			$this->renderText(ucfirst($loaderOpt), $lx + 10, $ddY + 19, $lTextColor, 3000);
+			
+			$itc = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$this->renderText(ucfirst($loaderOpt), $lx + 10, $ddY + 19, $itc, 1000, $alpha);
 			$lx += $ltw + 6;
 		}
 
@@ -13806,15 +14476,38 @@ class FoxyClient
 				$isHover = $this->modsVerHoverIdx === $vi;
 				$isSelected = $vId === $this->config["minecraft_version"];
 				
-				if ($isHover || $isSelected) {
-					$vBg = $isSelected ? $this->colors["primary"] : $this->colors["card_hover"];
-					$this->drawRect($ddX + 4, $itemY + 2, $ddW - 8, 31, $vBg, 4);
+				if ($isSelected) {
+					$pc = $this->colors["primary"];
+					$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, 31, 8, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
+					$this->drawGlow($ddX + 6, $itemY + 2, $ddW - 12, 31, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
+				} elseif ($isHover) {
+					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+					$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, 31, 8, $sh);
 				}
 
-				$vTextColor = $isSelected ? [1,1,1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
-				$this->renderText($vId, $ddX + 12, $itemY + 22, $vTextColor, 2000);
+				$itc = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+				$this->renderText($vId, $ddX + 16, $itemY + 22, $itc, 1000, $alpha);
 			}
 			$itemY += 35;
+		}
+
+		// Premium Capsule Scrollbar (Inside - Versions)
+		$totalH = count($releaseVersions) * 35;
+		if ($totalH > $fullDDH) {
+			$barW = 4;
+			$barX = $ddX + $ddW - 8;
+			$maxScroll = $totalH - $fullDDH;
+
+			// Glassy Track
+			$this->drawRoundedRect($barX, $ddY + 35, $barW, $fullDDH - 35, 2, [1, 1, 1, 0.03 * $alpha], [1, 1, 1, 0.05 * $alpha]);
+
+			// Primary Capsule Thumb
+			$barH = max(20, (($fullDDH - 35) / $totalH) * ($fullDDH - 35));
+			$barY = ($ddY + 35) + ($this->modsVerScrollOffset / $maxScroll) * (($fullDDH - 35) - $barH);
+
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($barX, $barY, $barW, $barH, 2, [$pc[0], $pc[1], $pc[2], 0.7 * $alpha]);
+			$this->drawGlow($barX, $barY, $barW, $barH, 8, [$pc[0], $pc[1], $pc[2], 0.15 * $alpha]);
 		}
 
 		$gl->glDisable(0x0c11);
@@ -13910,16 +14603,21 @@ class FoxyClient
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		
-		// Map scrollTarget to a scrollbar
 		if ($this->maxScroll > 0) {
+			$progress = $this->scrollOffset / $this->maxScroll;
 			$scrollH = max(30, ($h / ($h + $this->maxScroll)) * $h);
-			$scrollY = $y + ($this->scrollOffset / $this->maxScroll) * ($h - $scrollH);
+			$scrollY = $y + $progress * ($h - $scrollH);
 			
-			// Background
-			$this->drawRect($cw - 8, $y, 6, $h, $this->colors["card"], 3);
+			$barX = $cw - 10;
+			$barW = 6;
 			
-			// Handle (Themed)
-			$this->drawRect($cw - 7, $scrollY, 4, $scrollH, $this->colors["scrollbar"], 2);
+			// High-Fidelity Glassy Track
+			$this->drawRoundedRect($barX, $y, $barW, $h, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
+			
+			// Premium Primary Capsule Thumb
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($barX, $scrollY, $barW, $scrollH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
+			$this->drawGlow($barX, $scrollY, $barW, $scrollH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
 		}
 	}
 
@@ -13930,27 +14628,27 @@ class FoxyClient
 		$w = $cw - self::PAD * 2;
 		$h = self::CARD_H;
 
-		// Card Background (Themed)
+		// Card Background (Premium Rounded)
 		$bgColor = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
-		$this->drawRect($x, $y, $w, $h, $bgColor, 6);
+		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColor);
 
-		// Left accent bar
+		// Left accent pill
 		if ($mod["enabled"] ?? true) {
-			$this->drawRect($x, $y, 4, $h, $this->colors["primary"], 6);
+			$this->drawRoundedRect($x + 4, $y + 8, 3, $h - 16, 1.5, $this->colors["primary"]);
 		}
 
 		// Toggle switch for checked state
 		$cbX = $x + 10;
 		$cbY = $y + (self::CARD_H - 22) / 2;
-		$this->drawToggleSwitch($cbX, $cbY, $mod["checked"], $isHover);
+		$this->drawToggleSwitch($cbX, $cbY, $mod["checked"] ?? false, $isHover, "foxy_opt_mod:" . $mod["id"]);
 
 		// Mod name
 		$stX_val =
-			$cw - self::PAD - (strlen($mod["status"] ?? "IDLE") * 7 + 16 + 8);
+			$cw - self::PAD - (strlen($mod["status"] ?? "READY") * 7 + 16 + 8);
 		$maxNameW = $stX_val - ($cbX + 54) - 10;
-		$nameFont = 1000; // Regular 20px
+		$nameFont = 3000; // Small 18px
 		if ($this->getTextWidth($mod["id"], $nameFont) > $maxNameW) {
-			$nameFont = 3000; // Small 15px
+			$nameFont = 3000; // Already small
 		}
 		$this->renderText(
 			$mod["id"],
@@ -14005,13 +14703,14 @@ class FoxyClient
 			$stLen = strlen($statusText) * 7 + 16;
 			$stX = $cw - self::PAD - $stLen - 8; // Relative to content width
 
-			// Badge background
-			$this->drawRect($stX, $y + 10, $stLen, 24, [
-				$sColor[0] * 0.15,
-				$sColor[1] * 0.15,
-				$sColor[2] * 0.15,
-			]);
-			$this->renderText($statusText, $stX + 8, $y + 28, $sColor, 3000);
+			// Badge background (Capsule)
+			$this->drawRoundedRect($stX, $y + 10, $stLen, 24, 6, [
+				$sColor[0],
+				$sColor[1],
+				$sColor[2],
+				0.15,
+			], [$sColor[0], $sColor[1], $sColor[2], 0.3]);
+			$this->renderText($statusText, $stX + 8, $y + 26, $sColor, 3000, 0.4);
 
 			// Mini progress bar for downloading state
 			if ($mod["status"] === "downloading" && isset($mod["pct"])) {
@@ -14050,10 +14749,26 @@ class FoxyClient
 			$alpha = $this->modrinthAnim;
 			$slideY = (1.0 - $alpha) * 20;
 
-			if ($this->isSearchingModrinth && empty($this->modrinthSearchResults)) {
-				$dots = str_repeat(".", ((int) (microtime(true) * 2)) % 4);
-				$this->renderText("SEARCHING MODRINTH" . $dots, $cw / 2 - 100, $y + 60, $this->colors["primary"], 2000);
-				$this->renderText("Discovering projects for you", $cw / 2 - 100, $y + 85, $this->colors["text_dim"], 1000);
+			if ($this->isSearchingModrinth) {
+				// Premium Skeleton Loading Grid (High Visibility)
+				$pulsingAlpha = 0.4 + 0.3 * sin(microtime(true) * 6.0);
+				
+				$gridX = self::PAD;
+				$gridY = $y + 10;
+				$cardW = ($cw - self::PAD * 3) / 2;
+				$cardH = 110;
+				$gap = 12;
+
+				for ($i = 0; $i < 10; $i++) {
+					$col = $i % 2;
+					$row = floor($i / 2);
+					$itemX = $gridX + $col * ($cardW + $gap);
+					$itemY = $gridY + $row * ($cardH + $gap);
+					
+					if ($itemY + $cardH > $y && $itemY < $y + $listH) {
+						$this->drawModSkeleton($itemX, $itemY, $cardW, $cardH, $pulsingAlpha);
+					}
+				}
 			} elseif (!empty($this->modrinthError)) {
 				$this->renderText("ERROR", $cw / 2 - 30, $y + 50, [1.0, 0.3, 0.3], 2000);
 				$this->renderText($this->modrinthError, $cw / 2 - 100, $y + 75, $this->colors["text_dim"], 1000);
@@ -14144,13 +14859,14 @@ class FoxyClient
 						? $this->colors["primary"]
 						: $this->colors["card_hover"])
 					: $this->colors["tab_bg"];
-			$this->drawRect($pgX, $pgY, 60, 30, $prevCol);
+			// Prev Button (Glassy Capsule)
+			$this->drawRoundedRect($pgX, $pgY, 60, 30, 6, $prevCol);
 			$this->renderText(
 				"<",
 				$pgX + 23,
-				$pgY + 22,
+				$pgY + 20,
 				$this->colors["text"],
-				1000,
+				1000
 			);
 
 			// Page Info
@@ -14159,9 +14875,10 @@ class FoxyClient
 			$this->renderText(
 				$pgText,
 				$pgX + 60 + ($pgW - 120 - $tw) / 2,
-				$pgY + 22,
+				$pgY + 20,
 				$this->colors["text"],
-				1000,
+				3000,
+				0.5
 			);
 
 			// Next Button
@@ -14177,17 +14894,135 @@ class FoxyClient
 						? $this->colors["primary"]
 						: $this->colors["card_hover"])
 					: $this->colors["tab_bg"];
-			$this->drawRect($nextX, $pgY, 60, 30, $nextCol);
+			// Next Button (Glassy Capsule)
+			$this->drawRoundedRect($nextX, $pgY, 60, 30, 6, $nextCol);
 			$this->renderText(
 				">",
 				$nextX + 23,
-				$pgY + 22,
+				$pgY + 20,
 				$this->colors["text"],
-				1000,
+				1000
 			);
 		}
 
 		$this->renderScrollbar($y, $listH);
+	}
+
+	private function renderManagedModsTab($y, $alpha)
+	{
+		$cw = $this->width - self::SIDEBAR_W;
+		$listH = $this->height - self::TITLEBAR_H - $y - (($this->getFooterVisibility() ? self::FOOTER_H : 0));
+		
+		if ($this->localMods === null) {
+			$this->scanLocalMods();
+		}
+
+		$query = strtolower(trim($this->modSearchQuery));
+		$filteredMods = [];
+		foreach ($this->localMods as $mod) {
+			if ($query !== "" && strpos(strtolower($mod["name"] ?? ""), $query) === false && strpos(strtolower($mod["id"] ?? ""), $query) === false) {
+				continue;
+			}
+			$filteredMods[] = $mod;
+		}
+
+		if (empty($filteredMods)) {
+			if ($query !== "") {
+				$this->renderText("NO MATCHING MODS FOUND", ($cw - 200) / 2, $y + 100, $this->colors["text_dim"], 2000, $alpha);
+			} else {
+				$this->renderText("NO LOCAL MODS FOUND", ($cw - 200) / 2, $y + 100, $this->colors["text_dim"], 2000, $alpha);
+				$this->renderText("Make sure your mods are in games/mods/", ($cw - 200) / 2, $y + 125, $this->colors["text_dim"], 1000, $alpha);
+			}
+			return;
+		}
+
+		$gridX = self::PAD;
+		$gridY = $y + 10 - $this->scrollOffset;
+		$cardW = ($cw - self::PAD * 3) / 2;
+		$cardH = 160; 
+		$gap = 15;
+
+		// Scissor Area
+		$gl = $this->opengl32;
+		$gl->glEnable(0x0c11);
+		$gl->glScissor(self::SIDEBAR_W, ($this->getFooterVisibility() ? self::FOOTER_H : 0), $cw, $listH);
+
+		foreach ($filteredMods as $i => $mod) {
+			$col = $i % 2;
+			$row = floor($i / 2);
+			$itemX = $gridX + $col * ($cardW + $gap);
+			$itemY = $gridY + $row * ($cardH + $gap);
+
+			if ($itemY + $cardH > $y && $itemY < $y + $listH) {
+				$this->drawLocalModCard($mod, $itemX, $itemY, $cardW, $cardH, $alpha);
+			}
+		}
+
+		$gl->glDisable(0x0c11);
+
+		$totalRows = ceil(count($this->localMods) / 2);
+		$this->maxScroll = max(0, $totalRows * ($cardH + $gap) - $listH + 20);
+		$this->renderScrollbar($y, $listH);
+	}
+
+	private function drawLocalModCard($mod, $x, $y, $w, $h, $alpha)
+	{
+		$isHover = $this->mouseX >= $x + self::SIDEBAR_W && $this->mouseX <= $x + self::SIDEBAR_W + $w && 
+				   $this->mouseY >= $y + self::TITLEBAR_H && $this->mouseY <= $y + self::TITLEBAR_H + $h;
+		$this->drawCard($x, $y, $w, $h, $isHover);
+
+		$iconSize = 64;
+		$iconX = $x + 12;
+		$iconY = $y + 12;
+
+		// Icon
+		if ($mod["icon_path"] && isset($this->modIconCache["local_" . $mod["id"]])) {
+			$this->drawTexture($this->modIconCache["local_" . $mod["id"]], $iconX, $iconY, $iconSize, $iconSize, [1,1,1,$alpha]);
+		} else {
+			// Placeholder or delayed load
+			$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 8, [1,1,1,0.05 * $alpha]);
+			if ($mod["icon_path"]) {
+				$this->modIconCache["local_" . $mod["id"]] = $this->createTextureFromFile($mod["icon_path"]);
+			}
+		}
+
+		// Text info
+		$tx = $iconX + $iconSize + 15;
+		$this->renderText($mod["name"], $tx, $y + 30, $this->colors["text"], 1000, $alpha);
+		$this->renderText("Version: " . $mod["version"], $tx, $y + 48, $this->colors["primary"], 3000, $alpha * 0.8);
+		$this->renderText("Author: " . ($mod["author"] ?? "Unknown"), $tx, $y + 60, $this->colors["text_dim"], 3000, $alpha * 0.6);
+		
+		// Status Badge
+		$statusLabel = $mod["enabled"] ? "ENABLED" : "DISABLED";
+		$statusColor = $mod["enabled"] ? $this->colors["status_active"] : $this->colors["text_dim"];
+		$this->drawRoundedRect($tx, $y + 68, 70, 18, 4, [$statusColor[0], $statusColor[1], $statusColor[2], 0.2 * $alpha]);
+		$this->renderText($statusLabel, $tx + 8, $y + 83, $statusColor, 3000, $alpha);
+
+		// Description snippet (Scaled down with optimized spacing)
+		$fullDesc = $mod["description"] ?? "No description.";
+		$lines = explode("\n", wordwrap($fullDesc, 50));
+		$dy = $y + 102; // Move below status badge
+		$tc = [$this->colors["text"][0], $this->colors["text"][1], $this->colors["text"][2], 0.8 * $alpha];
+		
+		$this->globalAlpha = $alpha; 
+		foreach (array_slice($lines, 0, 2) as $li => $line) {
+			$this->renderText($line, $iconX, $dy + ($li * 22), $tc, 1000, 0.50);
+		}
+
+		// Action Buttons (Toggle & Uninstall)
+		$btnW = 86;
+		$btnH = 26;
+		$btnX = $x + $w - $btnW - 12;
+		
+		// Un-install button
+		$unBtnX = $btnX - $btnW - 8;
+		$unHover = $this->mouseX >= $unBtnX + self::SIDEBAR_W && $this->mouseX <= $unBtnX + self::SIDEBAR_W + $btnW && 
+				   $this->mouseY >= $y + self::TITLEBAR_H + 12 && $this->mouseY <= $y + self::TITLEBAR_H + 12 + $btnH;
+		$this->drawStyledButton($unBtnX, $y + 12, $btnW, $btnH, "UNINSTALL", $unHover, "danger", 3000);
+
+		$toggleH = $this->mouseX >= $btnX + self::SIDEBAR_W && $this->mouseX <= $btnX + self::SIDEBAR_W + $btnW && 
+				   $this->mouseY >= $y + self::TITLEBAR_H + 12 && $this->mouseY <= $y + self::TITLEBAR_H + 12 + $btnH;
+		$this->drawStyledButton($btnX, $y + 12, $btnW, $btnH, $mod["enabled"] ? "DISABLE" : "ENABLE", $toggleH, $mod["enabled"] ? "secondary" : "success", 3000);
 	}
 
 	private function renderInstalledModpacks()
@@ -14205,7 +15040,7 @@ class FoxyClient
 		}
 
 		if (empty($this->installedModpacks)) {
-			$this->renderText("No modpacks installed yet.", self::PAD, $y + 20, $this->colors["text_dim"], 1000);
+			$this->renderText("NO MODPACKS INSTALLED YET.", self::PAD, $y + 20, $this->colors["text_dim"], 1000);
 			return;
 		}
 
@@ -14239,10 +15074,30 @@ class FoxyClient
 				$iconY = $y + ($cardH - $iconSize) / 2;
 				
 				if ($iconTid) {
-					$this->drawTexture($iconTid, $iconX, $iconY, $iconSize, $iconSize);
+					$this->drawTexture($iconTid, $iconX, $iconY, $iconSize, $iconSize, [1, 1, 1, 1]);
 				} else {
-					$this->drawRect($iconX, $iconY, $iconSize, $iconSize, $this->colors["panel"]);
-					$this->renderText("?", $iconX + 18, $iconY + 32, $this->colors["text_dim"], 1000);
+					// Attempt Local Discovery if not in cache
+					$instPath = $pack["install_path"] ?? null;
+					if ($instPath && !isset($this->modpackIconCache[$slug])) {
+						$pDir = $this->getAbsolutePath($instPath);
+						foreach (["logo.png", "pack.png", "icon.png"] as $fName) {
+							$fPath = $pDir . DIRECTORY_SEPARATOR . $fName;
+							if (file_exists($fPath)) {
+								$this->modpackIconCache[$slug] = $this->loadTexture($fPath);
+								break;
+							}
+						}
+					}
+					
+					// Re-check after discovery
+					$iconTid = $this->modpackIconCache[$slug] ?? null;
+					if ($iconTid) {
+						$this->drawTexture($iconTid, $iconX, $iconY, $iconSize, $iconSize);
+					} else {
+						// Premium Placeholder (Package Icon)
+						$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 10, [1, 1, 1, 0.05], [1, 1, 1, 0.1]);
+						$this->renderText("📦", $iconX + 12, $iconY + 32, $this->colors["primary"], 1000);
+					}
 				}
 
 				// Modpack name
@@ -14272,16 +15127,21 @@ class FoxyClient
 				$this->renderText("$fileCount files", $infoOffsetX, $infoY, $this->colors["text_dim"], 3000);
 
 				// Action Buttons area
-				$pBtnW = 80;
-				$pBtnX = $cw - self::PAD * 2 - $btnW - 20 - $pBtnW;
-				$isPHover = $this->mouseX >= $pBtnX + self::SIDEBAR_W && $this->mouseX <= $pBtnX + self::SIDEBAR_W + $pBtnW &&
-							$this->mouseY >= $btnY2 + self::TITLEBAR_H && $this->mouseY <= $btnY2 + self::TITLEBAR_H + $btnH;
+				$lBtnW = 100;
+				$lBtnH = 32;
+				$lBtnX = $cw - self::PAD - $lBtnW - 10;
+				$lBtnY = $y + ($cardH - $lBtnH) / 2;
+				
+				$uBtnW = 100;
+				$uBtnX = $lBtnX - 10 - $uBtnW;
+				
+				$isLHover = $this->mouseX >= $lBtnX + self::SIDEBAR_W && $this->mouseX <= $lBtnX + self::SIDEBAR_W + $lBtnW &&
+							$this->mouseY >= $lBtnY + self::TITLEBAR_H && $this->mouseY <= $lBtnY + self::TITLEBAR_H + $lBtnH;
+				$isUHover = $this->mouseX >= $uBtnX + self::SIDEBAR_W && $this->mouseX <= $uBtnX + self::SIDEBAR_W + $uBtnW &&
+							$this->mouseY >= $lBtnY + self::TITLEBAR_H && $this->mouseY <= $lBtnY + self::TITLEBAR_H + $lBtnH;
 
-				$isDelHover = $this->mouseX >= $btnX + self::SIDEBAR_W && $this->mouseX <= $btnX + self::SIDEBAR_W + $btnW &&
-							  $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= $btnY2 + self::TITLEBAR_H + $btnH;
-
-				$this->drawStyledButton($pBtnX, $btnY2, $pBtnW, $btnH, "PLAY", $isPHover, "success");
-				$this->drawStyledButton($btnX, $btnY2, $btnW, $btnH, "UNINSTALL", $isDelHover, "danger");
+				$this->drawStyledButton($lBtnX, $lBtnY, $lBtnW, $lBtnH, "PLAY", $isLHover, "primary", 1000);
+				$this->drawStyledButton($uBtnX, $lBtnY, $uBtnW, $lBtnH, "UNINSTALL", $isUHover, "danger", 1000);
 			}
 
 			$y += $cardH + 8;
@@ -14518,6 +15378,227 @@ class FoxyClient
 		$this->user32->SendMessageA($this->hwnd, 0xa1, 2, null);
 	}
 
+	private function renderModInfoModal()
+	{
+		$gl = $this->opengl32;
+		// Reimplemented Cinematic Animation (Smooth Stagger + Scale)
+		$target = $this->modInfoModalOpen ? 1.0 : 0.0;
+		$this->modInfoAlpha += ($target - $this->modInfoAlpha) * ($this->modInfoModalOpen ? 0.18 : 0.12);
+		$progress = $this->modInfoAlpha;
+
+		// Refined Staggered Animation: Text fades fully first, then Modal fades
+		$mAlpha = $progress > 0.6 ? 1.0 : ($progress / 0.6);
+		$tAlpha = $progress > 0.6 ? (($progress - 0.6) / 0.4) : 0.0;
+		
+		// Scale effect (98% -> 100%)
+		$scale = 0.98 + (0.02 * $progress);
+
+		// Dim background
+		$this->drawRect(0, 0, $this->width, $this->height, [0, 0, 0, 0.6 * $mAlpha]);
+
+		$mw = 600 * $scale;
+		$mh = 500 * $scale;
+		$mx = ($this->width - $mw) / 2;
+		$my = ($this->height - $mh) / 2;
+
+		// Main Modal Glass
+		$this->drawRoundedRect($mx, $my, $mw, $mh, 12, [$this->colors["dropdown_bg"][0], $this->colors["dropdown_bg"][1], $this->colors["dropdown_bg"][2], 0.98 * $mAlpha], [1, 1, 1, 0.1 * $mAlpha]);
+		$this->drawGlow($mx, $my, $mw, $mh, 20, $this->colors["primary"], 0.15 * $mAlpha);
+
+		$mod = $this->modInfoSelected;
+		if (!$mod) return;
+
+		// Content Rendering (using tAlpha)
+		$iconS = 80 * $scale;
+		$projId = $mod["project_id"] ?? ("local_" . ($mod["id"] ?? ""));
+		$hasIcon = isset($this->modIconCache[$projId]) && $this->modIconCache[$projId] > 0;
+		if ($hasIcon) {
+			$this->drawTexture($this->modIconCache[$projId], $mx + 30 * $scale, $my + 30 * $scale, $iconS, $iconS, [1,1,1,$tAlpha]);
+		} else {
+			$this->drawRoundedRect($mx + 30 * $scale, $my + 30 * $scale, $iconS, $iconS, 8 * $scale, [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], 0.1 * $tAlpha]);
+		}
+
+		$title = $mod["title"] ?? ($mod["name"] ?? "Unknown Mod");
+		$this->renderText($title, $mx + 130 * $scale, $my + 60 * $scale, $this->colors["text"], 2000, $tAlpha, 1.4 * $scale);
+		$author = "by " . ($mod["author"] ?? "Unknown");
+		$this->renderText($author, $mx + 130 * $scale, $my + 85 * $scale, $this->colors["text_dim"], 3000, $tAlpha);
+
+		// Divider
+		$this->drawRect($mx + 30 * $scale, $my + 130 * $scale, $mw - 60 * $scale, 1, [$this->colors["divider"][0], $this->colors["divider"][1], $this->colors["divider"][2], 0.2 * $tAlpha]);
+
+		// Description Area
+		$desc = $mod["description"] ?? ($mod["summary"] ?? "No description available.");
+		$this->renderText("DESCRIPTION", $mx + 30 * $scale, $my + 160 * $scale, $this->colors["primary"], 3000, $tAlpha, 0.7 * $scale);
+		
+		$lines = explode("\n", wordwrap($desc, (int)(70 * $scale)));
+		$ly = $my + 185 * $scale;
+		foreach (array_slice($lines, 0, 10) as $line) {
+			$this->renderText($line, $mx + 30 * $scale, $ly, $this->colors["text"], 1000, $tAlpha, 1.0 * $scale);
+			$ly += 22 * $scale;
+		}
+
+		// Action Buttons (Dynamic Positioning based on scale)
+		$btnW = 160 * $scale;
+		$btnH = 40 * $scale;
+		$btnY = $my + $mh - 65 * $scale;
+
+		$isLocal = isset($mod["path"]);
+
+		// Main Action Button
+		$instX = $mx + $mw - $btnW - 30 * $scale;
+		$instH = $this->mouseX >= $instX && $this->mouseX <= ($instX + $btnW) && $this->mouseY >= $btnY && $this->mouseY <= ($btnY + $btnH);
+		
+		$label = $isLocal ? "OPEN FOLDER" : "INSTALL NOW";
+		$style = $isLocal ? "primary" : "success";
+		$this->drawStyledButton($instX, $btnY, $btnW, $btnH, $label, $instH, $style);
+
+		// External Button (Aligned Left)
+		$extX = $mx + 30 * $scale;
+		$extH = $this->mouseX >= $extX && $this->mouseX <= ($extX + 120 * $scale) && $this->mouseY >= $btnY && $this->mouseY <= ($btnY + $btnH);
+		$this->drawStyledButton($extX, $btnY, 120 * $scale, $btnH, "MODRINTH", $extH, "secondary");
+
+		// Dedicated Top Right CLOSE Button
+		$closeW = 80 * $scale;
+		$closeH = 32 * $scale;
+		$closeX = $mx + $mw - $closeW - 10 * $scale;
+		$closeY = $my + 10 * $scale;
+		$isCloseH = $this->mouseX >= $closeX && $this->mouseX <= $closeX + $closeW && $this->mouseY >= $closeY && $this->mouseY <= $closeY + $closeH;
+		$this->drawStyledButton($closeX, $closeY, $closeW, $closeH, "CLOSE", $isCloseH, "danger", 3000);
+	}
+
+	private function handleModInfoModalClick($x, $y)
+	{
+		$mw = 600;
+		$mh = 500;
+		$mx = ($this->width - $mw) / 2;
+		$my = ($this->height - $mh) / 2;
+
+		// Area outside modal closes it
+		if ($x < $mx || $x > $mx + $mw || $y < $my || $y > $my + $mh) {
+			$this->modInfoModalOpen = false;
+			return;
+		}
+
+		$cx = $x - $mx;
+		$cy = $y - $my;
+
+		// Dedicated CLOSE button (Top Right)
+		$closeW = 80;
+		$closeH = 32;
+		if ($cx >= $mw - $closeW - 10 && $cx <= $mw - 10 && $cy >= 10 && $cy <= 10 + $closeH) {
+			$this->modInfoModalOpen = false;
+			return;
+		}
+
+		// Close icon area fallback
+		if ($cx >= $mw - 40 && $cx <= $mw - 10 && $cy >= 10 && $cy <= 40) {
+			$this->modInfoModalOpen = false;
+			return;
+		}
+
+		// Action Buttons at bottom
+		$btnW = 160;
+		$btnH = 40;
+		$btnY = $mh - 60;
+
+		// Install/Download or Open Folder Button
+		if ($cx >= $mw - $btnW - 20 && $cx <= $mw - 20 && $cy >= $btnY && $cy <= $btnY + $btnH) {
+			if ($this->modInfoSelected) {
+				$hit = $this->modInfoSelected;
+				$isLocal = isset($hit["path"]);
+
+				if ($isLocal) {
+					$this->shell32->ShellExecuteA(null, "explore", dirname($hit["path"]), null, null, 1);
+				} else {
+					$title = $hit["title"] ?? ($hit["slug"] ?? "Unknown");
+					$this->installModrinthProject($hit["project_id"], $hit["project_type"] ?? "mod", $title);
+					$this->modInfoModalOpen = false;
+				}
+			}
+			return;
+		}
+
+		// Modrinth Page Button (Aligned Left)
+		if ($cx >= 30 && $cx <= 150 && $cy >= $btnY && $cy <= $btnY + $btnH) {
+			if ($this->modInfoSelected) {
+				$slug = $this->modInfoSelected["slug"] ?? $this->modInfoSelected["id"];
+				$this->openUrl("https://modrinth.com/project/$slug");
+			}
+			return;
+		}
+	}
+
+	private function renderLogoutModal()
+	{
+		// Dim whole window
+		$this->drawRect(0, 0, $this->width, $this->height, [0, 0, 0, 0.6]);
+
+		$mW = 400;
+		$mH = 180;
+		$mX = ($this->width - $mW) / 2;
+		$mY = ($this->height - $mH) / 2;
+
+		// Modal Card
+		$this->drawRoundedRect($mX, $mY, $mW, $mH, 12, $this->colors["modal_bg"], [1, 1, 1, 0.1]);
+		$this->drawGlow($mX, $mY, $mW, $mH, 20, [0, 0, 0, 0.3]);
+
+		// Title
+		$this->renderText("LOG OUT ACCOUNT?", $mX + 24, $mY + 40, $this->colors["text"], 1200);
+		
+		$username = $this->accounts[$this->pendingLogoutUuid]["Username"] ?? "Unknown";
+		$this->renderText("Are you sure you want to log out of '$username'?", $mX + 24, $mY + 65, $this->colors["text_dim"], 1000);
+
+		// Buttons
+		$btnW = 120;
+		$btnH = 32;
+		$btnY = $mY + $mH - 56;
+
+		// Cancel (Left)
+		$canX = $mX + 24;
+		$this->drawStyledButton($canX, $btnY, $btnW, $btnH, "CANCEL", $this->logoutModalCancelHover, "secondary", 3000);
+
+		// Log Out (Right)
+		$cfmX = $mX + $mW - $btnW - 24;
+		$this->drawStyledButton($cfmX, $btnY, $btnW, $btnH, "LOG OUT", $this->logoutModalConfirmHover, "danger", 3000);
+	}
+
+	private function computeLogoutModalHover($x, $y)
+	{
+		$mW = 400; $mH = 180;
+		$mX = ($this->width - $mW) / 2; $mY = ($this->height - $mH) / 2;
+		$btnW = 120; $btnH = 32; $btnY = $mY + $mH - 56;
+
+		$this->logoutModalCancelHover = ($x >= $mX + 24 && $x <= $mX + 24 + $btnW && $y >= $btnY && $y <= $btnY + $btnH);
+		$this->logoutModalConfirmHover = ($x >= $mX + $mW - $btnW - 24 && $x <= $mX + $mW - $btnW - 24 + $btnW && $y >= $btnY && $y <= $btnY + $btnH);
+	}
+
+	private function handleLogoutModalClick($x, $y)
+	{
+		$this->computeLogoutModalHover($x, $y);
+
+		if ($this->logoutModalCancelHover) {
+			$this->logoutModalOpen = false;
+			$this->pendingLogoutUuid = null;
+			$this->needsRedraw = true;
+		} elseif ($this->logoutModalConfirmHover) {
+			$uuid = $this->pendingLogoutUuid;
+			if (isset($this->accounts[$uuid])) {
+				unset($this->accounts[$uuid]);
+				if ($this->activeAccount === $uuid) {
+					if (count($this->accounts) > 0) {
+						$this->selectAccount(array_key_first($this->accounts));
+					} else {
+						$this->logout();
+					}
+				}
+				$this->saveAccounts();
+			}
+			$this->logoutModalOpen = false;
+			$this->pendingLogoutUuid = null;
+			$this->needsRedraw = true;
+		}
+	}
+
 	private function renderJavaModal()
 	{
 		$gl = $this->opengl32;
@@ -14690,6 +15771,7 @@ class FoxyClient
 	{
 		$curVal = $this->settings["jvm_optimizer"];
 		$label = $this->jvmOptions[$curVal] ?? $curVal;
+		$alpha = $this->javaModalDropdownAnim;
 
 		$this->drawRect($x, $y, $w, $h, $this->colors["input_bg"]);
 		$this->drawRect($x, $y + $h - 2, $w, 2, $this->colors["divider"]);
@@ -14722,37 +15804,33 @@ class FoxyClient
 			$gl->glEnable(0x0c11); // SCISSOR
 			$gl->glScissor($x, $this->height - ($dy + $ddH), $w, $ddH);
 
-			$this->drawRect(
-				$x,
-				$dy,
-				$w,
-				$maxH,
-				$this->colors["input_bg_active"],
-			);
-
+			// Panel background (High-Fidelity Glass)
+			$bgColor = $this->colors["dropdown_bg"];
+			$this->drawRoundedRect($x, $dy, $w, $maxH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.1 * $alpha]);
+			if ($alpha > 0.5) $this->drawRect($x, $dy, $w, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha]);
 			$idx = 0;
 			foreach ($this->jvmOptions as $optKey => $optLabel) {
 				$itemY = $dy + $idx * 35;
 				$isHover = $this->javaModalHoverIdx === $idx + 10;
-				if ($isHover) {
-					$this->drawRect(
-						$x,
-						$itemY,
-						$w,
-						35,
-						$this->colors["sidebar_hover"],
-					);
+				$isSelected = $optKey === $curVal;
+				if ($isSelected) {
+					// Premium Selection Capsule with Glow
+					$pc = $this->colors["primary"];
+					$this->drawRoundedRect($x + 6, $itemY + 2, $w - 12, 31, 8, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
+					$this->drawGlow($x + 6, $itemY + 2, $w - 12, 31, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
+				} elseif ($isHover) {
+					// Soft Glassy Hover Capsule
+					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+					$this->drawRoundedRect($x + 6, $itemY + 2, $w - 12, 31, 8, $sh);
 				}
-				$color =
-					$optKey === $curVal
-						? $this->colors["primary"]
-						: $this->colors["text"];
+				$color = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
 				$this->renderText(
 					$optLabel,
-					$x + 10,
+					$x + 16,
 					$itemY + 23,
 					$color,
 					1000,
+					$alpha
 				);
 				$idx++;
 			}
@@ -15231,6 +16309,106 @@ class FoxyClient
 		$gl->glEnd();
 	}
 
+	private function drawRoundedRect($x, $y, $w, $h, $radius, $color = null, $border = null)
+	{
+		if (is_array($radius) && $color === null) {
+			$color = $radius;
+			$radius = 8;
+		}
+		if ($color === null) $color = [1, 1, 1, 1];
+
+		$gl = $this->opengl32;
+		$alpha = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
+		
+		// Optimization hints for anti-aliasing
+		$gl->glHint(0x0C52, 0x1102); // GL_LINE_SMOOTH_HINT, GL_NICEST
+		$gl->glHint(0x0C53, 0x1102); // GL_POLYGON_SMOOTH_HINT, GL_NICEST
+
+		$gl->glColor4f($color[0], $color[1], $color[2], $alpha);
+		$radius = min($radius, (float)$w / 2, (float)$h / 2);
+		if ($radius < 1) $radius = 0;
+		
+		// Dynamically scale steps based on radius for peak smoothness
+		$steps = max(16, (int)($radius * 3));
+		if ($steps > 60) $steps = 60; 
+		
+		if ($radius > 0) {
+			$gl->glBegin(0x0006); // GL_TRIANGLE_FAN
+			$gl->glVertex2f($x + $w/2, $y + $h/2);
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2); $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI / 2; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
+			$a = M_PI; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius);
+			$gl->glEnd();
+		} else {
+			$this->drawRect($x, $y, $w, $h, $color);
+		}
+
+		// Smoothing border
+		$borderColor = $border ?? [$color[0], $color[1], $color[2], $alpha * 0.5];
+		$gl->glColor4f($borderColor[0], $borderColor[1], $borderColor[2], $borderColor[3] ?? ($alpha * 0.5));
+		$gl->glLineWidth(1.0);
+		$gl->glBegin(0x0002); // GL_LINE_LOOP
+		if ($radius > 0) {
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2); $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
+			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI / 2; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
+		} else {
+			$gl->glVertex2f($x, $y); $gl->glVertex2f($x+$w, $y); $gl->glVertex2f($x+$w, $y+$h); $gl->glVertex2f($x, $y+$h);
+		}
+		$gl->glEnd();
+	}
+
+	private function drawGlow($x, $y, $w, $h, $radius, $color, $intensity = 1.0)
+	{
+		$r = $color[0]; $g = $color[1]; $b = $color[2];
+		for ($i = 1; $i <= 4; $i++) {
+			$p = $i * 1.5;
+			$a = (0.15 / $i) * $intensity * $this->globalAlpha;
+			$this->drawRoundedRect($x - $p, $y - $p, $w + $p * 2, $h + $p * 2, $radius + $p, [$r, $g, $b, $a], [$r, $g, $b, 0]);
+		}
+	}
+
+	private function drawRoundedGradientRect($x, $y, $w, $h, $radius, $color1, $color2)
+	{
+		$gl = $this->opengl32;
+		$a1 = (count($color1) > 3 ? $color1[3] : 1.0) * $this->globalAlpha;
+		$a2 = (count($color2) > 3 ? $color2[3] : 1.0) * $this->globalAlpha;
+		
+		$gl->glHint(0x0C52, 0x1102);
+		$gl->glHint(0x0C53, 0x1102);
+
+		$radius = min($radius, (float)$w / 2, (float)$h / 2);
+		$steps = max(24, (int)($radius * 3));
+		if ($steps > 60) $steps = 60;
+		
+		$gl->glBegin(0x0009); // GL_POLYGON
+		$setColor = function($cy) use ($gl, $y, $h, $color1, $color2, $a1, $a2) {
+			$t = max(0, min(1, ($cy - $y) / $h));
+			$r = $color1[0] + ($color2[0] - $color1[0]) * $t;
+			$g = $color1[1] + ($color2[1] - $color1[1]) * $t;
+			$b = $color1[2] + ($color2[2] - $color1[2]) * $t;
+			$a = $a1 + ($a2 - $a1) * $t;
+			$gl->glColor4f($r, $g, $b, $a);
+		};
+		
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2); $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI / 2; $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
+		$gl->glEnd();
+
+		// Smooth border loop
+		$gl->glBegin(0x0002); // GL_LINE_LOOP
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2); $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
+		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI / 2; $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
+		$gl->glEnd();
+	}
+
 	private function initGDIPlus()
 	{
 		$gp = $this->gdiplus;
@@ -15270,6 +16448,14 @@ class FoxyClient
 		$this->elybyTex = $this->createTextureFromFile(
 			self::DATA_DIR . "/images/Elyby-Logo.png",
 		);
+
+		$this->verIcons = [
+			"vanilla" => $this->createTextureFromFile(self::DATA_DIR . "/images/vanilla.png"),
+			"fabric" => $this->createTextureFromFile(self::DATA_DIR . "/images/fabric.png"),
+			"forge" => $this->createTextureFromFile(self::DATA_DIR . "/images/forge.png"),
+			"optifine" => $this->createTextureFromFile(self::DATA_DIR . "/images/optifine.png"),
+			"quilt" => $this->createTextureFromFile(self::DATA_DIR . "/images/quilt.png")
+		];
 
 		if ($this->logoTex) {
 			// Create Icon for Window using GDI+
@@ -15736,6 +16922,38 @@ class FoxyClient
 		exit(0);
 	}
 
+	private function getIconCachePath($id)
+	{
+		return self::ICON_CACHE_DIR . DIRECTORY_SEPARATOR . preg_replace('/[^a-zA-Z0-9_\-]/', '_', $id) . ".png";
+	}
+
+	private function processIconData($id, $data)
+	{
+		if (empty($data)) return null;
+
+		$path = $this->getIconCachePath($id);
+		if (file_exists($path)) return $path;
+
+		// Detect WebP (RIFF signature at pos 0, WEBP at pos 8)
+		$isWebp = (substr($data, 0, 4) === 'RIFF' && substr($data, 8, 4) === 'WEBP');
+
+		if ($isWebp && extension_loaded('gd')) {
+			$img = @imagecreatefromwebp("data://image/webp;base64," . base64_encode($data));
+			if ($img) {
+				ob_start();
+				imagepng($img);
+				$pngData = ob_get_clean();
+				imagedestroy($img);
+				file_put_contents($path, $pngData);
+				return $path;
+			}
+		}
+
+		// Save as-is if not webp or conversion failed (GDI+ might handle it)
+		file_put_contents($path, $data);
+		return $path;
+	}
+
 	private function purgeIconCache($currentPage = -1)
 	{
 		$targetPage = $currentPage !== -1 ? $currentPage : $this->modrinthPage;
@@ -15879,8 +17097,13 @@ class FoxyClient
 			$this->purgeIconCache($page);
 		}
 
-		// 1. Cache Check
+		// 1. Cache Check & Result Clearing
+		if (!$isPrefetch) {
+			$this->modrinthSearchResults = []; // Immediate drop to skeleton for nav
+		}
+
 		if (!$isPrefetch && isset($this->modrinthResultCache[$page])) {
+			$this->modrinthSearchResults = $this->modrinthResultCache[$page];
 			$this->log("Cache hit for Modrinth page $page.");
 			$this->modrinthSearchResults = $this->modrinthResultCache[$page];
 			$this->modrinthPage = $page;
@@ -15946,9 +17169,9 @@ class FoxyClient
 		$this->modrinthProcess = new \parallel\Runtime();
 
 		$facets =
-			$this->modpackSubTab === 0
-				? '["project_type:mod"]'
-				: '["project_type:modpack"]';
+			$this->modpackSubTab === 2
+				? '["project_type:modpack"]'
+				: '["project_type:mod"]';
 		$version = $this->config["minecraft_version"] ?? "1.20.1";
 		$loader = $this->modsFilterLoader !== "" ? $this->modsFilterLoader : ($this->config["loader"] ?? "fabric");
 		$cleanVer = str_replace(
@@ -16235,8 +17458,11 @@ class FoxyClient
 				curl_setopt($dCurl, CURLOPT_CONNECTTIMEOUT, 10);
 				curl_setopt($dCurl, CURLOPT_TIMEOUT, 60);
 				curl_setopt($dCurl, CURLOPT_NOPROGRESS, false);
-				curl_setopt($dCurl, CURLOPT_PROGRESSFUNCTION, function($handle, $dlSize, $dlCurrent, $ulSize, $ulCurrent) use ($ch) {
-					if ($dlSize > 0) {
+				$lastUpdate = 0;
+				curl_setopt($dCurl, CURLOPT_PROGRESSFUNCTION, function($handle, $dlSize, $dlCurrent, $ulSize, $ulCurrent) use ($ch, &$lastUpdate) {
+					$now = microtime(true);
+					if ($dlSize > 0 && ($now - $lastUpdate > 0.1)) { // Rate limit to 10Hz
+						$lastUpdate = $now;
 						$pct = ($dlCurrent / $dlSize) * 100;
 						$ch->send(json_encode([
 							"type" => "progress_pct",
@@ -16244,6 +17470,8 @@ class FoxyClient
 						]));
 					}
 				});
+				curl_setopt($dCurl, CURLOPT_BUFFERSIZE, 524288); // 512KB buffer for faster single-file throughput
+				curl_setopt($dCurl, CURLOPT_TCP_KEEPALIVE, 1);
 				if (file_exists($cacert)) {
 					curl_setopt($dCurl, CURLOPT_CAINFO, $cacert);
 				}
@@ -16290,19 +17518,34 @@ class FoxyClient
 		$this->pollEvents->addChannel($modDownloadChannel);
 	}
 
+	private function drawModSkeleton($x, $y, $w, $h, $alpha)
+	{
+		$bg = [$this->colors["card"][0], $this->colors["card"][1], $this->colors["card"][2], 0.6 * $alpha];
+		$this->drawRoundedRect($x, $y, $w, $h, 8, $bg, [1, 1, 1, 0.05 * $alpha]);
+		
+		// Icon placeholder
+		$ph = [1, 1, 1, 0.12 * $alpha];
+		$this->drawRoundedRect($x + 16, $y + 16, 64, 64, 8, $ph);
+		
+		// Line placeholders
+		$this->drawRoundedRect($x + 96, $y + 30, $w - 120, 15, 3, $ph);
+		$this->drawRoundedRect($x + 96, $y + 52, $w - 200, 10, 2, $ph);
+		$this->drawRoundedRect($x + 96, $y + 88, $w - 110, 10, 2, $ph);
+	}
+
 	private function drawSearchResultCard($hit, $x, $y, $w, $h, $isHover, $alpha = 1.0)
 	{
-		// Glassmorphic Card Background (Themed)
+		// Glassmorphic Card Background (Premium Rounded)
 		$bgColor = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
-		$bgColorWithAlpha = [$bgColor[0], $bgColor[1], $bgColor[2], ($bgColor[3] ?? 0.85) * $alpha];
+		$bgColorWithAlpha = [$bgColor[0], $bgColor[1], $bgColor[2], ($isHover ? 0.95 : ($bgColor[3] ?? 0.85)) * $alpha];
 		
-		$this->drawRect($x, $y, $w, $h, $bgColorWithAlpha, 6);
-		$this->drawRect($x, $y, $w, 1, [$this->colors["divider"][0], $this->colors["divider"][1], $this->colors["divider"][2], 0.3 * $alpha]);
+		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColorWithAlpha);
+		$this->drawRect($x + 20, $y, $w - 40, 1, [$this->colors["divider"][0], $this->colors["divider"][1], $this->colors["divider"][2], 0.15 * $alpha]);
 
-		// Left accent bar on hover
+		// Left accent pill on hover (Minimalist 2px)
 		if ($isHover) {
 			$pc = $this->colors["primary"];
-			$this->drawRect($x, $y, 3, $h, [$pc[0], $pc[1], $pc[2], $alpha]);
+			$this->drawRoundedRect($x + 4, $y + 12, 2, $h - 24, 1.0, [$pc[0], $pc[1], $pc[2], $alpha]);
 		}
 
 		// Data extraction
@@ -16327,9 +17570,9 @@ class FoxyClient
 			$this->drawTexture($this->modIconCache[$projId], $iconX, $iconY, $iconSize, $iconSize, [1,1,1,$alpha * $iAlpha]);
 			$textOffsetX = 16 + $iconSize + 16;
 		} else {
-			// Placeholder
-			$phColor = [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], 0.05 * $alpha];
-			$this->drawRect($iconX, $iconY, $iconSize, $iconSize, $phColor);
+			// Placeholder (Rounded for consistency)
+			$phColor = [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], 0.08 * $alpha];
+			$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 6, $phColor);
 			$textOffsetX = 16 + $iconSize + 16;
 		}
 		$this->opengl32->glDisable(0x0de1);
@@ -16344,6 +17587,10 @@ class FoxyClient
 		$btnGap = 8;
 		$brX = $btnX - $btnSize - $btnGap;
 
+		// Progress / Status
+		$statusRaw = $hit["status"] ?? "idle";
+		$statusLabel = ($statusRaw === "idle" || $statusRaw === "unknown") ? "INSTALL" : strtoupper($statusRaw);
+		
 		// Format Title
 		$targetW = ($brX - $x) - $textOffsetX - 10; 
 		$titleFont = 2000;
@@ -16351,18 +17598,18 @@ class FoxyClient
 			$title = substr($title, 0, 18) . "...";
 		}
 
-		// Main Texts
+		// Main Texts (Unified Tiers)
 		$tc = $this->colors["text"];
 		$td = $this->colors["text_dim"];
-		$this->renderText($title, $x + $textOffsetX, $y + 30, [$tc[0], $tc[1], $tc[2], $alpha], $titleFont);
-		$this->renderText("by $author", $x + $textOffsetX, $y + 50, [$td[0], $td[1], $td[2], $alpha], 3000);
+		$this->renderText($title, $x + $textOffsetX, $y + 28, [$tc[0], $tc[1], $tc[2], $alpha], 1000, 0.5);
+		$this->renderText("by $author", $x + $textOffsetX, $y + 48, [$td[0], $td[1], $td[2], $alpha], 3000, 0.4);
 
 		// Description truncation
 		$maxChars = (int) ((($x + $w - 16) - ($x + $textOffsetX)) / 6.5);
 		if (strlen($summary) > $maxChars) {
 			$summary = substr($summary, 0, $maxChars - 3) . "...";
 		}
-		$this->renderText($summary, $x + $textOffsetX, $y + 88, [$td[0], $td[1], $td[2], $alpha], 1000);
+		$this->renderText($summary, $x + $textOffsetX, $y + 88, [$td[0], $td[1], $td[2], $alpha], 3000);
 
 		// Stats formatting
 		$dl = $hit["downloads"] ?? 0;
@@ -16381,49 +17628,54 @@ class FoxyClient
 		$this->renderText("FAV $flStr", $x + $textOffsetX + $dlTw + 14, $statsY, [$td[0], $td[1], $td[2], $alpha], 3000);
 
 		if (isset($this->modDownloadProgresses[$projId])) {
-			// Render Progress Bar
-			$this->drawRect($btnX, $btnY2, $btnW, $btnH, [0, 0, 0, 0.4 * $alpha], 4);
-			$fillW = ($this->modDownloadProgresses[$projId] / 100.0) * $btnW;
+			// Premium Glassy Progress Bar
+			$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 8, [0, 0, 0, 0.3 * $alpha], [1, 1, 1, 0.05 * $alpha]);
+			$fillW = ($this->modDownloadProgresses[$projId] / 100.0) * ($btnW - 4);
 			$pc = $this->colors["primary"];
 			if ($fillW > 0) {
-				$this->drawRect($btnX, $btnY2, (int)$fillW, $btnH, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha], 4);
+				$this->drawRoundedRect($btnX + 2, $btnY2 + 2, (int)$fillW, $btnH - 4, 6, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
 			}
 			$pctText = round($this->modDownloadProgresses[$projId]) . "%";
-			$this->renderText($pctText, $btnX + ($btnW - $this->getTextWidth($pctText, 1000))/2, $btnY2 + 21, [1, 1, 1, $alpha], 1000);
+			$this->renderText($pctText, $btnX + ($btnW - $this->getTextWidth($pctText, 1000, 0.4))/2, $btnY2 + 20, [1, 1, 1, $alpha], 1000, 0.4);
 		} elseif ($isInstalled) {
-			// Render Installed badge
+			// Subtle Glassy Installed Badge
 			$statusColor = $this->colors["status_done"];
-			$this->drawRect($btnX, $btnY2, $btnW, $btnH, [$statusColor[0], $statusColor[1], $statusColor[2], 0.2 * $alpha], 4);
-			$this->renderText("INSTALLED", $btnX + ($btnW - $this->getTextWidth("INSTALLED", 3000))/2, $btnY2 + 20, [$statusColor[0], $statusColor[1], $statusColor[2], $alpha], 3000);
+			$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 10, [$statusColor[0], $statusColor[1], $statusColor[2], 0.1 * $alpha], [1, 1, 1, 0.05 * $alpha]);
+			$this->renderText("INSTALLED", $btnX + ($btnW - $this->getTextWidth("INSTALLED", 3000, 0.4))/2, $btnY2 + 20, [$statusColor[0], $statusColor[1], $statusColor[2], $alpha], 3000, 0.4);
 		} else {
-			// Themed button colors for search results
-			$bc = $isHover ? $this->colors["primary"] : $this->colors["info_bg"];
-			$btnColor = [$bc[0], $bc[1], $bc[2], 0.9 * $alpha];
-			$this->drawRect($btnX, $btnY2, $btnW, $btnH, $btnColor, 4);
+			// High-Fidelity Interaction Button (Isolated Hover)
+			$isActionHover = $this->mouseX >= self::SIDEBAR_W + $btnX && $this->mouseX <= self::SIDEBAR_W + $btnX + $btnW && $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= self::TITLEBAR_H + $btnY2 + $btnH;
 			
-			$btnText = $this->modpackSubTab === 1 ? "+ INSTALL" : "DOWNLOAD";
-			$btc = $isHover ? [0,0,0,$alpha] : [$tc[0], $tc[1], $tc[2], $alpha];
-			$this->renderText($btnText, $btnX + ($btnW - $this->getTextWidth($btnText, 1000))/2, $btnY2 + 21, $btc, 1000);
+			if ($isActionHover) {
+				// Filled & Glowing State (Only on Button Hover)
+				$pc = $this->colors["primary"];
+				$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 10, [$pc[0], $pc[1], $pc[2], 0.9 * $alpha]);
+				$this->drawGlow($btnX, $btnY2, $btnW, $btnH, 12, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
+			} else {
+				// Glassy Outlined State
+				$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 10, [1, 1, 1, 0.03 * $alpha], [1, 1, 1, 0.15 * $alpha]);
+			}
+			
+			$btnText = $this->modpackSubTab >= 2 ? "INSTALL" : "INSTALL"; 
+			// Wait, the user wants INSTALL everywhere? 
+			// Let's make it consistent.
+			$btnText = "INSTALL";
+			if ($this->modpackSubTab === 2 || $this->modpackSubTab === 3) {
+				// Discovery for Modpacks
+				$btnText = "INSTALL";
+			}
+			
+			$btc = $isActionHover ? [0, 0, 0, $alpha] : [$tc[0], $tc[1], $tc[2], $alpha];
+			$this->renderText($btnText, $btnX + ($btnW - $this->getTextWidth($btnText, 1000, 0.5))/2, $btnY2 + 20, $btc, 1000, 0.5);
 		}
 
-		// Browser/External link button
-		$brColor = [$this->colors["subtab"][0], $this->colors["subtab"][1], $this->colors["subtab"][2], 0.85 * $alpha];
-		$this->drawRect($brX, $btnY2, $btnSize, $btnSize, $brColor, 4);
-
-		// Draw external link icon (box with arrow)
-		$ec = $this->colors["text_dim"];
-		$ecA = [$ec[0], $ec[1], $ec[2], $alpha];
-		$bx = $brX + 7;
-		$by = $btnY2 + 8;
-		$bs = 12;
-		// Box outline
-		$this->drawRect($bx, $by + 4, 2, $bs - 4, $ecA);
-		$this->drawRect($bx, $by + $bs, $bs, 2, $ecA);
-		$this->drawRect($bx + $bs, $by + 4, 2, $bs - 2, $ecA);
-		// Arrow
-		$this->drawLine($bx + 5, $by + $bs - 3, $bx + $bs + 2, $by - 2, $ecA);
-		$this->drawRect($bx + $bs - 2, $by - 2, 6, 2, $ecA);
-		$this->drawRect($bx + $bs + 2, $by - 2, 2, 6, $ecA);
+		// Refined Navigation Utility button (>)
+		$brHover = $this->mouseX >= self::SIDEBAR_W + $brX && $this->mouseX <= self::SIDEBAR_W + $brX + $btnSize && $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= self::TITLEBAR_H + $btnY2 + $btnSize;
+		$brBg = $brHover ? [1, 1, 1, 0.1 * $alpha] : [1, 1, 1, 0.03 * $alpha];
+		$brBorder = $brHover ? [1, 1, 1, 0.25 * $alpha] : [1, 1, 1, 0.1 * $alpha];
+		
+		$this->drawRoundedRect($brX, $btnY2, $btnSize, $btnSize, 8, $brBg, $brBorder);
+		$this->renderText(">", $brX + 11, $btnY2 + 20, [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], $alpha], 3000, 0.4);
 	}
 
 	private function triggerCheckForUpdate($silent = false)
@@ -16493,6 +17745,19 @@ class FoxyClient
 		} else {
 			$this->updateMessage = "Error: Client.exe wrapper not found.";
 		}
+	}
+
+	private function t($key)
+	{
+		$lang = $this->settings["language"] ?? "English (en)";
+		if (isset($this->langStrings[$lang][$key])) {
+			return $this->langStrings[$lang][$key];
+		}
+		// Fallback to English using the exact key "en"
+		if (isset($this->langStrings["en"][$key])) {
+			return $this->langStrings["en"][$key];
+		}
+		return ucfirst(str_replace("-", " ", $key));
 	}
 }
 
@@ -16919,7 +18184,7 @@ class FoxyVersionJob
 
 		$mh = curl_multi_init();
 		$activeTransfers = [];
-		$maxConcurrent = 64;
+		$maxConcurrent = 128; // Increased from 64 for aggressive asset parallelization
 		$queueIndex = 0;
 
 		$reportProgress = function () use (
@@ -17035,6 +18300,9 @@ class FoxyVersionJob
 					curl_setopt($curl, CURLOPT_CAINFO, $cacert);
 				}
 				curl_setopt($curl, CURLOPT_NOPROGRESS, false);
+				curl_setopt($curl, CURLOPT_BUFFERSIZE, 1048576); // 1MB buffer
+				curl_setopt($curl, CURLOPT_TCP_KEEPALIVE, 1);
+				curl_setopt($curl, CURLOPT_TCP_NODELAY, 1);
 
 				$id = (int) $curl;
 				curl_setopt($curl, CURLOPT_PROGRESSFUNCTION, function (

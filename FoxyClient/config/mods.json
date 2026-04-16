@@ -11,7 +11,7 @@
         "modmenu",
         "fabric-language-kotlin",
         "BetterF3",
-        "Chunky",
+        "c2me-fabric",
         "entityculling",
         "continuity",
         "dynamic-fps",
@@ -24,7 +24,11 @@
         "smooth-scroll",
         "yacl",
         "sodium-extra",
-        "BadOptimizations"
+        "BadOptimizations",
+        "smooth-boot",
+        "dark-loading-screen",
+		"lambdynamiclights",
+        "zoomify"
     ],
     "additional_mods": {
         "SurvivalEnchantmentPack": [
@@ -37,11 +41,7 @@
             "veinminer",
             "collective",
             "silk"
-        ],
-        "AddtionalModPack": [
-            "dark-loading-screen",
-            "lambdynamiclights",
-            "zoomify"
         ]
-    }
+    },
+    "active_account": null
 }
