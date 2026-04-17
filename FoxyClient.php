@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.5";
+	public const VERSION = "1.3.6";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -72,7 +72,7 @@ class FoxyClient
 		["id" => self::PAGE_HOME, "name" => "HOME"],
 		["id" => self::PAGE_FOXYCLIENT, "name" => "FOXYCLIENT"],
 		["id" => self::PAGE_ACCOUNTS, "name" => "ACCOUNTS"],
-		["id" => self::PAGE_MODS, "name" => "MODS"],
+		["id" => self::PAGE_MODS, "name" => "EXPLORE"],
 		["id" => self::PAGE_VERSIONS, "name" => "VERSIONS"],
 		["id" => self::PAGE_PROPERTIES, "name" => "PROPERTIES"],
 	];
@@ -84,7 +84,7 @@ class FoxyClient
 	private const CARD_H = 44;
 	private const CARD_GAP = 6;
 	private const PAD = 16;
-	private const SIDEBAR_W = 200;
+	private const SIDEBAR_W = 70;
 	private const DATA_DIR = "FoxyClient";
 	private const CACHE_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "data";
 	private const CACERT =
@@ -173,11 +173,28 @@ class FoxyClient
 	private $modsVerHoverIdx = -1;
 	private $modsLoaderOptions = ["fabric", "forge", "quilt", "neoforge"];
 
-	// Mods page filter dropdowns
-	private $modsFilterCategory = ""; // Selected category slug (empty = all)
-	private $modsFilterLoader = "";   // Selected loader filter (empty = uses config["loader"])
-	private $modsFilterEnv = "";      // "client" or "server" (empty = all)
-	private $modsFilterDropdown = ""; // Which dropdown is open: "category"|"loader"|"env"|"version"|""
+	// Mods page filter dropdowns (Multi-Select Arrays)
+	private $modsFilterCategories = []; // Selected category slugs
+	private $modsFilterLoaders = [];    // Selected loader filters
+	private $modsFilterEnvs = [];       // "client", "server"
+	private $modsFilterVersions = [];   // Selected Minecraft versions
+	
+	// Shader Specific Filters
+	private $shaderFilterCategories = [];
+	private $shaderFilterFeatures = [];
+	private $shaderFilterPerformance = [];
+	private $shaderFilterLoaders = [];
+	
+	// Modpack Specific Filters
+	private $modpackFilterCategories = [];
+	private $modpackFilterLoaders = [];
+	private $modpackFilterEnvs = [];
+	
+	// Resource Pack Specific Filters
+	private $resFilterCategories = [];
+	private $resFilterFeatures = [];
+	private $resFilterResolutions = [];
+	private $modsFilterDropdown = "";   // Which dropdown is open: "category"|"loader"|"env"|"version"|""
 	private $modsFilterDropdownAnim = 0.0;
 	private $modsFilterHoverIdx = -1;
 	private $modsFilterScrollTarget = 0;
@@ -192,7 +209,8 @@ class FoxyClient
 	private $isCheckingUiUpdate = false;
 	private $hasUiUpdate = false;
 	private $updateMessage = "";
-	private $updateChannel = null;
+	private $uiUpdateChannel = null;
+	private $caUpdateChannel = null;
 
 	private $modsCategories = [
 		"adventure", "cursed", "decoration", "economy", "equipment", "food",
@@ -277,54 +295,6 @@ class FoxyClient
 			"transportation" => "Transportation",
 			"utility" => "Utility",
 			"world-generation" => "World Generation"
-		],
-		"Thai (th)" => [
-			"all_categories" => "ทุกหมวดหมู่",
-			"all_loaders" => "ทุก Loader",
-			"all_envs" => "ทุกสภาพแวดล้อม",
-			"client" => "Client",
-			"server" => "Server",
-			"adventure" => "ผจญภัย",
-			"cursed" => "คำสาป",
-			"decoration" => "ตกแต่ง",
-			"economy" => "เศรษฐกิจ",
-			"equipment" => "อุปกรณ์",
-			"food" => "อาหาร",
-			"game-mechanics" => "กลไกเกม",
-			"library" => "ไลบรารี",
-			"magic" => "เวทมนตร์",
-			"management" => "การจัดการ",
-			"minigame" => "มินิเกม",
-			"mobs" => "มอนสเตอร์",
-			"optimization" => "เพิ่มประสิทธิภาพ",
-			"social" => "โซเชียล",
-			"storage" => "คลังเก็บของ",
-			"technology" => "เทคโนโลยี",
-			"transportation" => "การขนส่ง",
-			"utility" => "ยูทิลิตี้",
-			"world-generation" => "สร้างโลก"
-		],
-		"Russian (ru)" => [
-			"all_categories" => "Все категории",
-			"all_loaders" => "Все загрузчики",
-			"all_envs" => "Все среды",
-			"client" => "Клиент",
-			"server" => "Сервер",
-			"adventure" => "Приключения",
-			"technology" => "Технологии",
-			"optimization" => "Оптимизация",
-			"magic" => "Магия"
-		],
-		"Japanese (ja)" => [
-			"all_categories" => "すべてのカテゴリ",
-			"all_loaders" => "すべてのローダー",
-			"all_envs" => "すべての環境",
-			"client" => "クライアント",
-			"server" => "サーバー",
-			"adventure" => "冒険",
-			"technology" => "技術",
-			"optimization" => "最適化",
-			"magic" => "魔法"
 		]
 	];
 	private $subTabAnimSourceW = 0;
@@ -421,6 +391,9 @@ class FoxyClient
 	private $foxyUpdateFuture = null;
 	private $shouldAutoLaunchAfterDownload = false;
 
+	private $caUpdateProcess = null;
+	private $uiUpdateProcess = null;
+
 	// Properties system
 	private $propSubTab = 0; // 0=Minecraft, 1=Launcher, 2=About
 	private $propTabHover = -1;
@@ -444,6 +417,11 @@ class FoxyClient
 	private $dragType = ""; // 'mods', 'versions', 'prop', 'home_dropdown'
 	private $dragStartY = 0;
 	private $dragStartOffset = 0;
+
+	// Async Loading state
+	private $isLoadingFonts = false;
+	private $fontGenerator = null;
+	private $fontLoadingMessage = "Initializing...";
 
 	// Logout Modal
 	private $logoutModalOpen = false;
@@ -541,10 +519,6 @@ class FoxyClient
 		"show_modified_versions" => true,
 		"enable_modpack" => false,
 		"separate_modpack_folder" => false,
-		"overlay_cpu" => false,
-		"overlay_gpu" => false,
-		"overlay_ram" => false,
-		"overlay_vram" => false,
 		"font_launcher" => "Nunito",
 		"font_overlay" => "Consolas",
 	];
@@ -559,6 +533,8 @@ class FoxyClient
 	private $foxySettingsHoverIdx = -1;
 	private $homeVerScrollOffset = 0.0;
 	private $homeVerScrollTarget = 0.0;
+	private $explorerSubTabDropdownOpen = false;
+	private $explorerSubTabDropdownAnim = 0.0;
 
 	// Animation
 	private $lastTime;
@@ -568,10 +544,10 @@ class FoxyClient
 	private $homeVerDropdownAnim = 0.0;
 	private $javaModalDropdownAnim = 0.0;
 	private $globalAlpha = 1.0;
-	private $sidebarIndicatorY = 100.0;
-	private $sidebarTargetY = 100.0;
-	private $sidebarHoverY = 100.0;
-	private $sidebarHoverTargetY = 100.0;
+	private $sidebarIndicatorY = 20.0;
+	private $sidebarTargetY = 20.0;
+	private $sidebarHoverY = 20.0;
+	private $sidebarHoverTargetY = 20.0;
 	private $sidebarHoverAlpha = 0.0;
 
 	// Window launch animation
@@ -584,8 +560,6 @@ class FoxyClient
 	private $systemRamMB = 32768;
 
 	// System Metrics Overlay (parallel thread)
-	private $overlayThread = null;
-	private $overlayChannel = null;
 	private $overlayFuture = null;
 	private $isStoppingOverlay = false;
 
@@ -864,8 +838,6 @@ class FoxyClient
 		$this->loadConfig($configPath);
 		$this->loadSettings();
 		$this->loadModpacks();
-		$this->loadFoxyKeybinds();
-		$this->loadFoxyMacros();
 		$this->loadFoxyConfig();
 		$this->checkLocalMods();
 		$this->applyTheme();
@@ -877,6 +849,12 @@ class FoxyClient
 		$this->initGL();
 		$this->loadLogo();
 		$this->loadBackground();
+
+		$this->user32->ShowWindow($this->hwnd, 1);
+		$this->user32->UpdateWindow($this->hwnd);
+
+		$this->isLoadingFonts = true;
+		$this->fontGenerator = $this->initFontsAsync();
 
 		// Load version cache first
 		$cacheFile = self::CACHE_DIR . DIRECTORY_SEPARATOR . "versions_cache.json";
@@ -903,7 +881,21 @@ class FoxyClient
 		$this->updateDiscordPresence();
 
 		// Silent background update check
-		$this->triggerCheckForUpdate(true);
+		// Defer update check to switchPage(PAGE_MODS) to prevent early network idle hangs
+		// $this->triggerCheckForUpdate(true);
+
+		// Initial sidebar selection position (Centered)
+		$sidebarH = $this->height - self::TITLEBAR_H;
+		$totalH = count($this->sidebarItems) * 55 - 5;
+		$y = ($sidebarH - $totalH) / 2;
+		foreach ($this->sidebarItems as $item) {
+			if ($item["id"] === $this->currentPage) {
+				$this->sidebarIndicatorY = $y;
+				$this->sidebarTargetY = $y;
+				break;
+			}
+			$y += 55;
+		}
 	}
 
 	private function loadConfig($path)
@@ -915,7 +907,7 @@ class FoxyClient
 		if (!file_exists($path)) {
 			// Create default config if missing
 			$default = [
-				"minecraft_version" => "1.21.1",
+				"minecraft_version" => "1.21.11",
 				"loader" => "fabric",
 				"game_optimize_mods" => [],
 				"additional_mods" => [],
@@ -1972,19 +1964,16 @@ class FoxyClient
 		} catch (\Throwable $e) {
 			$this->log("Failed to enable VSync extension: " . $e->getMessage(), "WARN");
 		}
-
-		$this->initFonts();
-
-		$this->user32->ShowWindow($this->hwnd, 1);
-		$this->user32->UpdateWindow($this->hwnd);
 	}
 
-	private function initFonts()
+	private function initFontsAsync()
 	{
 		$gp = $this->gdiplus;
 		$gdi = $this->gdi32;
 		$this->availableFonts = []; // Zero out defaults to ensure 100% accurate registry matching
 		
+		yield "Loading font definitions...";
+
 		// 1. Create Private Font Collection
 		$this->fontCollection = $gp->new("void*");
 		$gp->GdipNewPrivateFontCollection(FFI::addr($this->fontCollection));
@@ -2054,19 +2043,40 @@ class FoxyClient
 		}
 
 		// 4-Tier Typography System (Big/Premium Profile)
-		$this->buildFontAtlas(1000, 22, 900); // Body: 22px
-		$this->buildFontAtlas(1500, 28, 900); // Sub-Header: 28px
-		$this->buildFontAtlas(2000, 36, 900); // Heading: 36px
-		$this->buildFontAtlas(3000, 18, 900); // Caption: 18px
+		yield "Building Body Font (22px)...";
+		// Include Unicode icons for sidebar in the body font atlas
+		$sidebarIcons = [8962, 9733, 0xe853, 0xe87b, 0xf135, 9881];
+		$bodyChars = array_merge(range(32, 126), $sidebarIcons);
+		yield from $this->buildFontAtlas(1000, 22, 900, $bodyChars); // Body: 22px
+		
+		yield "Building Sub-Header Font (28px)...";
+		yield from $this->buildFontAtlas(1500, 28, 900); // Sub-Header: 28px
+		yield "Building Heading Font (36px)...";
+		yield from $this->buildFontAtlas(2000, 36, 900); // Heading: 36px
+		yield "Building Caption Font (18px)...";
+		yield from $this->buildFontAtlas(3000, 18, 900); // Caption: 18px
 
 		// Icon Atlas
+		yield "Building Material Icons...";
 		$iconSet = [
-			0xe8b6, 0xe8b8, 0xe5cd, 0xe145, 0xe15b, 0xe872,
-			0xe2c7, 0xe88e, 0xe000, 0xe5cb, 0xe5cc, 0xe5cf,
-			0xe5ce, 0xef66, 0xe7fd, 0xe5ca, 0xe88a, 0xe5d5,
-			0xe8fd, 0xf090, 0xf091, 0xe913, 0xe838, 0xe8ac
+			0xe8b6, 0xe8b8, 0xe5cd, 0xe145, 0xe15b, 0xe872, // Search, Settings, Close, Add, Remove, Delete
+			0xe2c7, 0xe88e, 0xe000, 0xe5cb, 0xe5cc, 0xe5cf, // Folder, Home, ...
+			0xe5ce, 0xef66, 0xe7fd, 0xe5ca, 0xe88a, 0xe5d5, // ... Person, Check, Home, Sync
+			0xe8fd, 0xf090, 0xf091, 0xe913, 0xe838, 0xe8ac, // ... Login, Logout, Extension, Star, ...
+			0xe853, 0xe87b, 0xf135, // Sidebar icons
+			0xe5c4, 0xe5c5, 0xe5c7, 0xe5c8, // Arrows: Left, Down, Up, Right
+			0xe313, 0xe316, // Sharper Arrows
+			0xe89e, // Open In New
+			0xe87a, 0xe6e1, 0xe3e3, 0xeb43, 0xeb4a, 0xe3e0, 0xe7ef, 0xeb3f, 0xe8b0, 0xe30c, // Modpack Categories
+			0xe30a, 0xf02e, // Client / Server icons (Computer / Storage)
+			0xe5cb, 0xe5ca, // Close / Check
+			0xef4b, 0xeb45, 0xe8b1, 0xe3f4, 0xe3c7, 0xe40a, 0xe1bd, 0xe869, // Res Categories
+			0xe050, 0xe3f1, 0xe3f7, 0xea0f, 0xe23a, 0xe894, 0xeb4d, 0xf720, // Res Features
+			0xe7a5, 0xe88a, 0xef63, 0xea10, 0xe8a1, 0xe3e7, 0xe0b7, 0xe1db, 0xe531, 0xe913, 0xef66, 0xe420, 0xe894, 0xe8b6, 0xe7fd, // Mod Categories
 		];
-		$this->buildFontAtlas(4000, 24, 400, $iconSet);
+		yield from $this->buildFontAtlas(4000, 24, 400, $iconSet);
+		
+		yield "Done";
 	}
 
 	/**
@@ -2249,6 +2259,9 @@ class FoxyClient
 
 		$invArea = 1.0 / ($scale * $scale); // 1/16 for 4x4 box
 		for ($dy = 0; $dy < $outH; $dy++) {
+			if ($dy % 4 === 0) {
+				yield "Optimizing font glyphs (" . round(($dy / $outH) * 100) . "%)...";
+			}
 			$sy = $dy * $scale;
 			for ($dx = 0; $dx < $outW; $dx++) {
 				$sx = $dx * $scale;
@@ -2448,17 +2461,17 @@ class FoxyClient
 			$this->currentPage === self::PAGE_FOXYCLIENT ? 0 : $this->activeTab;
 		$mods = $this->tabs[$tabIdx]["mods"] ?? [];
 		if ($this->currentPage === self::PAGE_MODS) {
-			if ($this->modpackSubTab === 3) {
-				// installed modpacks (Index 3)
+			if ($this->modpackSubTab === 7) {
+				// installed modpacks (Index 7)
 				$modsCount = count($this->installedModpacks);
 				$contentH = $modsCount * (72 + 8) + 20;
-			} elseif ($this->modpackSubTab === 0) {
-				// installed mod (Index 0)
+			} elseif ($this->modpackSubTab >= 4) {
+				// installed mods/shaders/textures (Index 4-6)
 				$modsCount = is_array($this->localMods) ? count($this->localMods) : 0;
 				$rows = ceil($modsCount / 2);
-				$contentH = $rows * (160 + 15) + 20; // 160=cardH, 15=gap
+				$contentH = $rows * (160 + 15) + 20;
 			} else {
-				// Discovery Tabs (1 & 3)
+				// Discovery Tabs (0-3)
 				$modsCount = count($this->modrinthSearchResults);
 				$rows = ceil($modsCount / 2);
 				$contentH = $rows * (110 + 12) + 20;
@@ -2488,8 +2501,10 @@ class FoxyClient
 		$this->vScrollTarget = 0;
 		$this->vScrollOffset = 0;
 
+		$sidebarH = $this->height - self::TITLEBAR_H;
+		$totalH = count($this->sidebarItems) * 55 - 5;
 		$itemH = 50;
-		$y = 100;
+		$y = ($sidebarH - $totalH) / 2;
 		foreach ($this->sidebarItems as $item) {
 			if ($item["id"] === $page) {
 				$this->sidebarTargetY = $y;
@@ -2501,6 +2516,14 @@ class FoxyClient
 		$this->updateDiscordPresence();
 		if ($page === self::PAGE_MODS) {
 			$this->searchModrinth($this->modSearchQuery);
+			
+			// Trigger network maintenance only when entering explore tab
+			$this->triggerCheckForUpdate(true);
+			
+			$cacert = $this->getAbsolutePath(self::CACERT);
+			if (!file_exists($cacert) && !$this->isUpdatingCacert) {
+				$this->triggerCaUpdate(true);
+			}
 		}
 	}
 
@@ -2554,15 +2577,10 @@ class FoxyClient
 
 		// Sidebar clicks
 		if ($x < self::SIDEBAR_W && $y >= self::TITLEBAR_H) {
-			// Profile area click
-			if ($y >= $this->height - 74 && $y <= $this->height - 24) {
-				$this->currentPage = self::PAGE_ACCOUNTS;
-				$this->updateDiscordPresence();
-				return;
-			}
-
+			$sidebarH = $this->height - self::TITLEBAR_H;
+			$totalH = count($this->sidebarItems) * 55 - 5;
 			$itemH = 50;
-			$startY = 100 + self::TITLEBAR_H;
+			$startY = ($sidebarH - $totalH) / 2 + self::TITLEBAR_H;
 			foreach ($this->sidebarItems as $i => $item) {
 				if ($y >= $startY && $y < $startY + $itemH) {
 					$this->switchPage($item["id"]);
@@ -3125,66 +3143,83 @@ class FoxyClient
 			}
 		}
 
-		// 1. Sub-tabs (New Order: installed mod, Mods, installed modpacks, Modpacks)
-		if ($cy >= self::HEADER_H && $cy <= self::HEADER_H + self::TAB_H) {
-			$tabX = self::PAD;
-			$labels = ["INSTALLED MODS", "MODS", "MODPACKS", "INSTALLED MODPACKS"];
-			foreach ($labels as $i => $name) {
-				$tw = $this->getTextWidth($name, 3000) + 32;
-				if ($cx >= $tabX && $cx <= $tabX + $tw) {
-					if ($this->modpackSubTab !== $i) {
-						$this->modpackSubTab = $i;
+		// 1. Trigger Detection
+		$selRect = $this->explorerSubTabSelectorRect ?? null;
+		$isExplorerTrigger = ($selRect && $cx >= $selRect[0] && $cx <= $selRect[0] + $selRect[2] && $cy >= $selRect[1] && $cy <= $selRect[1] + $selRect[3]);
+		
+		$clickedFilterKey = null;
+		foreach ($this->modsFilterPillRects as $key => $rect) {
+			if ($cx >= $rect[0] && $cx <= $rect[0] + $rect[2] && $cy >= $rect[1] && $cy <= $rect[1] + $rect[3]) {
+				$clickedFilterKey = $key;
+				break;
+			}
+		}
+
+		// 2. Trigger Handling
+		if ($isExplorerTrigger) {
+			$this->explorerSubTabDropdownOpen = !$this->explorerSubTabDropdownOpen;
+			if ($this->explorerSubTabDropdownOpen) $this->modsFilterDropdown = ""; // Close right
+			return;
+		}
+		if ($clickedFilterKey) {
+			if ($this->modsFilterDropdown === $clickedFilterKey) {
+				$this->modsFilterDropdown = ""; // Toggle close
+			} else {
+				$this->modsFilterDropdown = $clickedFilterKey; // Open/Switch
+				$this->explorerSubTabDropdownOpen = false; // Close left
+				$this->modsFilterDropdownAnim = 0.0;
+				$this->modsFilterScrollTarget = 0;
+				$this->modsFilterScrollOffset = 0;
+			}
+			return;
+		}
+
+		// 3. Item Selection Logic
+		if ($this->explorerSubTabDropdownOpen) {
+			$ddX = $selRect[0];
+			$ddY = $selRect[1] + $selRect[3] + 4;
+			$ddW = 200;
+			$tabs = ["MODS", "SHADERS", "TEXTURES", "MODPACKS", "INST. MODS", "INST. SHADERS", "INST. TEXTURES", "INST. PACKS"];
+			$itemH = 34;
+			$fullH = count($tabs) * $itemH;
+
+			if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $fullH) {
+				$idx = (int)floor(($cy - $ddY) / $itemH);
+				if ($idx >= 0 && $idx < count($tabs)) {
+					if ($this->modpackSubTab !== $idx) {
+						$this->modpackSubTab = $idx;
 						$this->subTabFadeStart = microtime(true);
 						$this->scrollOffset = 0;
 						$this->scrollTarget = 0;
 						$this->hoverModIndex = -1;
 						$this->modrinthAnim = 0.0;
 						$this->modrinthPage = 0;
-
-						if ($i === 0) {
-							$this->scanLocalMods();
-						} elseif ($i === 3) {
-							$this->checkModpackIcons();
-						} else {
-							// For Tab 1 (Mods) and Tab 2 (Modpacks)
-							$this->searchModrinth();
-						}
+						if ($idx >= 4) $this->scanLocalContent();
+						else $this->searchModrinth();
 					}
-					return;
+					$this->explorerSubTabDropdownOpen = false;
 				}
-				$tabX += $tw + 8;
+				return;
 			}
+			$this->explorerSubTabDropdownOpen = false; // Clicked outside (but not on other triggers which we already handled)
 		}
 
-		// 2. Search Bar focus & Clear Button
+		// 4. Search Bar focus & Clear Button
 		$searchW = 300;
 		$searchX = $cw - self::PAD - $searchW;
-		if ($cx >= $searchX && $cx <= $searchX + $searchW && $cy >= 15 && $cy <= 55) {
-			// Check if "Clear" button (X) was clicked (right ~32px)
+		$searchY = self::HEADER_H + 8;
+		if ($cx >= $searchX && $cx <= $searchX + $searchW && $cy >= $searchY && $cy <= $searchY + 40) {
 			if (!empty($this->modSearchQuery) && $cx >= $searchX + $searchW - 35) {
 				$this->modSearchQuery = "";
-				$this->searchModrinth(); // Trigger update
+				$this->searchModrinth();
 				return;
 			}
 			$this->modSearchFocus = true;
+			$this->explorerSubTabDropdownOpen = false;
+			$this->modsFilterDropdown = "";
 			return;
 		}
 		$this->modSearchFocus = false;
-
-		// 3. Filter Pill Clicks (category, loader, env, version)
-		foreach ($this->modsFilterPillRects as $key => $rect) {
-			if ($cx >= $rect[0] && $cx <= $rect[0] + $rect[2] && $cy >= $rect[1] && $cy <= $rect[1] + $rect[3]) {
-				if ($this->modsFilterDropdown === $key) {
-					$this->modsFilterDropdown = ""; // Toggle close
-				} else {
-					$this->modsFilterDropdown = $key; // Switch or Open
-					$this->modsFilterDropdownAnim = 0.0;
-					$this->modsFilterScrollTarget = 0;
-					$this->modsFilterScrollOffset = 0;
-				}
-				return;
-			}
-		}
 
 		// 4. Dropdown interaction
 		if ($this->modsFilterDropdown !== "") {
@@ -3222,12 +3257,36 @@ class FoxyClient
 						$idx = (int)floor($localY / $itemH);
 						if ($idx >= 0 && $idx < count($items)) {
 							$val = $items[$idx][0];
-							if ($key === "category") $this->modsFilterCategory = $val;
-							elseif ($key === "loader") $this->modsFilterLoader = $val;
-							elseif ($key === "env") $this->modsFilterEnv = $val;
-							elseif ($key === "version") $this->setModsVersion($val);
+							$propMap = [
+								"category" => "modsFilterCategories",
+								"loader" => "modsFilterLoaders",
+								"env" => "modsFilterEnvs",
+								"version" => "modsFilterVersions",
+								"shader_category" => "shaderFilterCategories",
+								"shader_feature" => "shaderFilterFeatures",
+								"shader_perf" => "shaderFilterPerformance",
+								"shader_loader" => "shaderFilterLoaders",
+								"modpack_category" => "modpackFilterCategories",
+								"modpack_env" => "modpackFilterEnvs",
+								"modpack_loader" => "modpackFilterLoaders",
+								"res_category" => "resFilterCategories",
+								"res_feature" => "resFilterFeatures",
+								"res_resolution" => "resFilterResolutions",
+							];
+							$prop = $propMap[$key] ?? "";
+
+							if ($prop !== "") {
+								if ($val === "") {
+									$this->$prop = [];
+								} else {
+									if (in_array($val, $this->$prop)) {
+										$this->$prop = array_values(array_diff($this->$prop, [$val]));
+									} else {
+										$this->$prop[] = $val;
+									}
+								}
+							}
 							
-							$this->modsFilterDropdown = "";
 							if ($this->modSearchQuery !== null) $this->searchModrinth();
 							return;
 						}
@@ -3275,13 +3334,13 @@ class FoxyClient
 		$h = $usableH - $footerH - $y;
 
 		if ($cx >= self::PAD && $cx <= $cw - self::PAD && $cy >= $y && $cy <= $y + $h) {
-			if ($this->modpackSubTab === 0) {
-				// installed mod Tab (Was Managed/Index 3)
+			if ($this->modpackSubTab >= 4 && $this->modpackSubTab <= 6) {
+				// installed mods/shaders/textures (Index 4-6)
 				$cardW = ($cw - self::PAD * 3) / 2;
 				$cardH = 160; $gap = 15;
 				$gridY = $y + 10 - $this->scrollOffset;
 
-				foreach ($this->localMods as $i => $mod) {
+				foreach (($this->localMods ?? []) as $i => $mod) {
 					$col = $i % 2; $row = floor($i / 2);
 					$itemX = self::PAD + $col * ($cardW + $gap);
 					$itemY = $gridY + $row * ($cardH + $gap);
@@ -3294,7 +3353,7 @@ class FoxyClient
 						if ($cx >= $unBtnX && $cx <= $unBtnX + $btnW && $cy >= $itemY + 12 && $cy <= $itemY + 12 + $btnH) {
 							if (file_exists($mod["path"])) {
 								unlink($mod["path"]);
-								$this->scanLocalMods();
+								$this->scanLocalContent();
 							}
 							return;
 						}
@@ -3312,8 +3371,8 @@ class FoxyClient
 						}
 					}
 				}
-			} elseif ($this->modpackSubTab === 3) {
-				// installed modpacks Tab (Index 3)
+			} elseif ($this->modpackSubTab === 7) {
+				// installed modpacks Tab (Index 7)
 				$gridY = $y + 10 - $this->scrollOffset;
 				foreach ($this->installedModpacks as $slug => $pack) {
 					$packH = 72;
@@ -3338,7 +3397,7 @@ class FoxyClient
 								}
 							}
 							unset($this->installedModpacks[$slug]);
-							$this->saveSettings(); // Ensure change is persisted if modpacks are in settings
+							$this->saveSettings();
 							return;
 						}
 
@@ -3360,7 +3419,7 @@ class FoxyClient
 					$gridY += $packH + 8;
 				}
 			} else {
-				// Discovery Mode (Index 1: Mods, Index 3: Modpacks)
+				// Discovery Mode (Index 0-3)
 				$gridY = $y + 10 - $this->scrollOffset;
 				$cardW = ($cw - self::PAD * 3) / 2;
 				$cardH = 110; $gap = 12;
@@ -5361,7 +5420,7 @@ class FoxyClient
 			);
 		}
 
-		$this->updateOverlay();
+		// updateOverlay call removed
 		try {
 			// Process events with a frame-time budget to prevent UI stutter
 			$pollStartTime = microtime(true);
@@ -5398,12 +5457,18 @@ class FoxyClient
 				$isModpackInstall =
 					$this->modpackInstallChannel &&
 					(string) $event->source === (string) $this->modpackInstallChannel;
+				$isFoxyModInstall =
+					$this->foxyModInstallChannel &&
+					(string) $event->source === (string) $this->foxyModInstallChannel;
 				$isModrinth =
 					$this->modrinthChannel &&
 					(string) $event->source === (string) $this->modrinthChannel;
-				$isUpdate =
-					$this->updateChannel &&
-					(string) $event->source === (string) $this->updateChannel;
+				$isUiUpdate =
+					$this->uiUpdateChannel &&
+					(string) $event->source === (string) $this->uiUpdateChannel;
+				$isCaUpdate =
+					$this->caUpdateChannel &&
+					(string) $event->source === (string) $this->caUpdateChannel;
 				$isFoxyUpdate =
 					$this->foxyUpdateChannel &&
 					(string) $event->source === (string) $this->foxyUpdateChannel;
@@ -5424,9 +5489,7 @@ class FoxyClient
 							// Auto-hide launcher
 							$this->user32->ShowWindow($this->hwnd, 0); // SW_HIDE
 							
-							if ($this->settings["overlay_cpu"] || $this->settings["overlay_gpu"] || $this->settings["overlay_ram"] || $this->settings["overlay_vram"]) {
-								$this->startOverlayThread($this->gamePid);
-							}
+								// OSD removed
 						} elseif ($data["type"] === "log") {
 							$this->log(($data["isError"] ? "[Game/Stderr] " : "[Game/Stdout] ") . $data["msg"], $data["isError"] ? "WARN" : "INFO");
 						} elseif ($data["type"] === "log_batch") {
@@ -5445,7 +5508,7 @@ class FoxyClient
 							$this->gameProcess = null;
 							$this->gameChannel = null;
 							$this->assetMessage = "GAME CLOSED";
-							$this->stopOverlayThread();
+							// OSD removed
 							$this->updateDiscordPresence();
 						}
 					}
@@ -5474,8 +5537,11 @@ class FoxyClient
 				if ($isManifest) {
 					$this->pollEvents->addChannel($this->vManifestChannel);
 				}
-				if ($isUpdate) {
-					$this->pollEvents->addChannel($this->updateChannel);
+				if ($isUiUpdate) {
+					$this->pollEvents->addChannel($this->uiUpdateChannel);
+				}
+				if ($isCaUpdate) {
+					$this->pollEvents->addChannel($this->caUpdateChannel);
 				}
 				if ($isFoxyUpdate) {
 					$this->pollEvents->addChannel($this->foxyUpdateChannel);
@@ -5499,6 +5565,9 @@ class FoxyClient
 				if ($isModpackInstall) {
 					$this->pollEvents->addChannel($this->modpackInstallChannel);
 				}
+				if ($isFoxyModInstall) {
+					$this->pollEvents->addChannel($this->foxyModInstallChannel);
+				}
 
 				if ($data) {
 					if ($isFoxyUpdate) {
@@ -5506,18 +5575,25 @@ class FoxyClient
 						$this->updateFoxyUpdateFlag();
 						$this->foxyUpdateProcess = null;
 						$this->foxyUpdateChannel = null;
-					} elseif ($isUpdate && isset($data["type"])) {
+					} elseif ($isCaUpdate && isset($data["type"])) {
 						if ($data["type"] === "ca_update_progress") {
 							$this->caUpdateProgress = (float) $data["pct"];
+							$this->needsRedraw = true;
 						} elseif ($data["type"] === "ca_update_res") {
 							$this->isUpdatingCacert = false;
-							$this->updateMessage =
-								"CA Certificates updated successfully!";
+							$this->updateMessage = "CA Certificates updated successfully!";
+							$this->needsRedraw = true;
+							$this->caUpdateChannel = null;
+							$this->caUpdateProcess = null;
 						} elseif ($data["type"] === "ca_update_err") {
 							$this->isUpdatingCacert = false;
-							$this->updateMessage =
-								"Error: " . ($data["msg"] ?? "Unknown");
-						} elseif ($data["type"] === "ui_update_res") {
+							$this->updateMessage = "Error: " . ($data["msg"] ?? "Unknown");
+							$this->needsRedraw = true;
+							$this->caUpdateChannel = null;
+							$this->caUpdateProcess = null;
+						}
+					} elseif ($isUiUpdate && isset($data["type"])) {
+						if ($data["type"] === "ui_update_res") {
 							$this->isCheckingUiUpdate = false;
 							$ver = $data["version"];
 							$cleanVer = ltrim($ver, 'v');
@@ -5529,11 +5605,16 @@ class FoxyClient
 								$this->hasUiUpdate = false;
 								$this->updateMessage = "You are running the latest version: " . self::VERSION;
 							}
+							$this->needsRedraw = true;
+							$this->uiUpdateChannel = null;
+							$this->uiUpdateProcess = null;
 						} elseif ($data["type"] === "ui_update_err") {
 							$this->isCheckingUiUpdate = false;
 							$this->hasUiUpdate = false;
-							$this->updateMessage =
-								"Check failed: " . ($data["msg"] ?? "Unknown");
+							$this->updateMessage = "Check failed: " . ($data["msg"] ?? "Unknown");
+							$this->needsRedraw = true;
+							$this->uiUpdateChannel = null;
+							$this->uiUpdateProcess = null;
 						}
 					}
 					if ($isHttp && isset($data["type"])) {
@@ -5542,6 +5623,22 @@ class FoxyClient
 						} elseif ($data["type"] === "log") {
 							$this->log($data["msg"], $data["level"] ?? "INFO");
 						}
+					}
+
+					if ($isFoxyModInstall) {
+						$msg = (string)$val;
+						if (str_starts_with($msg, "DONE:")) {
+							$this->foxyInstallProgress = substr($msg, 5);
+							$this->isInstallingFoxyMod = false;
+							$this->log("FoxyClientMod: " . $this->foxyInstallProgress);
+						} elseif (str_starts_with($msg, "ERROR:")) {
+							$this->foxyInstallProgress = substr($msg, 6);
+							$this->isInstallingFoxyMod = false;
+							$this->log("FoxyClientMod install error: " . $this->foxyInstallProgress);
+						} else {
+							$this->foxyInstallProgress = $msg;
+						}
+						$this->needsRedraw = true;
 					}
 
 					if ($isModrinth) {
@@ -5600,6 +5697,7 @@ class FoxyClient
 							} else {
 								$this->modrinthSearchResults = $res;
 								$this->isSearchingModrinth = false; // Reset state
+								$this->modrinthAnim = 0.0; // Smooth results fade-in
 								$this->log(
 									"Modrinth found " .
 										count($this->modrinthSearchResults) .
@@ -6227,19 +6325,7 @@ class FoxyClient
 			}
 		}
 
-		// Overlay Update
-		if (
-			$this->isStoppingOverlay &&
-			$this->overlayFuture &&
-			$this->overlayFuture->done()
-		) {
-			$this->overlayThread = null;
-			$this->overlayChannel = null;
-			$this->overlayFuture = null;
-			$this->isStoppingOverlay = false;
-			$this->log("Overlay Thread Cleaned Up (Background).");
-		}
-		$this->updateOverlay();
+		// OSD removed
 
 		// Compat check cleanup
 		if (
@@ -6304,23 +6390,7 @@ class FoxyClient
 		}
 	}
 
-	private function getOverlayLineCount()
-	{
-		$lines = 0;
-		if ($this->settings["overlay_cpu"]) {
-			$lines++;
-		}
-		if ($this->settings["overlay_gpu"]) {
-			$lines++;
-		}
-		if ($this->settings["overlay_ram"]) {
-			$lines++;
-		}
-		if ($this->settings["overlay_vram"]) {
-			$lines++;
-		}
-		return max(1, $lines);
-	}
+	// OSD functionality removed
 
 	private function startOverlayThread($gamePid = null)
 	{
@@ -7719,29 +7789,44 @@ class FoxyClient
 
 	private function stopOverlayThread($wait = false)
 	{
-		if ($this->overlayChannel && !$this->isStoppingOverlay) {
-			try {
-				$this->log("Sending shutdown signal to overlay...");
-				$this->overlayChannel->send("shutdown");
-				$this->isStoppingOverlay = true;
-			} catch (\Throwable $e) {
-				$this->log("Error sending shutdown: " . $e->getMessage());
-			}
-		}
+		// OSD removed
+	}
 
-		if ($wait && $this->overlayFuture) {
-			$start = microtime(true);
-			while (
-				!$this->overlayFuture->done() &&
-				microtime(true) - $start < 1.0
-			) {
-				usleep(10000);
+	/**
+	 * Scans open windows to find the Minecraft/FoxyClient instance.
+	 * Essential for game lifecycle detection and UI feedback.
+	 */
+	private function checkGameWindow()
+	{
+		$res = ['found' => false, 'pid' => 0];
+		if (!$this->user32) return $res;
+		
+		$foundPid = 0;
+		$foundHwnd = null;
+		
+		$callback = function($hwnd, $lparam) use (&$foundHwnd, &$foundPid) {
+			$title = str_repeat("\0", 256);
+			$len = $this->user32->GetWindowTextA($hwnd, $title, 256);
+			if ($len > 0) {
+				$title = substr($title, 0, $len);
+				if (str_contains($title, "Minecraft") || str_contains($title, "FoxyClient")) {
+					$pidPtr = FFI::new("DWORD");
+					$this->user32->GetWindowThreadProcessId($hwnd, FFI::addr($pidPtr));
+					$foundPid = $pidPtr->cdata;
+					$foundHwnd = $hwnd;
+					return false; 
+				}
 			}
-			$this->overlayThread = null;
-			$this->overlayChannel = null;
-			$this->overlayFuture = null;
-			$this->isStoppingOverlay = false;
+			return true;
+		};
+		
+		$this->user32->EnumWindows($callback, 0);
+		
+		if ($foundHwnd) {
+			$res['found'] = true;
+			$res['pid'] = $foundPid;
 		}
+		return $res;
 	}
 
 	private function terminateGame()
@@ -7844,31 +7929,7 @@ class FoxyClient
 		}
 	}
 
-	private function updateOverlay()
-	{
-		$anyEnabled =
-			$this->settings["overlay_cpu"] ||
-			$this->settings["overlay_gpu"] ||
-			$this->settings["overlay_ram"] ||
-			$this->settings["overlay_vram"];
-		
-		$isGameRunning = ($this->assetMessage === "GAME RUNNING");
-
-		if (!$anyEnabled || !$isGameRunning) {
-			if (!$this->isStoppingOverlay) {
-				$this->stopOverlayThread();
-			}
-			return;
-		}
-
-		// Re-ensure thread is running if it should be
-		if (!$this->overlayThread && !$this->isStoppingOverlay) {
-			$mcStatus = $this->checkGameWindow();
-			if ($mcStatus['found']) {
-				$this->startOverlayThread($mcStatus['pid']);
-			}
-		}
-	}
+	// updateOverlay removed
 
 	private function startOAuthListener()
 	{
@@ -8514,6 +8575,17 @@ class FoxyClient
 					continue;
 				}
 
+				if ($this->isLoadingFonts) {
+					if ($this->fontGenerator && $this->fontGenerator->valid()) {
+						$this->fontLoadingMessage = $this->fontGenerator->current();
+						$this->fontGenerator->next();
+						$this->needsRedraw = true;
+					} else {
+						$this->isLoadingFonts = false;
+						$this->needsRedraw = true;
+					}
+				}
+
 				// --- Throttling: Skip render frames if unfocused to save GPU ---
 				if ($shouldThrottle) {
 					// Cap to ~15 FPS unfocused, or ~5 FPS if game is running (and visible)
@@ -8578,6 +8650,12 @@ class FoxyClient
 					$this->modsFilterScrollOffset = $this->modsFilterScrollTarget;
 				}
 
+				if ($this->explorerSubTabDropdownOpen) {
+					$this->explorerSubTabDropdownAnim = min(1.0, $this->explorerSubTabDropdownAnim + 0.15);
+				} else {
+					$this->explorerSubTabDropdownAnim = max(0.0, $this->explorerSubTabDropdownAnim - 0.15);
+				}
+
 				$sDiff = $this->sidebarTargetY - $this->sidebarIndicatorY;
 				if (abs($sDiff) > 0.1) {
 					// Use snappy Cubic Out easing for sidebar glide
@@ -8593,7 +8671,7 @@ class FoxyClient
 					$this->sidebarHoverY = $this->sidebarHoverTargetY;
 				}
 
-				if ($this->sidebarHover !== -1 && $this->sidebarHover !== 99) {
+				if ($this->sidebarHover !== -1) {
 					$this->sidebarHoverAlpha = min(
 						1.0,
 						$this->sidebarHoverAlpha + 0.1,
@@ -8607,8 +8685,9 @@ class FoxyClient
 
 				// Window launch animation interpolation
 				$elapsed = $now - $this->appLaunchTime;
-				if ($elapsed < 3.0) {
-					$this->windowAnim = ($elapsed / 3.0) * 0.4;
+				if ($elapsed < 5.0 || $this->isLoadingFonts) {
+					$prog = min(1.0, $elapsed / 5.0);
+					$this->windowAnim = $prog * 0.4;
 				} else {
 					if ($this->windowAnim < 1.0) {
 						$this->windowAnim += (1.0 - $this->windowAnim) * 0.08;
@@ -8700,8 +8779,8 @@ class FoxyClient
 				$animating = $animating || abs($this->modsFilterScrollTarget - $this->modsFilterScrollOffset) > 0.5;
 				$animating = $animating || abs($this->sidebarTargetY - $this->sidebarIndicatorY) > 0.1;
 				$animating = $animating || abs($this->sidebarHoverTargetY - $this->sidebarHoverY) > 0.1;
-				$animating = $animating || ($this->sidebarHover !== -1 && $this->sidebarHover !== 99 && $this->sidebarHoverAlpha < 1.0);
-				$animating = $animating || (($this->sidebarHover === -1 || $this->sidebarHover === 99) && $this->sidebarHoverAlpha > 0.0);
+				$animating = $animating || ($this->sidebarHover !== -1 && $this->sidebarHoverAlpha < 1.0);
+				$animating = $animating || ($this->sidebarHover === -1 && $this->sidebarHoverAlpha > 0.0);
 				$animating = $animating || $this->pageAnim < 1.0;
 				$animating = $animating || $this->modrinthAnim < 1.0;
 				$animating = $animating || $this->windowAnim < 1.0;
@@ -8721,6 +8800,9 @@ class FoxyClient
 				$isPropDropdownOpen = ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen);
 				$animating = $animating || ($isPropDropdownOpen && $this->propDropdownAnim < 1.0);
 				$animating = $animating || (!$isPropDropdownOpen && $this->propDropdownAnim > 0.01);
+
+				$animating = $animating || ($this->explorerSubTabDropdownOpen && $this->explorerSubTabDropdownAnim < 1.0);
+				$animating = $animating || (!$this->explorerSubTabDropdownOpen && $this->explorerSubTabDropdownAnim > 0.01);
 				
 				$animating = $animating || $this->isLaunching || $this->isDownloadingAssets || $this->gameProcess !== null || $this->isStoppingOverlay || $this->isSearchingModrinth || $this->isCheckingCompat;
 
@@ -8792,14 +8874,10 @@ class FoxyClient
 		// Sidebar hovers
 		$this->sidebarHover = -1;
 		if ($x < self::SIDEBAR_W && $y >= self::TITLEBAR_H) {
-			// Profile area hover
-			if ($y >= $this->height - 74 && $y <= $this->height - 24) {
-				$this->sidebarHover = 99;
-				return;
-			}
-
+			$sidebarH = $this->height - self::TITLEBAR_H;
+			$totalH = count($this->sidebarItems) * 55 - 5;
 			$itemH = 50;
-			$startY = 100 + self::TITLEBAR_H;
+			$startY = ($sidebarH - $totalH) / 2 + self::TITLEBAR_H;
 			foreach ($this->sidebarItems as $i => $item) {
 				if ($y >= $startY && $y < $startY + $itemH) {
 					$this->sidebarHover = $i;
@@ -9144,10 +9222,10 @@ class FoxyClient
 			}
 		}
 
-		// Sub-tabs (4 tabs)
+		// Sub-tabs (3 tabs)
 		if ($cy >= self::HEADER_H && $cy <= self::HEADER_H + self::TAB_H) {
 			$tabX = self::PAD;
-			foreach (["Modpacks", "Config", "Cosmetics", "OSD"] as $i => $name) {
+			foreach (["Modpacks", "Config", "Cosmetics"] as $i => $name) {
 				$tw = $this->getTextWidth($name, 1000) + 32;
 				if ($cx >= $tabX && $cx <= $tabX + $tw) {
 					if ($this->foxySubTab !== $i) {
@@ -9325,18 +9403,7 @@ class FoxyClient
 				}
 				break;
 
-			case 3: // OSD
-				for ($i = 0; $i < 4; $i++) {
-					$ty = 130 + $i * 60;
-					if ($cx >= 20 && $cx <= $cw - 20 && $cy >= $ty && $cy <= $ty + 40) {
-						$key = ["overlay_cpu", "overlay_gpu", "overlay_ram", "overlay_vram"][$i];
-						$this->settings[$key] = !($this->settings[$key] ?? false);
-						$this->saveConfig();
-						$this->needsRedraw = true;
-						return;
-					}
-				}
-				break;
+			// OSD removed
 		}
 	}
 
@@ -9348,6 +9415,18 @@ class FoxyClient
 		$this->hoverModIndex = -1;
 		$this->modsVerHoverIdx = -1;
 		$this->modsFilterHoverIdx = -1;
+
+		// 0. Explorer Sub-Tab Dropdown Hover (Topmost Z-Index)
+		if ($this->explorerSubTabDropdownOpen) {
+			$rect = $this->explorerSubTabSelectorRect;
+			if ($rect) {
+				$ddX = $rect[0]; $ddY = $rect[1] + $rect[3] + 4;
+				$ddW = 200; $itemH = 34; $fullH = 8 * $itemH;
+				if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $fullH) {
+					return;
+				}
+			}
+		}
 
 		// Filter Dropdown Hover (Highest Z-Index)
 		if ($this->modsFilterDropdown !== "") {
@@ -10022,93 +10101,8 @@ class FoxyClient
 						}
 					}
 				// "Check CA Cert Update"
-				elseif ($idx === 1 && !$this->isUpdatingCacert) {
-					$this->isUpdatingCacert = true;
-					$this->updateMessage = "Downloading complete cacert.pem from curl.se...";
-					
-					if (!isset($this->pollEvents)) {
-						return;
-					}
-
-					if (!$this->updateChannel) {
-						$this->updateChannel = new \parallel\Channel(1024);
-						$this->pollEvents->addChannel($this->updateChannel);
-					}
-					$ch = $this->updateChannel;
-					
-					$proc = new \parallel\Runtime();
-					$cacertPath = __DIR__ . DIRECTORY_SEPARATOR . self::CACERT;
-					
-					$f = $proc->run(function(\parallel\Channel $ch, $cacertPath) {
-						try {
-							$url = "https://curl.se/ca/cacert.pem";
-							
-							// Step 1: HEAD request to get file size
-							$head = curl_init($url);
-							curl_setopt($head, CURLOPT_NOBODY, true);
-							curl_setopt($head, CURLOPT_RETURNTRANSFER, true);
-							curl_setopt($head, CURLOPT_SSL_VERIFYPEER, false);
-							curl_setopt($head, CURLOPT_TIMEOUT, 10);
-							curl_setopt($head, CURLOPT_FOLLOWLOCATION, true);
-							curl_exec($head);
-							$totalSize = (int) curl_getinfo($head, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
-							curl_close($head);
-							
-							if ($totalSize <= 0) {
-								$totalSize = 225076; // Known approximate size as fallback
-							}
-							
-							// Step 2: Download with WRITEFUNCTION for chunk-by-chunk progress
-							$curl = curl_init($url);
-							curl_setopt($curl, CURLOPT_TIMEOUT, 30);
-							curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 15);
-							curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
-							curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
-							curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-CAUpdater");
-							
-							$buffer = '';
-							$downloaded = 0;
-							$lastPct = -1;
-							
-							curl_setopt($curl, CURLOPT_WRITEFUNCTION, function($curl, $chunk) use ($ch, &$buffer, &$downloaded, &$lastPct, $totalSize) {
-								$len = strlen($chunk);
-								$buffer .= $chunk;
-								$downloaded += $len;
-								
-								$pct = (int) min(99, floor(($downloaded / $totalSize) * 100));
-								if ($pct !== $lastPct) {
-									$ch->send(['type' => 'ca_update_progress', 'pct' => $pct]);
-									$lastPct = $pct;
-								}
-								return $len; // MUST return length to continue download
-							});
-							
-							curl_exec($curl);
-							$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-							$curlErr = curl_error($curl);
-							curl_close($curl);
-							
-							if ($downloaded === 0 || $curlErr) {
-								$ch->send(['type' => 'ca_update_err', 'msg' => "Download failed: $curlErr"]);
-								return;
-							}
-
-							if ($code === 200 && $buffer && strpos($buffer, 'CERTIFICATE') !== false) {
-								if (@file_put_contents($cacertPath, $buffer) === false) {
-									$ch->send(['type' => 'ca_update_err', 'msg' => "Failed to write to config/cacert.pem"]);
-								} else {
-									$ch->send(['type' => 'ca_update_progress', 'pct' => 100]);
-									$ch->send(['type' => 'ca_update_ok']);
-								}
-							} else {
-								$ch->send(['type' => 'ca_update_err', 'msg' => "HTTP $code - Invalid CA data."]);
-							}
-						} catch (\Throwable $e) {
-							$ch->send(['type' => 'ca_update_err', 'msg' => "Crash: " . $e->getMessage()]);
-						}
-					}, [$ch, $cacertPath]);
-					
-					$this->pendingFutures[] = $f;
+				elseif ($idx === 1) {
+					$this->triggerCaUpdate(false);
 				}
 			}
 		}
@@ -10231,6 +10225,10 @@ class FoxyClient
 			); // fill
 		}
 
+		if ($this->isLoadingFonts) {
+			return; // Do not proceed to render text or UI while fonts are loading
+		}
+
 		// --- PHASE 2: UI Reveal (Main interface) ---
 		if ($wA > 0.4) {
 			$revWA = ($wA - 0.4) / 0.6; // 0 to 1 over the second phase
@@ -10327,6 +10325,9 @@ class FoxyClient
 			if ($this->logoutModalOpen) {
 				$this->renderLogoutModal();
 			}
+
+			// Sidebar Tooltip (Highest Z-Index)
+			$this->renderSidebarTooltip();
 		}
 
 		$this->globalAlpha = 1.0;
@@ -10419,7 +10420,7 @@ class FoxyClient
 		
 		// 2. Render Search Icon (High-Fidelity Material Symbol 0xe8b6)
 		$iconColor = $isFocused ? $this->colors["primary"] : $this->colors["text_dim"];
-		$this->renderIcon(0xe8b6, $x + 16, $y + ($h/2) + 2, $iconColor, 20);
+		$this->renderIcon(0xe8b6, $x + 16, $y + ($h/2) + 6, $iconColor, 20);
 
 		// 3. Render Placeholder or Query
 		$textX = $x + 48;
@@ -10473,21 +10474,18 @@ class FoxyClient
 			$this->colors["divider"],
 		);
 
-		// Premium Brand Logo with Typographic Tracking
-		$this->drawTexture($this->logoTex, 20, 20, 48, 48); // 48x48 icon
-		$this->renderText("FoxyClient", 75, 53, $this->colors["primary"], 2000, 1.8);
-
-		// Sidebar Items
+		$sidebarH = $this->height - self::TITLEBAR_H;
+		$totalH = count($this->sidebarItems) * 55 - 5;
 		$itemH = 50;
-		$y = 100;
+		$y = ($sidebarH - $totalH) / 2;
 
 		$sidebarIcons = [
-			self::PAGE_HOME => "⌂",
-			self::PAGE_FOXYCLIENT => "★",
-			self::PAGE_ACCOUNTS => "☻",
-			self::PAGE_MODS => "☰",
-			self::PAGE_VERSIONS => "↕",
-			self::PAGE_PROPERTIES => "⚙",
+			self::PAGE_HOME => mb_chr(0xe88a, "UTF-8"),      // Home
+			self::PAGE_FOXYCLIENT => "",                    // Texture used instead
+			self::PAGE_ACCOUNTS => mb_chr(0xe7fd, "UTF-8"),   // Person
+			self::PAGE_MODS => mb_chr(0xe87b, "UTF-8"),       // Explore (Compass)
+			self::PAGE_VERSIONS => mb_chr(0xf135, "UTF-8"),   // List versions
+			self::PAGE_PROPERTIES => mb_chr(0xe8b8, "UTF-8"), // Settings
 		];
 
 		$hasActiveTab = false;
@@ -10500,12 +10498,12 @@ class FoxyClient
 
 		if ($hasActiveTab) {
 			// Subtle glow behind the active capsule
-			$this->drawGlow(8, $this->sidebarIndicatorY + 2, $sw - 16, $itemH - 4, 10, $this->colors["primary"], 0.4);
+			$this->drawGlow(4, $this->sidebarIndicatorY + 2, $sw - 8, $itemH - 4, 10, $this->colors["primary"], 0.4);
 			// The active capsule
 			$this->drawRoundedRect(
-				8,
+				4,
 				$this->sidebarIndicatorY + 2,
-				$sw - 16,
+				$sw - 8,
 				$itemH - 4,
 				10,
 				$this->colors["sidebar_active"],
@@ -10516,7 +10514,7 @@ class FoxyClient
 		// Hover Highlight (Capsule)
 		if ($this->sidebarHoverAlpha > 0.001) {
 			$hC = $this->colors["sidebar_hover"];
-			$this->drawRoundedRect(8, $this->sidebarHoverY + 2, $sw - 16, $itemH - 4, 10, [
+			$this->drawRoundedRect(4, $this->sidebarHoverY + 2, $sw - 8, $itemH - 4, 10, [
 				$hC[0], $hC[1], $hC[2], $this->sidebarHoverAlpha
 			]);
 		}
@@ -10527,74 +10525,55 @@ class FoxyClient
 
 			// Sidebar Item Content
 			$icon = $sidebarIcons[$item["id"]] ?? "";
-			if ($icon !== "") {
+			if ($item["id"] === self::PAGE_FOXYCLIENT && $this->logoTex) {
+				$size = 20;
+				$alpha = $isActive ? 1.0 : 0.6;
+				$this->drawTexture($this->logoTex, ($sw - $size) / 2, $y + ($itemH - $size) / 2, $size, $size, [1, 1, 1, $alpha]);
+			} elseif ($icon !== "") {
 				$iconColor = $isActive ? $this->colors["primary"] : [$color[0], $color[1], $color[2], 0.6];
-				$this->renderText($icon, 22, $y + 32, $iconColor, 1000, 1.5);
+				
+				// Determine which font atlas to use
+				$cp = mb_ord($icon, "UTF-8");
+				$fontId = ($cp >= 0xe000) ? 4000 : 1000;
+				
+				$iw = $this->getTextWidth($icon, $fontId, 1.5);
+				$this->renderText($icon, ($sw - $iw) / 2, $y + 32, $iconColor, $fontId, 1.5);
 			}
 
-			// Body style for items
-			$this->renderText($item["name"], 48, $y + 32, $color, 1000, 0.6);
+			// Removed text label for minimal UI
 			$y += $itemH + 5;
 		}
 
-		// Profile area at bottom
+		// Removed profile area rendering
+	}
+
+	/**
+	 * Renders the sidebar tooltip in global coordinates to ensure it is always on top.
+	 */
+	private function renderSidebarTooltip()
+	{
+		if ($this->sidebarHover === -1 || !isset($this->sidebarItems[$this->sidebarHover])) return;
+		if ($this->sidebarHoverAlpha < 0.001) return;
+
+		$sw = self::SIDEBAR_W;
+		$itemH = 50;
+		$item = $this->sidebarItems[$this->sidebarHover];
+		$name = $item["name"];
+		$tw = $this->getTextWidth($name, 1000);
+		
 		$sidebarH = $this->height - self::TITLEBAR_H;
-		$profileY = $sidebarH - 80;
-
-		$this->drawRect(10, $profileY, $sw - 20, 1, $this->colors["divider"]);
-
-		// Glassmorphic profile card
-		$profileBg = $this->sidebarHover === 99
-			? [0.12, 0.14, 0.18, 0.5]
-			: [0.08, 0.09, 0.11, 0.3];
-		$this->drawRect(8, $profileY + 6, $sw - 16, 50, $profileBg);
-		$this->drawRect(8, $profileY + 6, $sw - 16, 1, [1, 1, 1, 0.04]);
-
-		// Active Account Link
-		$accColor =
-			$this->sidebarHover === 99
-				? $this->colors["primary"]
-				: $this->colors["text"];
-		$dispName = $this->accountName ?: "Not Logged In";
-
-		if ($this->isLoggedIn && $this->activeAccount) {
-			$accData = $this->accounts[$this->activeAccount] ?? [];
-			$type = $accData["Type"] ?? self::ACC_OFFLINE;
-			$tex = null;
-			if ($type === self::ACC_MICROSOFT) {
-				$tex = $this->mojangTex;
-			} elseif ($type === self::ACC_ELYBY) {
-				$tex = $this->elybyTex;
-			} elseif ($type === self::ACC_FOXY) {
-				$tex = $this->logoTex;
-			}
-
-			if ($tex) {
-				$this->drawTexture($tex, 25, $profileY + 22, 20, 20); // Aligned with text alignment (X=25)
-				$this->renderText(
-					$dispName,
-					55,
-					$profileY + 38,
-					$accColor,
-					1000,
-				);
-			} else {
-				$this->renderText(
-					$dispName,
-					25,
-					$profileY + 38,
-					$accColor,
-					1000,
-				);
-			}
-		} else {
-			$this->renderText($dispName, 25, $profileY + 38, $accColor, 1000);
-		}
-
-		// Version badge - Small Metadata Style
-		$verText = "v" . self::VERSION;
-		$verW = $this->getTextWidth($verText, 3000, 0.5); 
-		$this->renderText($verText, $sw - $verW - 12, $profileY + 49, $this->colors["text_dim"], 3000, 0.5);
+		$totalH = count($this->sidebarItems) * 55 - 5;
+		$startY = ($sidebarH - $totalH) / 2;
+		$hoverY = $startY + $this->sidebarHover * ($itemH + 5) + ($itemH / 2);
+		
+		$tx = $sw + 10;
+		$ty = $hoverY - 12 + self::TITLEBAR_H; // Global Y offset
+		
+		$animX = $tx + (1.0 - $this->sidebarHoverAlpha) * 10;
+		
+		$this->drawGlow($animX, $ty, $tw + 20, 24, 10, [0, 0, 0, 0.3 * $this->sidebarHoverAlpha]);
+		$this->drawRoundedRect($animX, $ty, $tw + 20, 24, 6, [0.05, 0.05, 0.08, 0.95 * $this->sidebarHoverAlpha], [$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.3 * $this->sidebarHoverAlpha]);
+		$this->renderText($name, $animX + 10, $ty + 17, [1, 1, 1, $this->sidebarHoverAlpha], 1000);
 	}
 
 	// ─── HOME PAGE ENGINE ───
@@ -10779,7 +10758,8 @@ class FoxyClient
 		if ($this->hasUiUpdate) {
 			[$ux, $uy, $uw, $uh] = $this->getHomeUpdateBadgeRect();
 			if ($cx >= $ux && $cx <= $ux + $uw && $cy >= $uy && $cy <= $uy + $uh) {
-				$this->performSelfUpdate();
+				$this->switchPage(self::PAGE_PROPERTIES);
+				$this->propSubTab = 2;
 				return;
 			}
 		}
@@ -11331,13 +11311,12 @@ class FoxyClient
 			"Manage built-in optimization mods",
 			"FoxyClient mod settings",
 			"Customize your cape",
-			"System overlay and display settings",
 		];
 		$desc = $descs[$this->foxySubTab] ?? $descs[0];
 		$this->drawPageHeader("FOXYCLIENT CONFIGURATION", $desc);
 
 		// Buttons at Top Right
-		$installBtnW = 180;
+		$installBtnW = 240;
 		$installBtnH = 32;
 		$installBtnX = $cw - self::PAD - $installBtnW;
 		$installBtnY = 10;
@@ -11385,8 +11364,8 @@ class FoxyClient
 				"UPDATE MODS", $this->foxyUpdateBtnHover);
 		}
 
-		// Sub-tabs: 4 tabs
-		$tabNames = ["Modpacks", "Config", "Cosmetics", "OSD"];
+		// Sub-tabs: 3 tabs
+		$tabNames = ["Modpacks", "Config", "Cosmetics"];
 		$this->renderSubTabs($tabNames, $this->foxySubTab, 100);
 
 		$y = self::HEADER_H + self::TAB_H;
@@ -11404,39 +11383,9 @@ class FoxyClient
 			case 2: // Cosmetics
 				$this->renderFoxyCosmeticsTab($y, $h, $cw);
 				break;
-			case 3: // OSD
-				$y = 130;
-				$y = $this->renderSettingsToggle($y, "Display CPU Usage", 0, "overlay_cpu");
-				$y = $this->renderSettingsToggle($y, "Display GPU Usage", 1, "overlay_gpu");
-				$y = $this->renderSettingsToggle($y, "Display RAM Usage", 2, "overlay_ram");
-				$y = $this->renderSettingsToggle($y, "Display VRAM Usage", 3, "overlay_vram");
-				break;
 		}
 
-		// Poll FoxyClientMod install progress
-		if ($this->isInstallingFoxyMod && $this->foxyModInstallChannel) {
-			try {
-				$msg = $this->foxyModInstallChannel->recv();
-				if ($msg) {
-					if (str_starts_with($msg, "DONE:")) {
-						$this->foxyInstallProgress = substr($msg, 5);
-						$this->isInstallingFoxyMod = false;
-						$this->log("FoxyClientMod: " . $this->foxyInstallProgress);
-					} elseif (str_starts_with($msg, "ERROR:")) {
-						$this->foxyInstallProgress = substr($msg, 6);
-						$this->isInstallingFoxyMod = false;
-						$this->log("FoxyClientMod install error: " . $this->foxyInstallProgress);
-					} else {
-						$this->foxyInstallProgress = $msg;
-					}
-					$this->needsRedraw = true;
-				}
-			} catch (\parallel\Channel\Error\Closed $e) {
-				$this->isInstallingFoxyMod = false;
-			} catch (\Throwable $e) {
-				// Channel empty, no message yet
-			}
-		}
+
 	}
 
 	private function renderFoxyModpackTab($y, $h, $cw)
@@ -12397,6 +12346,7 @@ class FoxyClient
 		$cacert = $this->getAbsolutePath(self::CACERT);
 
 		$this->foxyModInstallChannel = new \parallel\Channel(16);
+		$this->pollEvents->addChannel($this->foxyModInstallChannel);
 		$ch = $this->foxyModInstallChannel;
 
 		$this->foxyModInstallProcess = new \parallel\Runtime();
@@ -12718,8 +12668,7 @@ class FoxyClient
 
 		// Arrow indicator styling
 		$arrowColor = $isOpen ? $this->colors["primary"] : $this->colors["text_dim"];
-		$arrow = $isOpen ? "▴" : "▾";
-		$this->renderText($arrow, $x + $w - 24, $y + $h / 2 + 6, $arrowColor, 1000);
+		$this->renderIcon($isOpen ? 0xe5c7 : 0xe5c5, $x + $w - 24, $y + $h / 2 + 6, $arrowColor, 20);
 	}
 
 	private function renderLoginPage()
@@ -12737,7 +12686,8 @@ class FoxyClient
 		$backColor = $isBackHover
 			? $this->colors["text"]
 			: $this->colors["text_dim"];
-		$this->renderText("< BACK", self::PAD, 40, $backColor, 1000);
+		$this->renderIcon(0xe5e0, self::PAD, 40, $backColor);
+		$this->renderText("BACK", self::PAD + 26, 40, $backColor, 1000);
 
 		if ($this->loginStep === 0) {
 			$this->renderText(
@@ -13156,29 +13106,115 @@ class FoxyClient
 		return $out;
 	}
 
-	private function scanLocalMods()
+	private function scanLocalContent()
 	{
-		if ($this->isScanningLocalMods) return;
 		$this->isScanningLocalMods = true;
+		$this->localMods = []; // Ensure we clear old state
 
 		$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
-		$modsDir = $gameDir . DIRECTORY_SEPARATOR . "mods";
-		if (!is_dir($modsDir)) {
-			$this->localMods = [];
+		$subTab = $this->modpackSubTab;
+		
+		$type = 'mods';
+		if ($subTab === 5) $type = 'shaderpacks';
+		elseif ($subTab === 6) $type = 'resourcepacks';
+		elseif ($subTab === 7) {
+			$this->loadModpacks();
 			$this->isScanningLocalMods = false;
 			return;
 		}
 
-		$files = scandir($modsDir);
+		$dir = $gameDir . DIRECTORY_SEPARATOR . $type;
+		if (!is_dir($dir)) @mkdir($dir, 0777, true);
+		if (!is_dir($dir)) {
+			$this->isScanningLocalMods = false;
+			return;
+		}
+
+		$files = scandir($dir);
 		$results = [];
 
 		foreach ($files as $file) {
 			if ($file === "." || $file === "..") continue;
-			$isJar = str_ends_with($file, ".jar") || str_ends_with($file, ".jar.disabled");
-			if (!$isJar) continue;
+			$filePath = $dir . DIRECTORY_SEPARATOR . $file;
+			
+			if ($type === 'mods') {
+				if (str_ends_with(strtolower($file), ".jar") || str_ends_with(strtolower($file), ".jar.disabled")) {
+					$results[] = $this->extractModMetadata($filePath);
+				}
+			} else {
+				// Shaderpacks / Resourcepacks
+				$isZip = str_ends_with(strtolower($file), ".zip") || str_ends_with(strtolower($file), ".zip.disabled");
+				$isDir = is_dir($filePath);
+				if (!$isZip && !$isDir) continue;
 
-			$filePath = $modsDir . DIRECTORY_SEPARATOR . $file;
-			$results[] = $this->extractModMetadata($filePath);
+				$name = $file;
+				if (str_ends_with(strtolower($file), ".zip")) $name = substr($file, 0, -4);
+				elseif (str_ends_with(strtolower($file), ".disabled")) $name = substr($file, 0, -9);
+
+				$desc = "Local " . ($type === 'shaderpacks' ? 'Shader' : 'Resource') . " Pack";
+				$iconPath = null;
+
+				// Try to extract pack.mcmeta for resource packs
+				if ($type === 'resourcepacks') {
+					if ($isZip && class_exists('ZipArchive')) {
+						$zip = new \ZipArchive();
+						if ($zip->open($filePath) === true) {
+							$mcmeta = $zip->getFromName("pack.mcmeta");
+							if ($mcmeta) {
+								$mdata = @json_decode($mcmeta, true);
+								if (isset($mdata["pack"]["description"])) {
+									$desc = is_string($mdata["pack"]["description"]) ? $mdata["pack"]["description"] : "Description found.";
+								}
+							}
+							$zip->close();
+						}
+					} elseif ($isDir && file_exists($filePath . "/pack.mcmeta")) {
+						$mcmeta = @file_get_contents($filePath . "/pack.mcmeta");
+						if ($mcmeta) {
+							$mdata = @json_decode($mcmeta, true);
+							if (isset($mdata["pack"]["description"])) {
+								$desc = is_string($mdata["pack"]["description"]) ? $mdata["pack"]["description"] : "Description found.";
+							}
+						}
+					}
+				}
+
+				// Try to extract pack.png for icons
+				if ($type === 'resourcepacks' || $type === 'shaderpacks') {
+					$cacheDir = $this->getAbsolutePath("FoxyClient/cache/icons");
+					if (!is_dir($cacheDir)) @mkdir($cacheDir, 0777, true);
+					$iconFile = $cacheDir . DIRECTORY_SEPARATOR . "local_res_" . md5($filePath) . ".png";
+					
+					if ($isZip && class_exists('ZipArchive')) {
+						if (!file_exists($iconFile)) {
+							$zip = new \ZipArchive();
+							if ($zip->open($filePath) === true) {
+								$iconData = $zip->getFromName("pack.png");
+								if ($iconData) {
+									@file_put_contents($iconFile, $iconData);
+									$iconPath = $iconFile;
+								}
+								$zip->close();
+							}
+						} else {
+							$iconPath = $iconFile;
+						}
+					} elseif ($isDir && file_exists($filePath . DIRECTORY_SEPARATOR . "pack.png")) {
+						$iconPath = $filePath . DIRECTORY_SEPARATOR . "pack.png";
+					}
+				}
+
+				$results[] = [
+					"id" => $file,
+					"name" => $name,
+					"version" => "Local",
+					"author" => "Unknown",
+					"description" => $desc,
+					"icon_path" => $iconPath,
+					"enabled" => !str_ends_with($file, ".disabled"),
+					"path" => $filePath
+				];
+			}
 		}
 
 		$this->localMods = $results;
@@ -14127,112 +14163,175 @@ class FoxyClient
 		// Sub-Tab Alpha (Fade In)
 		$subTabAlpha = min(1.0, (microtime(true) - $this->subTabFadeStart) / 0.25);
 
-		$this->drawPageHeader("MODS BROWSER", "Explore and install community mods or modpacks seamlessly.");
+		$this->drawPageHeader("EXPLORE", "Explore and install community content seamlessly.");
 		
-		$this->renderSubTabs(["INSTALLED MODS", "MODS", "MODPACKS", "INSTALLED MODPACKS"], $this->modpackSubTab, 3000);
+		$tabs = ["MODS", "SHADERS", "RESOURCE PACKS", "MODPACKS", "INST. MODS", "INST. SHADERS", "INST. RES. PACKS", "INST. MODPACKS"];
+		
+		// Dropdown Selector (Lunar Style)
+		$curTabName = $tabs[$this->modpackSubTab] ?? "MODS";
+		$selW = $this->getTextWidth($curTabName, 3000) + 40;
+		$selX = self::PAD;
+		$selY = self::HEADER_H + 10;
+		$selH = 36;
+		
+		$isHover = $this->mouseX >= self::SIDEBAR_W + $selX && $this->mouseX <= self::SIDEBAR_W + $selX + $selW &&
+				   $this->mouseY >= self::TITLEBAR_H + $selY && $this->mouseY <= self::TITLEBAR_H + $selY + $selH;
+		
+		$selBg = $this->explorerSubTabDropdownOpen ? $this->colors["primary"] : ($isHover ? $this->colors["button_hover"] : $this->colors["button"]);
+		$this->drawRoundedRect($selX, $selY, $selW, $selH, 8, $selBg);
+		$tc = $this->explorerSubTabDropdownOpen ? [1,1,1] : $this->colors["text"];
+		$this->renderText($curTabName, $selX + 12, $selY + 24, $tc, 3000);
+		$this->renderIcon($this->explorerSubTabDropdownOpen ? 0xe5c7 : 0xe5c5, $selX + $selW - 24, $selY + 24, $tc, 20);
+		
+		$this->explorerSubTabSelectorRect = [$selX, $selY, $selW, $selH];
 
-		// Determine dynamic placeholder based on sub-tab
-		$placeholder = "Search Modrinth...";
-		if ($this->modpackSubTab === 0) $placeholder = "Search installed mods...";
-		elseif ($this->modpackSubTab === 2) $placeholder = "Search modpacks...";
-		elseif ($this->modpackSubTab === 3) $placeholder = "Search installed packs...";
-
+		// --- Search Bar Positioning (Lunar Style: Right Aligned) ---
 		$searchW = 300;
 		$searchX = $cw - self::PAD - $searchW;
-		$this->renderSearchBar($searchX, 15, $searchW, 40, $this->modSearchQuery, $this->modSearchFocus, $placeholder);
+		$searchY = self::HEADER_H + 8;
+		$placeholder = "Search " . strtolower($curTabName) . "...";
+		if ($this->modpackSubTab >= 4) $placeholder = "Search installed...";
+		
+		$this->renderSearchBar($searchX, $searchY, $searchW, 40, $this->modSearchQuery, $this->modSearchFocus, $placeholder);
 
-		if ($this->modpackSubTab === 0) {
-			if ($this->localMods === null && !$this->isScanningLocalMods) {
-				$this->scanLocalMods();
+		if ($this->modpackSubTab >= 4) {
+			$type = 'mods';
+			if ($this->modpackSubTab === 5) $type = 'shaders';
+			elseif ($this->modpackSubTab === 6) $type = 'textures';
+			elseif ($this->modpackSubTab === 7) $type = 'packs';
+			
+			$this->renderManagedContentTab($type, self::HEADER_H + 54, $subTabAlpha);
+		} else {
+			// Filter Pills Data (Only show for Discovery tabs 0-3)
+			$cleanVer = str_replace(
+				["Fabric ", "Forge ", "Quilt ", "NeoForge "],
+				"",
+				$this->config["minecraft_version"] ?? "1.20.1",
+			);
+			$loader = $this->config["loader"] ?? "fabric";
+
+			// Define pills: [label, filterKey, displayValue]
+			// Helper for multi-select labels
+			$getFilterLabel = function($arr, $labels = null, $default = "All") {
+				if (empty($arr)) return $default;
+				if (count($arr) === 1) {
+					$val = reset($arr);
+					return $labels[$val] ?? ucfirst($val);
+				}
+				return count($arr) . " Selected";
+			};
+
+			if ($this->modpackSubTab === 1) { // SHADERS
+				$pills = [
+					["Category", "shader_category", $getFilterLabel($this->shaderFilterCategories)],
+					["Feature", "shader_feature", $getFilterLabel($this->shaderFilterFeatures)],
+					["Performance", "shader_perf", $getFilterLabel($this->shaderFilterPerformance)],
+					["Loader", "shader_loader", $getFilterLabel($this->shaderFilterLoaders)],
+					["Version", "version", $getFilterLabel($this->modsFilterVersions, null, $cleanVer)],
+				];
+			} elseif ($this->modpackSubTab === 2) { // RESOURCE PACKS
+				$pills = [
+					["Category", "res_category", $getFilterLabel($this->resFilterCategories)],
+					["Feature", "res_feature", $getFilterLabel($this->resFilterFeatures)],
+					["Resolution", "res_resolution", $getFilterLabel($this->resFilterResolutions)],
+					["Version", "version", $getFilterLabel($this->modsFilterVersions, null, $cleanVer)],
+				];
+			} elseif ($this->modpackSubTab === 3) { // MODPACKS
+				$pills = [
+					["Category", "modpack_category", $getFilterLabel($this->modpackFilterCategories)],
+					["Env", "modpack_env", $getFilterLabel($this->modpackFilterEnvs)],
+					["Loader", "modpack_loader", $getFilterLabel($this->modpackFilterLoaders)],
+					["Version", "version", $getFilterLabel($this->modsFilterVersions, null, $cleanVer)],
+				];
+			} else {
+				$catLabel = $getFilterLabel($this->modsFilterCategories, $this->modsCategoryLabels);
+				$loaderLabel = $getFilterLabel($this->modsFilterLoaders, $this->modsLoaderLabels, ucfirst($loader));
+				$envLabel = $getFilterLabel($this->modsFilterEnvs);
+				$verLabel = $getFilterLabel($this->modsFilterVersions, null, $cleanVer);
+
+				$pills = [
+					["Category", "category", $catLabel],
+					["Loader", "loader", $loaderLabel],
+					["Env", "env", $envLabel],
+					["Version", "version", $verLabel],
+				];
 			}
-			$this->renderManagedModsTab(self::HEADER_H + self::TAB_H, $subTabAlpha);
-			return;
+
+			// Calculate total width to right-align next to search bar
+			$pillGap = 6;
+			$pillWidths = [];
+			$totalW = 0;
+			foreach ($pills as $pill) {
+				$display = $pill[0] . ": " . $pill[2];
+				$tw = $this->getTextWidth($display, 3000) + 36;
+				$pillWidths[] = $tw;
+				$totalW += $tw;
+			}
+			$totalW += ($pillGap * (count($pills) - 1));
+
+			// Rendering pills
+			$pillH = 24;
+			$pillY = self::HEADER_H + 16; 
+			$pillX = $searchX - 15 - $totalW; 
+
+			$this->modsFilterPillRects = []; 
+			foreach ($pills as $pi => $pill) {
+				$key = $pill[1];
+				$display = $pill[0] . ": " . $pill[2];
+				$tw = $pillWidths[$pi];
+				$isOpen = $this->modsFilterDropdown === $key;
+				
+				$propMap = [
+					"category" => "modsFilterCategories",
+					"loader" => "modsFilterLoaders",
+					"env" => "modsFilterEnvs",
+					"version" => "modsFilterVersions",
+					"shader_category" => "shaderFilterCategories",
+					"shader_feature" => "shaderFilterFeatures",
+					"shader_perf" => "shaderFilterPerformance",
+					"shader_loader" => "shaderFilterLoaders",
+					"modpack_category" => "modpackFilterCategories",
+					"modpack_env" => "modpackFilterEnvs",
+					"modpack_loader" => "modpackFilterLoaders",
+					"res_category" => "resFilterCategories",
+					"res_feature" => "resFilterFeatures",
+					"res_resolution" => "resFilterResolutions",
+				];
+				$prop = $propMap[$key] ?? "";
+				$isActive = $prop !== "" && !empty($this->$prop);
+
+				// Pill background
+				$bg = $isOpen ? $this->colors["primary"] : ($isActive ? $this->colors["pill_active"] : $this->colors["pill_bg"]);
+				$this->drawRoundedRect($pillX, $pillY, $tw, $pillH, 6, $bg, $isOpen ? null : [1, 1, 1, 0.05]);
+
+				// Pill text
+				$tc = $isOpen ? [1, 1, 1] : ($isActive ? $this->colors["primary"] : $this->colors["text_dim"]);
+				$this->renderText($display, $pillX + 10, $pillY + 16, $tc, 3000, 0);
+
+				// Down arrow
+				$arrowX = $pillX + $tw - 20;
+				$this->renderIcon($isOpen ? 0xe316 : 0xe313, $arrowX, $pillY + 16, $tc, 18);
+
+				$this->modsFilterPillRects[$key] = [$pillX, $pillY, $tw, $pillH];
+				$pillX += $tw + $pillGap;
+			}
+
+			$y = self::HEADER_H + 54;
+			$usableH = $this->height - self::TITLEBAR_H;
+			$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
+			$h = $usableH - $footerH - $y;
+
+			// Trigger discovery if needed
+			if ($this->lastModrinthQuery === null && !$this->isSearchingModrinth) {
+				$this->searchModrinth("");
+			}
+
+			$this->renderModList();
 		}
-
-		if ($this->modpackSubTab === 3) {
-			$this->renderInstalledModpacks(self::HEADER_H + self::TAB_H, $subTabAlpha);
-			return;
-		}
-
-		// Filter Pills Data (Only show for Discovery tabs 1 & 2)
-		$cleanVer = str_replace(
-			["Fabric ", "Forge ", "Quilt ", "NeoForge "],
-			"",
-			$this->config["minecraft_version"] ?? "1.20.1",
-		);
-		$loader = $this->config["loader"] ?? "fabric";
-
-		// Define pills: [label, filterKey, displayValue]
-		$catLabel = $this->modsFilterCategory ? ($this->modsCategoryLabels[$this->modsFilterCategory] ?? $this->modsFilterCategory) : "All";
-		$loaderLabel = $this->modsFilterLoader ? ($this->modsLoaderLabels[$this->modsFilterLoader] ?? ucfirst($this->modsFilterLoader)) : ucfirst($loader);
-		$envLabel = $this->modsFilterEnv ? ucfirst($this->modsFilterEnv) : "All";
-		$verLabel = $cleanVer;
-
-		$pills = [
-			["Category", "category", $catLabel],
-			["Loader", "loader", $loaderLabel],
-			["Env", "env", $envLabel],
-			["Version", "version", $verLabel],
-		];
-
-		// Calculate total width to right-align next to search bar
-		$pillGap = 6;
-		$pillWidths = [];
-		$totalW = 0;
-		foreach ($pills as $pill) {
-			$display = $pill[0] . ": " . $pill[2];
-			$tw = $this->getTextWidth($display, 3000) + 20;
-			$pillWidths[] = $tw;
-			$totalW += $tw;
-		}
-		$totalW += ($pillGap * (count($pills) - 1));
-
-		// Rendering pills
-		$pillH = 24;
-		$pillY = 23; 
-		$pillX = $searchX - 15 - $totalW; 
-
-		$this->modsFilterPillRects = []; 
-		foreach ($pills as $pi => $pill) {
-			$key = $pill[1];
-			$display = $pill[0] . ": " . $pill[2];
-			$tw = $pillWidths[$pi];
-			$isOpen = $this->modsFilterDropdown === $key;
-			$isActive = ($key === "category" && $this->modsFilterCategory !== "") ||
-						($key === "loader" && $this->modsFilterLoader !== "") ||
-						($key === "env" && $this->modsFilterEnv !== "");
-
-			// Pill background
-			$bg = $isOpen ? $this->colors["primary"] : ($isActive ? $this->colors["pill_active"] : $this->colors["pill_bg"]);
-			$this->drawRoundedRect($pillX, $pillY, $tw, $pillH, 6, $bg, $isOpen ? null : [1, 1, 1, 0.05]);
-
-			// Pill text
-			$tc = $isOpen ? [1, 1, 1] : ($isActive ? $this->colors["primary"] : $this->colors["text_dim"]);
-			$this->renderText($display, $pillX + 10, $pillY + 16, $tc, 3000, 0.4);
-
-			// Down arrow
-			$arrowX = $pillX + $tw - 12;
-			$this->renderText($isOpen ? "▴" : "▾", $arrowX, $pillY + 16, $tc, 3000);
-
-			$this->modsFilterPillRects[$key] = [$pillX, $pillY, $tw, $pillH];
-			$pillX += $tw + $pillGap;
-		}
-
-		$y = self::HEADER_H + self::TAB_H;
-		$usableH = $this->height - self::TITLEBAR_H;
-		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
-		$h = $usableH - $footerH - $y;
-
-		// Trigger discovery if needed
-		if ($this->lastModrinthQuery === null && !$this->isSearchingModrinth) {
-			$this->searchModrinth("");
-		}
-
-		$this->renderModList();
 
 		// Install progress overlay (Always show if installing a modpack)
 		if ($this->isInstallingModpack || (isset($this->modpackInstallProgress) && $this->modpackInstallProgress !== "")) {
-			$progY = self::HEADER_H + self::TAB_H;
+			$progY = self::HEADER_H + 54;
 			$isDone = !$this->isInstallingModpack && !str_starts_with($this->modpackInstallProgress, "Error");
 			$isErr = str_starts_with($this->modpackInstallProgress, "Error");
 			
@@ -14261,13 +14360,18 @@ class FoxyClient
 			);
 
 			if ($isDone) {
-				$this->renderText("CHECK", $cw - self::PAD - 25, $progY + 28, $this->colors["status_done"], 1000);
+				$this->renderIcon(0xe5ca, $cw - self::PAD - 28, $progY + 20, $this->colors["status_done"], 24);
 			}
 		}
 
 		if ($this->modsFilterDropdown !== "" || $this->modsFilterDropdownAnim > 0.01) {
 			$this->renderModsFilterDropdown();
 		}
+
+		if ($this->explorerSubTabDropdownOpen || $this->explorerSubTabDropdownAnim > 0.01) {
+			$this->renderExplorerSubTabDropdown();
+		}
+
 		if ($this->modsVerDropdownOpen || $this->modsVerDropdownAnim > 0.01) {
 			$this->renderModsVersionDropdown();
 		}
@@ -14296,52 +14400,199 @@ class FoxyClient
 
 		// Build items list
 		$items = [];
-		$selected = "";
+		$selectedArr = [];
+		
+		$propMap = [
+			"category" => "modsFilterCategories",
+			"loader" => "modsFilterLoaders",
+			"env" => "modsFilterEnvs",
+			"version" => "modsFilterVersions",
+			"shader_category" => "shaderFilterCategories",
+			"shader_feature" => "shaderFilterFeatures",
+			"shader_perf" => "shaderFilterPerformance",
+			"shader_loader" => "shaderFilterLoaders",
+			"modpack_category" => "modpackFilterCategories",
+			"modpack_env" => "modpackFilterEnvs",
+			"modpack_loader" => "modpackFilterLoaders",
+			"res_category" => "resFilterCategories",
+			"res_feature" => "resFilterFeatures",
+			"res_resolution" => "resFilterResolutions",
+		];
+		$prop = $propMap[$key] ?? "";
+		if ($prop !== "") $selectedArr = $this->$prop;
+
 		if ($key === "category") {
-			$items[] = ["", $this->t("all_categories")];
-			foreach ($this->modsCategories as $cat) {
-				$items[] = [$cat, $this->t($cat)];
-			}
-			$selected = $this->modsFilterCategory;
+			$items = [
+				["", "All Categories", 0xe913],
+				["adventure", "Adventure", 0xe8b6],
+				["cursed", "Cursed", 0xef4b],
+				["decoration", "Decoration", 0xe88a],
+				["economy", "Economy", 0xef63],
+				["equipment", "Equipment", 0xea0f],
+				["food", "Food", 0xea10],
+				["game-mechanics", "Game Mechanics", 0xe1bd],
+				["library", "Library", 0xe8a1],
+				["magic", "Magic", 0xe3e0],
+				["management", "Management", 0xe8b8],
+				["minigame", "Minigame", 0xe8ac],
+				["mobs", "Mobs", 0xe7fd],
+				["optimization", "Optimization", 0xe3e7],
+				["social", "Social", 0xe0b7],
+				["storage", "Storage", 0xe1db],
+				["technology", "Technology", 0xe30c],
+				["transportation", "Transportation", 0xe531],
+				["utility", "Utility", 0xe869],
+				["world-gen", "World Generation", 0xe894],
+			];
+			$ddW = 240;
 		} elseif ($key === "loader") {
-			$items[] = ["", $this->t("all_loaders")];
-			foreach ($this->modsLoaderList as $ld) {
-				$items[] = [$ld, $this->modsLoaderLabels[$ld] ?? ucfirst($ld)];
-			}
-			$selected = $this->modsFilterLoader;
+			$items = [
+				["", "All Loaders"],
+				["fabric", "Fabric", 0xef62, [0.73, 0.62, 0.47]],
+				["forge", "Forge", 0xea0f, [0.45, 0.53, 0.85]],
+				["neoforge", "NeoForge", 0xe3e7, [0.95, 0.55, 0.2]],
+				["quilt", "Quilt", 0xe40a, [0.75, 0.45, 0.75]],
+			];
+			$ddW = 180;
 		} elseif ($key === "env") {
-			$items = [["", $this->t("all_envs")], ["client", $this->t("client")], ["server", $this->t("server")]];
-			$selected = $this->modsFilterEnv;
-			$ddW = 180; // Slightly wider for translations
+			$items = [
+				["", "All Environments"],
+				["client", "Client", 0xe30a],
+				["server", "Server", 0xf02e],
+			];
+			$ddW = 180;
+		} elseif ($key === "modpack_category") {
+			$items = [
+				["", "All Categories", 0xe87a],
+				["adventure", "Adventure", 0xe87a],
+				["challenging", "Challenging", 0xe6e1],
+				["combat", "Combat", 0xe3e3],
+				["kitchen-sink", "Kitchen Sink", 0xeb43],
+				["lightweight", "Lightweight", 0xeb4a],
+				["magic", "Magic", 0xe3e0],
+				["multiplayer", "Multiplayer", 0xe7ef],
+				["optimization", "Optimization", 0xeb3f],
+				["quests", "Quests", 0xe8b0],
+				["technology", "Technology", 0xe30c],
+			];
+			$ddW = 240;
+		} elseif ($key === "modpack_env") {
+			$items = [
+				["", "All Environments"],
+				["client", "Client", 0xe30a],
+				["server", "Server", 0xf02e],
+			];
+			$ddW = 200;
+		} elseif ($key === "modpack_loader") {
+			$items = [
+				["", "All Loaders"],
+				["fabric", "Fabric", 0xef62, [0.73, 0.62, 0.47]],
+				["forge", "Forge", 0xea0f, [0.45, 0.53, 0.85]],
+				["neoforge", "NeoForge", 0xe3e7, [0.95, 0.55, 0.2]],
+				["quilt", "Quilt", 0xe40a, [0.75, 0.45, 0.75]],
+			];
+			$ddW = 180;
+		} elseif ($key === "res_category") {
+			$items = [
+				["", "All Categories", 0xe40a],
+				["combat", "Combat", 0xe3e3],
+				["cursed", "Cursed", 0xef4b],
+				["decoration", "Decoration", 0xeb45],
+				["modded", "Modded", 0xe8b1],
+				["realistic", "Realistic", 0xe3f4],
+				["simplistic", "Simplistic", 0xe3c7],
+				["themed", "Themed", 0xe40a],
+				["tweaks", "Tweaks", 0xe1bd],
+				["utility", "Utility", 0xe869],
+				["vanilla-like", "Vanilla Like", 0xeb4a],
+			];
+			$ddW = 240;
+		} elseif ($key === "res_feature") {
+			$items = [
+				["", "All Features", 0xe1bd],
+				["audio", "Audio", 0xe050],
+				["blocks", "Blocks", 0xf720],
+				["core-shaders", "Core Shaders", 0xe3f1],
+				["entities", "Entities", 0xe853],
+				["environment", "Environment", 0xe3f7],
+				["equipment", "Equipment", 0xea0f],
+				["fonts", "Fonts", 0xe23a],
+				["gui", "GUI", 0xe8b8],
+				["items", "Items", 0xe8b1],
+				["locale", "Locale", 0xe894],
+				["models", "Models", 0xeb4d],
+			];
+			$ddW = 240;
+		} elseif ($key === "res_resolution") {
+			$items = [
+				["", "All Resolutions"],
+				["8x", "8x or lower"],
+				["16x", "16x"],
+				["32x", "32x"],
+				["48x", "48x"],
+				["64x", "64x"],
+				["128x", "128x"],
+				["256x", "256x"],
+				["512x", "512x or higher"],
+			];
+			$ddW = 200;
 		} elseif ($key === "version") {
 			$releaseVersions = [];
-			foreach ($this->versions as $v) {
-				if (($v["type"] ?? "") === "release") {
-					$releaseVersions[] = $v["id"];
-				}
-			}
-			if (empty($releaseVersions)) {
-				$releaseVersions = [$this->config["minecraft_version"]];
-			}
-			usort($releaseVersions, function ($a, $b) {
-				return version_compare($b, $a);
-			});
-			foreach ($releaseVersions as $ver) {
-				$items[] = [$ver, $ver];
-			}
-			$selected = str_replace(
-				["Fabric ", "Forge ", "Quilt ", "NeoForge "],
-				"",
-				$this->config["minecraft_version"] ?? "1.20.1",
-			);
+			foreach ($this->versions as $v) if (($v["type"] ?? "") === "release") $releaseVersions[] = $v["id"];
+			if (empty($releaseVersions)) $releaseVersions = [$this->config["minecraft_version"]];
+			usort($releaseVersions, fn($a, $b) => version_compare($b, $a));
+			foreach ($releaseVersions as $ver) $items[] = [$ver, $ver];
+			$ddW = 160;
+		} elseif ($key === "shader_category") {
+			$items = [
+				["", "All Categories", 0xe40a],
+				["cartoon", "Cartoon", 0xe3f1],
+				["cursed", "Cursed", 0xef4b],
+				["fantasy", "Fantasy", 0xe3e0],
+				["realistic", "Realistic", 0xe3f4],
+				["semi-realistic", "Semi Realistic", 0xeb45],
+				["vanilla-like", "Vanilla Like", 0xeb4a],
+			];
+			$ddW = 220;
+		} elseif ($key === "shader_feature") {
+			$items = [
+				["", "All Features", 0xe1bd],
+				["atmosphere", "Atmosphere", 0xe3f7],
+				["bloom", "Bloom", 0xe3f1],
+				["colored-lighting", "Colored Lighting", 0xe40a],
+				["foliage", "Foliage", 0xeb4a],
+				["path-tracing", "Path Tracing", 0xe3e3],
+				["pbr", "PBR", 0xeb3f],
+				["reflections", "Reflections", 0xe3f4],
+				["shadows", "Shadows", 0xeb45],
+			];
+			$ddW = 220;
+		} elseif ($key === "shader_perf") {
+			$items = [
+				["", "Performance impact", 0xe3e7],
+				["potato", "Potato", 0xeb3f],
+				["low", "Low", 0xeb4a],
+				["medium", "Medium", 0xe3e0],
+				["high", "High", 0xe3e7],
+				["screenshot", "Screenshot", 0xe3f4],
+			];
+			$ddW = 220;
+		} elseif ($key === "shader_loader") {
+			$items = [
+				["", "All Loaders"],
+				["iris", "Iris", 0xe3e3, [0.3, 0.8, 0.4]],
+				["optifine", "OptiFine", 0xe3e7, [0.4, 0.5, 0.9]],
+				["vanilla", "Vanilla Shader", 0xe88a],
+			];
+			$ddW = 220;
 		}
 
 		if (empty($items)) return;
 
-		$itemH = 30;
-		$maxVisible = min(10, count($items));
+		$itemH = 34;
+		$maxVisible = min(12, count($items));
 		$fullH = $maxVisible * $itemH;
-		$ddH = $fullH * $this->modsFilterDropdownAnim;
+		$ddH = $fullH * $alpha;
 
 		// Clamp scroll
 		$totalH = count($items) * $itemH;
@@ -14349,7 +14600,7 @@ class FoxyClient
 		$this->modsFilterScrollTarget = max(0, min($this->modsFilterScrollTarget, $maxScroll));
 		$this->modsFilterScrollOffset += ($this->modsFilterScrollTarget - $this->modsFilterScrollOffset) * 0.3;
 
-		// Scissor clip
+		// Scissor
 		$gl->glEnable(0x0c11);
 		$gl->glScissor(
 			self::SIDEBAR_W + $ddX,
@@ -14358,55 +14609,55 @@ class FoxyClient
 			$ddH,
 		);
 
-		// Panel background (High-Fidelity Glass)
+		// Dropdown background
 		$bgColor = $this->colors["dropdown_bg"];
-		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $this->modsFilterDropdownAnim], [1, 1, 1, 0.1 * $this->modsFilterDropdownAnim]);
-		if ($this->modsFilterDropdownAnim > 0.5) $this->drawRect($ddX, $ddY, $ddW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $this->modsFilterDropdownAnim]);
+		$this->drawRoundedRect($ddX, $ddY, $ddW, $ddH, 10, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.12 * $alpha]);
 
-		// Render items
-		$iy = $ddY - $this->modsFilterScrollOffset;
 		foreach ($items as $idx => $item) {
-			$itemY = $iy + $idx * $itemH;
-			if ($itemY + $itemH < $ddY || $itemY > $ddY + $fullH) {
-				continue;
+			$itemY = $ddY + $idx * $itemH - $this->modsFilterScrollOffset;
+			if ($itemY + $itemH < $ddY || $itemY > $ddY + $ddH) continue;
+
+			$isSelected = in_array($item[0], $selectedArr) || ($item[0] === "" && empty($selectedArr));
+			
+			$mx = $this->mouseX - self::SIDEBAR_W;
+			$my = $this->mouseY - self::TITLEBAR_H;
+			$isHover = $mx >= $ddX && $mx <= $ddX + $ddW && $my >= $itemY && $my <= $itemY + $itemH;
+
+			if ($isHover) {
+				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, [1, 1, 1, 0.1 * $alpha]);
 			}
 
-			$isSelected = $item[0] === $selected;
-			$isHover = $this->modsFilterHoverIdx === $idx;
-
-			if ($isSelected) {
-				// Premium Selection Capsule with Glow
-				$pc = $this->colors["primary"];
-				$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, $itemH - 4, 8, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
-				$this->drawGlow($ddX + 6, $itemY + 2, $ddW - 12, $itemH - 4, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
-			} elseif ($isHover) {
-				// Soft Glassy Hover Capsule
-				$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
-				$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, $itemH - 4, 8, $sh);
+			$tc = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			
+			// Support icons/textures in dropdown items
+			$loaderTex = $this->verIcons[$item[0]] ?? null;
+			if ($loaderTex) {
+				$this->drawTexture($loaderTex, $ddX + 16, $itemY + 8, 18, 18, [1, 1, 1, $alpha]);
+				$this->renderText($item[1], $ddX + 44, $itemY + 21, $tc, 3000, 0);
+			} elseif (isset($item[2]) && $item[2] !== 0) {
+				$ic = $isSelected ? [1, 1, 1] : ($item[3] ?? $tc);
+				$this->renderIcon($item[2], $ddX + 16, $itemY + 21, $ic, 18);
+				$this->renderText($item[1], $ddX + 44, $itemY + 21, $tc, 3000, 0);
+			} else {
+				$this->renderText($item[1], $ddX + 24, $itemY + 21, $tc, 3000, 0);
 			}
-
-			$itc = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
-			$this->renderText($item[1], $ddX + 16, $itemY + 22, $itc, 1000, $alpha);
-		}
-
-		// Premium Capsule Scrollbar (Inside)
-		if ($totalH > $fullH) {
-			$barW = 4;
-			$barX = $ddX + $ddW - 8;
 			
-			// Glassy Track
-			$this->drawRoundedRect($barX, $ddY, $barW, $fullH, 2, [1, 1, 1, 0.03 * $alpha], [1, 1, 1, 0.05 * $alpha]);
-			
-			// Primary Capsule Thumb
-			$barH = max(20, ($fullH / $totalH) * $fullH);
-			$barY = $ddY + ($this->modsFilterScrollOffset / $maxScroll) * ($fullH - $barH);
-			
-			$pc = $this->colors["primary"];
-			$this->drawRoundedRect($barX, $barY, $barW, $barH, 2, [$pc[0], $pc[1], $pc[2], 0.7 * $alpha]);
-			$this->drawGlow($barX, $barY, $barW, $barH, 8, [$pc[0], $pc[1], $pc[2], 0.15 * $alpha]);
+			if ($isSelected && $item[0] !== "") {
+				$this->renderIcon(0xe5ca, $ddX + $ddW - 28, $itemY + 21, [1, 1, 1, $alpha], 16);
+			}
 		}
 
 		$gl->glDisable(0x0c11);
+
+		// Premium Capsule Scrollbar (Inside)
+		if ($totalH > $fullH) {
+			$barW = 3;
+			$barX = $ddX + $ddW - 6;
+			$barTrackH = $ddH - 12;
+			$barH = ($fullH / $totalH) * $barTrackH;
+			$barY = $ddY + 6 + ($this->modsFilterScrollOffset / $totalH) * $barTrackH;
+			$this->drawRoundedRect($barX, $barY, $barW, $barH, 2, [1, 1, 1, 0.4 * $alpha]);
+		}
 	}
 
 	private function renderModsVersionDropdown()
@@ -14732,7 +14983,7 @@ class FoxyClient
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		$usableH = $this->height - self::TITLEBAR_H;
-		$y = self::HEADER_H + self::TAB_H;
+		$y = self::HEADER_H + 54;
 
 		if ($this->currentPage === self::PAGE_MODS && ($this->modpackSubTab === 1 || $this->modpackSubTab === 2) && ($this->isInstallingModpack || $this->modpackInstallProgress !== "")) {
 			$y += 46;
@@ -14745,16 +14996,16 @@ class FoxyClient
 
 		$scissorY = $effectiveFooterH;
 
-		if ($this->currentPage === self::PAGE_MODS) {
+		if ($this->currentPage === self::PAGE_MODS && $this->modpackSubTab < 4) {
 			$alpha = $this->modrinthAnim;
 			$slideY = (1.0 - $alpha) * 20;
 
 			if ($this->isSearchingModrinth) {
 				// Premium Skeleton Loading Grid (High Visibility)
-				$pulsingAlpha = 0.4 + 0.3 * sin(microtime(true) * 6.0);
+				$pulsingAlpha = (0.4 + 0.3 * sin(microtime(true) * 6.0)) * $alpha;
 				
 				$gridX = self::PAD;
-				$gridY = $y + 10;
+				$gridY = $y + 10 + $slideY;
 				$cardW = ($cw - self::PAD * 3) / 2;
 				$cardH = 110;
 				$gap = 12;
@@ -14835,9 +15086,13 @@ class FoxyClient
 			$this->currentPage === self::PAGE_MODS &&
 			$this->modrinthTotalHits > 20
 		) {
-			$pgY = $usableH - $effectiveFooterH - 45;
+			$pgY = $usableH - $effectiveFooterH - 50;
 			$pgW = 200;
 			$pgX = ($cw - $pgW) / 2;
+			
+			// Glassy Pagination Bar Background
+			$this->drawRoundedRect($pgX - 20, $pgY - 6, $pgW + 40, 42, 12, [$this->colors["overlay_bg"][0], $this->colors["overlay_bg"][1], $this->colors["overlay_bg"][2], 0.95], [1, 1, 1, 0.1]);
+
 			$totalPages = ceil($this->modrinthTotalHits / 20);
 			$displayPage =
 				$this->modPageDebounceTimer > 0
@@ -14860,14 +15115,9 @@ class FoxyClient
 						: $this->colors["card_hover"])
 					: $this->colors["tab_bg"];
 			// Prev Button (Glassy Capsule)
+			// Prev Button (Glassy Capsule)
 			$this->drawRoundedRect($pgX, $pgY, 60, 30, 6, $prevCol);
-			$this->renderText(
-				"<",
-				$pgX + 23,
-				$pgY + 20,
-				$this->colors["text"],
-				1000
-			);
+			$this->renderIcon(0xe5c4, $pgX + 18, $pgY + 19, $this->colors["text"], 24);
 
 			// Page Info
 			$pgText = "Page $curPage / $totalPages";
@@ -14896,26 +15146,27 @@ class FoxyClient
 					: $this->colors["tab_bg"];
 			// Next Button (Glassy Capsule)
 			$this->drawRoundedRect($nextX, $pgY, 60, 30, 6, $nextCol);
-			$this->renderText(
-				">",
-				$nextX + 23,
-				$pgY + 20,
-				$this->colors["text"],
-				1000
-			);
+			$this->renderIcon(0xe5c8, $nextX + 18, $pgY + 19, $this->colors["text"], 24);
 		}
 
 		$this->renderScrollbar($y, $listH);
 	}
 
-	private function renderManagedModsTab($y, $alpha)
+	private function renderManagedContentTab($type, $y, $alpha)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		$listH = $this->height - self::TITLEBAR_H - $y - (($this->getFooterVisibility() ? self::FOOTER_H : 0));
 		
-		if ($this->localMods === null) {
-			$this->scanLocalMods();
+		if ($type === 'packs') {
+			$this->renderInstalledModpacks($y, $alpha);
+			return;
 		}
+
+		if ($this->localMods === null && !$this->isScanningLocalMods) {
+			$this->scanLocalContent();
+		}
+		
+		if ($this->localMods === null) $this->localMods = [];
 
 		$query = strtolower(trim($this->modSearchQuery));
 		$filteredMods = [];
@@ -14928,10 +15179,9 @@ class FoxyClient
 
 		if (empty($filteredMods)) {
 			if ($query !== "") {
-				$this->renderText("NO MATCHING MODS FOUND", ($cw - 200) / 2, $y + 100, $this->colors["text_dim"], 2000, $alpha);
+				$this->renderText("NO MATCHING " . strtoupper($type) . " FOUND", ($cw - 300) / 2, $y + 100, $this->colors["text_dim"], 2000, $alpha);
 			} else {
-				$this->renderText("NO LOCAL MODS FOUND", ($cw - 200) / 2, $y + 100, $this->colors["text_dim"], 2000, $alpha);
-				$this->renderText("Make sure your mods are in games/mods/", ($cw - 200) / 2, $y + 125, $this->colors["text_dim"], 1000, $alpha);
+				$this->renderText("NO LOCAL " . strtoupper($type) . " FOUND", ($cw - 300) / 2, $y + 100, $this->colors["text_dim"], 2000, $alpha);
 			}
 			return;
 		}
@@ -14960,7 +15210,7 @@ class FoxyClient
 
 		$gl->glDisable(0x0c11);
 
-		$totalRows = ceil(count($this->localMods) / 2);
+		$totalRows = ceil(count($filteredMods) / 2);
 		$this->maxScroll = max(0, $totalRows * ($cardH + $gap) - $listH + 20);
 		$this->renderScrollbar($y, $listH);
 	}
@@ -14995,8 +15245,8 @@ class FoxyClient
 		// Status Badge
 		$statusLabel = $mod["enabled"] ? "ENABLED" : "DISABLED";
 		$statusColor = $mod["enabled"] ? $this->colors["status_active"] : $this->colors["text_dim"];
-		$this->drawRoundedRect($tx, $y + 68, 70, 18, 4, [$statusColor[0], $statusColor[1], $statusColor[2], 0.2 * $alpha]);
-		$this->renderText($statusLabel, $tx + 8, $y + 83, $statusColor, 3000, $alpha);
+		$this->drawRoundedRect($tx, $y + 68, 80, 20, 4, [$statusColor[0], $statusColor[1], $statusColor[2], 0.2 * $alpha]);
+		$this->renderText($statusLabel, $tx + 10, $y + 82, $statusColor, 3000, $alpha);
 
 		// Description snippet (Scaled down with optimized spacing)
 		$fullDesc = $mod["description"] ?? "No description.";
@@ -15342,7 +15592,7 @@ class FoxyClient
 			32,
 			22,
 			$this->colors["text"],
-			1000,
+			3000,
 		);
 
 		// Window Controls
@@ -15351,24 +15601,16 @@ class FoxyClient
 			? [0.85, 0.25, 0.25]
 			: $this->colors["titlebar_bg"];
 		$this->drawRect($this->width - 46, 0, 46, self::TITLEBAR_H, $clsBg);
-		$gl->glLineWidth(1.5);
-		// Draw thin X icon
-		$ix = $this->width - 28;
-		$iy = 16;
-		$is = 10;
-		$this->drawLine($ix, $iy, $ix + $is, $iy + $is, $this->colors["text"]);
-		$this->drawLine($ix + $is, $iy, $ix, $iy + $is, $this->colors["text"]);
+		// Draw Close icon (0xe5cd)
+		$this->renderIcon(0xe5cd, $this->width - 33, 22, $this->colors["text"]);
 
 		// Minimize
 		$minBg = $this->titleMinHover
 			? $this->colors["card_hover"]
 			: $this->colors["titlebar_bg"];
 		$this->drawRect($this->width - 92, 0, 46, self::TITLEBAR_H, $minBg);
-		// Draw thin _ icon
-		$mx = $this->width - 74;
-		$my = 21;
-		$ms = 10;
-		$this->drawRect($mx, $my, $ms, 1, $this->colors["text"]);
+		// Draw Minimize icon (0xe15b)
+		$this->renderIcon(0xe15b, $this->width - 79, 22, $this->colors["text"]);
 	}
 
 	private function performNativeDrag()
@@ -15383,15 +15625,16 @@ class FoxyClient
 		$gl = $this->opengl32;
 		// Reimplemented Cinematic Animation (Smooth Stagger + Scale)
 		$target = $this->modInfoModalOpen ? 1.0 : 0.0;
-		$this->modInfoAlpha += ($target - $this->modInfoAlpha) * ($this->modInfoModalOpen ? 0.18 : 0.12);
+		$this->modInfoAlpha += ($target - $this->modInfoAlpha) * ($this->modInfoModalOpen ? 0.18 : 0.20);
 		$progress = $this->modInfoAlpha;
 
-		// Refined Staggered Animation: Text fades fully first, then Modal fades
-		$mAlpha = $progress > 0.6 ? 1.0 : ($progress / 0.6);
-		$tAlpha = $progress > 0.6 ? (($progress - 0.6) / 0.4) : 0.0;
+		// Staggered Animation: 0.0 -> 0.3 (Modal), 0.3 -> 1.0 (Content)
+		// On close (1.0 -> 0.0): Content fades out first, then Modal
+		$mAlpha = min(1.0, $progress / 0.3);
+		$tAlpha = max(0.0, ($progress - 0.3) / 0.7);
 		
-		// Scale effect (98% -> 100%)
-		$scale = 0.98 + (0.02 * $progress);
+		// Scale effect follows modal alpha
+		$scale = 0.96 + (0.04 * $mAlpha);
 
 		// Dim background
 		$this->drawRect(0, 0, $this->width, $this->height, [0, 0, 0, 0.6 * $mAlpha]);
@@ -16454,7 +16697,8 @@ class FoxyClient
 			"fabric" => $this->createTextureFromFile(self::DATA_DIR . "/images/fabric.png"),
 			"forge" => $this->createTextureFromFile(self::DATA_DIR . "/images/forge.png"),
 			"optifine" => $this->createTextureFromFile(self::DATA_DIR . "/images/optifine.png"),
-			"quilt" => $this->createTextureFromFile(self::DATA_DIR . "/images/quilt.png")
+			"quilt" => $this->createTextureFromFile(self::DATA_DIR . "/images/quilt.png"),
+			"neoforge" => $this->createTextureFromFile(self::DATA_DIR . "/images/neoforge.png")
 		];
 
 		if ($this->logoTex) {
@@ -17023,6 +17267,7 @@ class FoxyClient
 			$this->assetChannel !== null ||
 			$this->compatChannel !== null ||
 			$this->gameProcess !== null ||
+			$this->isLoadingFonts ||
 			$this->isUpdatingCacert ||
 			$this->isCheckingUiUpdate ||
 			$this->isCheckingCompat ||
@@ -17059,97 +17304,71 @@ class FoxyClient
 		$isPrefetch = false,
 	) {
 		$query = $query ?? $this->modSearchQuery;
-		$currentMC = str_replace(
-			["Fabric ", "Forge ", "Quilt ", "NeoForge "],
-			"",
-			$this->config["minecraft_version"] ?? "1.20.1",
-		);
-		$currentLoader = $this->modsFilterLoader !== "" ? $this->modsFilterLoader : ($this->config["loader"] ?? "fabric");
-		$currentCategory = $this->modsFilterCategory;
-		$currentEnv = $this->modsFilterEnv;
+		
+		// Versions
+		$versions = $this->modsFilterVersions;
+		if (empty($versions)) {
+			$versions = [str_replace(["Fabric ", "Forge ", "Quilt ", "NeoForge "], "", $this->config["minecraft_version"] ?? "1.20.1")];
+		}
 
-		// Detect full context change and reset cache if needed
+		// Loaders
+		$loaders = $this->modsFilterLoaders;
+		if (empty($loaders) && ($this->modpackSubTab === 0 || $this->modpackSubTab === 3)) {
+			$loaders = [$this->config["loader"] ?? "fabric"];
+		}
+
+		// Detect context change
 		$contextChanged =
 			$query !== $this->lastModrinthQuery ||
 			$this->modpackSubTab !== $this->lastModrinthSubTab ||
-			$currentMC !== $this->lastModrinthMCVer ||
-			$currentLoader !== $this->lastModrinthLoader ||
-			$currentCategory !== $this->lastModrinthCategory ||
-			$currentEnv !== $this->lastModrinthEnv;
+			serialize($versions) !== serialize($this->lastModrinthMCVer) ||
+			serialize($loaders) !== serialize($this->lastModrinthLoader) ||
+			serialize($this->modsFilterCategories) !== serialize($this->lastModrinthCategory) ||
+			serialize($this->modsFilterEnvs) !== serialize($this->lastModrinthEnv);
 
 		if ($contextChanged) {
-			$this->log(
-				"Search context changed [Q:'{$this->lastModrinthQuery}'->'$query', T:'{$this->lastModrinthSubTab}'->'{$this->modpackSubTab}', V:'{$this->lastModrinthMCVer}'->'$currentMC', L:'{$this->lastModrinthLoader}'->'$currentLoader', C:'{$this->lastModrinthCategory}'->'$currentCategory', E:'{$this->lastModrinthEnv}'->'$currentEnv']. Clearing cache.",
-			);
+			$this->log("Search context changed. Clearing cache.");
 			$this->modrinthResultCache = [];
 			$this->modrinthSearchResults = [];
 			$this->modrinthTotalHits = 0;
 			$this->lastModrinthQuery = $query;
 			$this->lastModrinthSubTab = $this->modpackSubTab;
-			$this->lastModrinthMCVer = $currentMC;
-			$this->lastModrinthLoader = $currentLoader;
-			$this->lastModrinthCategory = $currentCategory;
-			$this->lastModrinthEnv = $currentEnv;
-			$this->modSearchQuery = $query; // Sync if called externally
+			$this->lastModrinthMCVer = $versions;
+			$this->lastModrinthLoader = $loaders;
+			$this->lastModrinthCategory = $this->modsFilterCategories;
+			$this->lastModrinthEnv = $this->modsFilterEnvs;
+			$this->modSearchQuery = $query;
 		}
 
 		if (!$isPrefetch) {
 			$this->purgeIconCache($page);
-		}
-
-		// 1. Cache Check & Result Clearing
-		if (!$isPrefetch) {
-			$this->modrinthSearchResults = []; // Immediate drop to skeleton for nav
+			$this->modrinthSearchResults = []; 
 		}
 
 		if (!$isPrefetch && isset($this->modrinthResultCache[$page])) {
 			$this->modrinthSearchResults = $this->modrinthResultCache[$page];
-			$this->log("Cache hit for Modrinth page $page.");
-			$this->modrinthSearchResults = $this->modrinthResultCache[$page];
 			$this->modrinthPage = $page;
 			$this->isSearchingModrinth = false;
 			$this->needsRedraw = true;
-			// Prefetch happens via results_finished handler, not here
 			return;
 		}
 
-		// 2. Concurrency Checks & Promotion
-		// If we are already searching or prefetching SOMETHING
 		if ($this->modrinthChannel) {
-			if (
-				!$isPrefetch &&
-				$this->isPrefetching &&
-				$this->modrinthPrefetchPage === $page
-			) {
-				// PROMOTION: User requested the page we are currently prefetching!
-				// Just mark as searching; pollProcess will handle the rest.
-				$this->log(
-					"Promoting prefetch task for page $page to main search.",
-				);
+			if (!$isPrefetch && $this->isPrefetching && $this->modrinthPrefetchPage === $page) {
 				$this->isSearchingModrinth = true;
-				$this->isPrefetching = false; // Effectively transition to main search
+				$this->isPrefetching = false;
 				return;
 			}
-
 			if (!$isPrefetch) {
-				// USER CLICKED SOMETHING NEW - Prioritize!
-				// Detach the old channel (it will still finish but be ignored by property check)
-				$this->log(
-					"User requested new search/page while busy. Detaching old channel for responsiveness.",
-				);
 				$this->modrinthChannel = null;
 				$this->isSearchingModrinth = false;
 				$this->isPrefetching = false;
-			} else {
-				// Block prefetch if something is already running
-				return;
-			}
+			} else return;
 		}
 
 		if ($isPrefetch) {
 			$this->isPrefetching = true;
 			$this->modrinthPrefetchPage = $page;
-			$this->log("Prefetching Modrinth page $page...");
 		} else {
 			$this->isSearchingModrinth = true;
 			$this->modrinthPrefetchPage = -1;
@@ -17158,61 +17377,105 @@ class FoxyClient
 		$this->modrinthError = "";
 		if (!$isPrefetch) {
 			$this->modrinthPage = $page;
-			$this->modrinthAnim = 0.0; // Reset animation on new search
-			
-			// Also ensure modpack icons are checked when browser is used
+			$this->modrinthAnim = 0.0;
 			$this->checkModpackIcons();
 		}
 
 		$this->modrinthChannel = new \parallel\Channel();
-		// Fresh runtime each time - a persistent runtime BLOCKS run() if old task is still active
 		$this->modrinthProcess = new \parallel\Runtime();
 
-		$facets =
-			$this->modpackSubTab === 2
-				? '["project_type:modpack"]'
-				: '["project_type:mod"]';
-		$version = $this->config["minecraft_version"] ?? "1.20.1";
-		$loader = $this->modsFilterLoader !== "" ? $this->modsFilterLoader : ($this->config["loader"] ?? "fabric");
-		$cleanVer = str_replace(
-			["Fabric ", "Forge ", "Quilt ", "NeoForge "],
-			"",
-			$version,
-		);
+		$projectType = 'mod';
+		if ($this->modpackSubTab === 1) $projectType = 'shader';
+		elseif ($this->modpackSubTab === 2) $projectType = 'resourcepack';
+		elseif ($this->modpackSubTab === 3) $projectType = 'modpack';
 
-		// Build facet groups
+		// Build facet groups (AND of groups, OR within groups)
 		$facetGroups = [];
-		$facetGroups[] = '["versions:' . $cleanVer . '"]';
-		$facetGroups[] = '["categories:' . $loader . '"]';
-		$facetGroups[] = $facets; // project_type
+		
+		// 1. Version Facets
+		$vGroup = [];
+		foreach ($versions as $v) $vGroup[] = "versions:$v";
+		if (!empty($vGroup)) $facetGroups[] = $vGroup;
 
-		if (!empty($this->modsFilterCategory)) {
-			$facetGroups[] = '["categories:' . $this->modsFilterCategory . '"]';
-		}
-		if (!empty($this->modsFilterEnv)) {
-			// client_side:required or server_side:required
-			// Note: 'required' is generally better for filtering than 'optional' when users explicitly pick an env
-			$facetGroups[] = '["' . $this->modsFilterEnv . '_side:required","' . $this->modsFilterEnv . '_side:optional"]';
+		// 2. Loader Facets (only for mods/modpacks)
+		if ($projectType === 'mod' || $projectType === 'modpack') {
+			$lGroup = [];
+			foreach ($loaders as $l) $lGroup[] = "categories:$l";
+			if (!empty($lGroup)) $facetGroups[] = $lGroup;
 		}
 
+		// 3. Project Type Facet
+		$facetGroups[] = ["project_type:$projectType"];
+
+		// 4. Category / Shader / Resource Pack / Modpack Specific Facets
+		if ($projectType === 'shader') {
+			if (!empty($this->shaderFilterCategories)) {
+				$g = []; foreach($this->shaderFilterCategories as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+			if (!empty($this->shaderFilterFeatures)) {
+				$g = []; foreach($this->shaderFilterFeatures as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+			if (!empty($this->shaderFilterPerformance)) {
+				$g = []; foreach($this->shaderFilterPerformance as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+			if (!empty($this->shaderFilterLoaders)) {
+				$g = []; foreach($this->shaderFilterLoaders as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+		} elseif ($projectType === 'resourcepack') {
+			if (!empty($this->resFilterCategories)) {
+				$g = []; foreach($this->resFilterCategories as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+			if (!empty($this->resFilterFeatures)) {
+				$g = []; foreach($this->resFilterFeatures as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+			if (!empty($this->resFilterResolutions)) {
+				$g = []; foreach($this->resFilterResolutions as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+		} elseif ($projectType === 'modpack') {
+			if (!empty($this->modpackFilterCategories)) {
+				$g = []; foreach($this->modpackFilterCategories as $c) $g[] = "categories:$c";
+				$facetGroups[] = $g;
+			}
+			if (!empty($this->modpackFilterEnvs)) {
+				$eGroup = [];
+				foreach ($this->modpackFilterEnvs as $env) {
+					$eGroup[] = "{$env}_side:required";
+					$eGroup[] = "{$env}_side:optional";
+				}
+				$facetGroups[] = $eGroup;
+			}
+		} else {
+			if (!empty($this->modsFilterCategories)) {
+				$cGroup = [];
+				foreach ($this->modsFilterCategories as $cat) $cGroup[] = "categories:$cat";
+				$facetGroups[] = $cGroup;
+			}
+			// 5. Environment Facets (Mostly for mods)
+			if (!empty($this->modsFilterEnvs)) {
+				$eGroup = [];
+				foreach ($this->modsFilterEnvs as $env) {
+					$eGroup[] = "{$env}_side:required";
+					$eGroup[] = "{$env}_side:optional";
+				}
+				$facetGroups[] = $eGroup;
+			}
+		}
+
+		$jsonFacets = json_encode($facetGroups);
 		$offset = $page * 20;
-		$url =
-			"https://api.modrinth.com/v2/search?query=" .
-			urlencode($query) .
-			"&facets=" .
-			urlencode('[' . implode(',', $facetGroups) . ']') .
-			"&limit=20&offset=$offset";
+		$url = "https://api.modrinth.com/v2/search?query=" . urlencode($query) . "&facets=" . urlencode($jsonFacets) . "&limit=20&offset=$offset";
 
-		$this->log(
-			"Search Modrinth: ver=$cleanVer, loader=$loader, cat={$this->modsFilterCategory}, env={$this->modsFilterEnv}, query='$query'",
-		);
-		$this->log("URL: $url");
+		$this->log("Search Modrinth: URL=$url");
 
 		$cacert = self::CACERT;
-		// Push old Future to pending array to prevent blocking destructor
-		if ($this->modrinthFuture) {
-			$this->pendingFutures[] = $this->modrinthFuture;
-		}
+		if ($this->modrinthFuture) $this->pendingFutures[] = $this->modrinthFuture;
 		$this->modrinthFuture = $this->modrinthProcess->run(
 			function (
 				\parallel\Channel $ch,
@@ -17297,10 +17560,14 @@ class FoxyClient
 
 		$gameDir = $this->getAbsolutePath($this->settings["game_dir"]);
 		// Determine target path based on type
-		$targetDir =
-			$projectType === "modpack"
-				? $gameDir . DIRECTORY_SEPARATOR . "modpacks"
-				: $gameDir . DIRECTORY_SEPARATOR . "mods";
+		$targetDir = $gameDir . DIRECTORY_SEPARATOR . "mods";
+		if ($projectType === "modpack") {
+			$targetDir = $gameDir . DIRECTORY_SEPARATOR . "modpacks";
+		} elseif ($projectType === "shader") {
+			$targetDir = $gameDir . DIRECTORY_SEPARATOR . "shaderpacks";
+		} elseif ($projectType === "resourcepack") {
+			$targetDir = $gameDir . DIRECTORY_SEPARATOR . "resourcepacks";
+		}
 
 		if (!is_dir($targetDir)) {
 			@mkdir($targetDir, 0777, true);
@@ -17324,9 +17591,11 @@ class FoxyClient
 			) {
 				// Step 1: Query for compatible versions
 				$params = [
-					"loaders" => json_encode([$loader]),
 					"game_versions" => json_encode([$mcver]),
 				];
+				if ($ptype === "mod" || $ptype === "modpack") {
+					$params["loaders"] = json_encode([$loader]);
+				}
 				$url = "https://api.modrinth.com/v2/project/$pid/version?" . http_build_query($params);
 
 				$curl = curl_init($url);
@@ -17555,7 +17824,17 @@ class FoxyClient
 		$projId = $hit["project_id"] ?? "";
 		$slug = $hit["slug"] ?? $projId;
 
-		$isInstalled = isset($this->installedMods[$slug]) || isset($this->installedModpacks[$slug]);
+		$type = $hit["project_type"] ?? "mod";
+		$isInstalled = false;
+		if ($type === "mod") $isInstalled = isset($this->installedMods[$slug]);
+		elseif ($type === "modpack") $isInstalled = isset($this->installedModpacks[$slug]);
+		elseif ($type === "shader") {
+			$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
+			$isInstalled = is_dir($gameDir . "/shaderpacks/" . $slug) || file_exists($gameDir . "/shaderpacks/" . $slug . ".zip") || file_exists($gameDir . "/shaderpacks/" . $slug . ".zip.disabled");
+		} elseif ($type === "resourcepack") {
+			$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
+			$isInstalled = is_dir($gameDir . "/resourcepacks/" . $slug) || file_exists($gameDir . "/resourcepacks/" . $slug . ".zip") || file_exists($gameDir . "/resourcepacks/" . $slug . ".zip.disabled");
+		}
 
 		$iconSize = 64;
 		$textOffsetX = 16;
@@ -17675,7 +17954,94 @@ class FoxyClient
 		$brBorder = $brHover ? [1, 1, 1, 0.25 * $alpha] : [1, 1, 1, 0.1 * $alpha];
 		
 		$this->drawRoundedRect($brX, $btnY2, $btnSize, $btnSize, 8, $brBg, $brBorder);
-		$this->renderText(">", $brX + 11, $btnY2 + 20, [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], $alpha], 3000, 0.4);
+		$this->renderIcon(0xe89e, $brX + 7, $btnY2 + 22, [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], $alpha], 18);
+	}
+
+	private function triggerCaUpdate($silent = false)
+	{
+		if ($this->isUpdatingCacert) return;
+		$this->isUpdatingCacert = true;
+		if (!$silent) $this->updateMessage = "Downloading complete cacert.pem from curl.se...";
+		
+		if (!isset($this->pollEvents)) return;
+
+		if (!$this->caUpdateChannel) {
+			$this->caUpdateChannel = new \parallel\Channel(1024);
+			$this->pollEvents->addChannel($this->caUpdateChannel);
+		}
+		$ch = $this->caUpdateChannel;
+		
+		$this->caUpdateProcess = new \parallel\Runtime();
+		$cacertPath = $this->getAbsolutePath(self::CACERT);
+		
+		$f = $this->caUpdateProcess->run(function(\parallel\Channel $ch, $cacertPath) {
+			try {
+				$url = "https://curl.se/ca/cacert.pem";
+				
+				// Step 1: HEAD request to get file size
+				$head = curl_init($url);
+				curl_setopt($head, CURLOPT_NOBODY, true);
+				curl_setopt($head, CURLOPT_RETURNTRANSFER, true);
+				curl_setopt($head, CURLOPT_SSL_VERIFYPEER, false);
+				curl_setopt($head, CURLOPT_TIMEOUT, 10);
+				curl_setopt($head, CURLOPT_FOLLOWLOCATION, true);
+				curl_exec($head);
+				$totalSize = (int) curl_getinfo($head, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
+				curl_close($head);
+				
+				if ($totalSize <= 0) $totalSize = 225076; 
+				
+				// Step 2: Download with WRITEFUNCTION for chunk-by-chunk progress
+				$curl = curl_init($url);
+				curl_setopt($curl, CURLOPT_TIMEOUT, 30);
+				curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 15);
+				curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
+				curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+				curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-CAUpdater");
+				
+				$buffer = '';
+				$downloaded = 0;
+				$lastPct = -1;
+				
+				curl_setopt($curl, CURLOPT_WRITEFUNCTION, function($curl, $chunk) use ($ch, &$buffer, &$downloaded, &$lastPct, $totalSize) {
+					$len = strlen($chunk);
+					$buffer .= $chunk;
+					$downloaded += $len;
+					
+					$pct = (int) min(99, floor(($downloaded / $totalSize) * 100));
+					if ($pct !== $lastPct) {
+						$ch->send(['type' => 'ca_update_progress', 'pct' => $pct]);
+						$lastPct = $pct;
+					}
+					return $len; 
+				});
+				
+				curl_exec($curl);
+				$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+				$curlErr = curl_error($curl);
+				curl_close($curl);
+				
+				if ($downloaded === 0 || $curlErr) {
+					$ch->send(['type' => 'ca_update_err', 'msg' => "Download failed: $curlErr"]);
+					return;
+				}
+
+				if ($code === 200 && $buffer && strpos($buffer, 'CERTIFICATE') !== false) {
+					if (@file_put_contents($cacertPath, $buffer) === false) {
+						$ch->send(['type' => 'ca_update_err', 'msg' => "Failed to write to config/cacert.pem"]);
+					} else {
+						$ch->send(['type' => 'ca_update_progress', 'pct' => 100]);
+						$ch->send(['type' => 'ca_update_res']);
+					}
+				} else {
+					$ch->send(['type' => 'ca_update_err', 'msg' => "HTTP $code - Invalid CA data."]);
+				}
+			} catch (\Throwable $e) {
+				$ch->send(['type' => 'ca_update_err', 'msg' => "Crash: " . $e->getMessage()]);
+			}
+		}, [$ch, $cacertPath]);
+		
+		$this->pendingFutures[] = $f;
 	}
 
 	private function triggerCheckForUpdate($silent = false)
@@ -17684,15 +18050,15 @@ class FoxyClient
 		$this->isCheckingUiUpdate = true;
 		if (!$silent) $this->updateMessage = "Checking Github for updates...";
 
-		if (!$this->updateChannel) {
-			$this->updateChannel = new \parallel\Channel(1024);
-			$this->pollEvents->addChannel($this->updateChannel);
+		if (!$this->uiUpdateChannel) {
+			$this->uiUpdateChannel = new \parallel\Channel(1024);
+			$this->pollEvents->addChannel($this->uiUpdateChannel);
 		}
-		$ch = $this->updateChannel;
-		$proc = new \parallel\Runtime();
-		$cacert = self::CACERT;
+		$ch = $this->uiUpdateChannel;
+		$this->uiUpdateProcess = new \parallel\Runtime();
+		$cacert = $this->getAbsolutePath(self::CACERT);
 		
-		$f = $proc->run(function(\parallel\Channel $ch, $cacert) {
+		$f = $this->uiUpdateProcess->run(function(\parallel\Channel $ch, $cacert) {
 			try {
 				$url = "https://api.github.com/repos/Minosuko/FoxyClient/releases/latest";
 				$curl = curl_init($url);
@@ -17702,6 +18068,8 @@ class FoxyClient
 				curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
 				if (file_exists($cacert)) {
 					curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+				} else {
+					curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
 				}
 				
 				$json = curl_exec($curl);
@@ -17738,12 +18106,12 @@ class FoxyClient
 		$this->needsRedraw = true;
 		
 		// Launch wrapper with --update
-		$wrapper = "Client.exe";
+		$wrapper = "FoxyClient.exe";
 		if (file_exists($wrapper)) {
 			pclose(popen("start \"\" \"$wrapper\" --update", "r"));
 			$this->running = false; // This will trigger exit
 		} else {
-			$this->updateMessage = "Error: Client.exe wrapper not found.";
+			$this->updateMessage = "Error: FoxyClient.exe wrapper not found.";
 		}
 	}
 
@@ -17758,6 +18126,71 @@ class FoxyClient
 			return $this->langStrings["en"][$key];
 		}
 		return ucfirst(str_replace("-", " ", $key));
+	}
+	private function renderExplorerSubTabDropdown()
+	{
+		$gl = $this->opengl32;
+		$alpha = $this->explorerSubTabDropdownAnim;
+		$rect = $this->explorerSubTabSelectorRect;
+		if (!$rect) return;
+
+		$ddX = $rect[0];
+		$ddY = $rect[1] + $rect[3] + 4;
+		$ddW = 200; // Consistent width for readability
+		
+		$tabs = [
+			["MODS", 0xe913],
+			["SHADERS", 0xe3e3],
+			["RESOURCE PACKS", 0xe40a],
+			["MODPACKS", 0xe87a],
+			["INST. MODS", 0xe913],
+			["INST. SHADERS", 0xe3e3],
+			["INST. RES. PACKS", 0xe40a],
+			["INST. MODPACKS", 0xe87a],
+		];
+		$itemH = 34;
+		$fullH = count($tabs) * $itemH;
+		$ddH = $fullH * $alpha;
+
+		// Scissor to respect animation height
+		$gl->glEnable(0x0c11);
+		$gl->glScissor(
+			self::SIDEBAR_W + $ddX,
+			$this->height - ($ddY + self::TITLEBAR_H + $ddH),
+			$ddW,
+			$ddH,
+		);
+
+		// Dropdown Background (Lunar-Style frosted dark glass)
+		$bgColor = $this->colors["dropdown_bg"];
+		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullH, 10, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.12 * $alpha]);
+
+		foreach ($tabs as $i => $tab) {
+			$name = $tab[0];
+			$icon = $tab[1];
+			$itemY = $ddY + $i * $itemH;
+			
+			// Hover check
+			$mx = $this->mouseX - self::SIDEBAR_W;
+			$my = $this->mouseY - self::TITLEBAR_H;
+			$isHover = $mx >= $ddX && $mx <= $ddX + $ddW && $my >= $itemY && $my <= $itemY + $itemH;
+			$isActive = $i === $this->modpackSubTab;
+
+			if ($isActive) {
+				// Cyan accent for active
+				$pc = $this->colors["primary"];
+				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
+			} elseif ($isHover) {
+				// Soft white glow for hover
+				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, [1, 1, 1, 0.06 * $alpha]);
+			}
+
+			$tc = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$this->renderIcon($icon, $ddX + 16, $itemY + 23, $tc, 18);
+			$this->renderText($name, $ddX + 44, $itemY + 23, $tc, 3000, $alpha);
+		}
+
+		$gl->glDisable(0x0c11);
 	}
 }
 
