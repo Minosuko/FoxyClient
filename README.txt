@@ -1,1 +1,1 @@
-Current support Windows only
+This build Windows only
