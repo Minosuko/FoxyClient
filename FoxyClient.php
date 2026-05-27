@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.6";
+	public const VERSION = "1.3.7";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -809,6 +809,130 @@ class FoxyClient
 						} else {
 							$r->send(["type" => "http_result", "id" => $id, "success" => false, "error" => "Download failed for $skinUrl"]);
 						}
+					} elseif ($type === 'foxy_mod_update') {
+						$ch = $job['ch'];
+						$cacert = $job['cacert'];
+						try {
+							$url = "https://api.github.com/repos/Minosuko/FoxyClientMod/releases/latest";
+							$ch_curl = curl_init($url);
+							curl_setopt($ch_curl, CURLOPT_RETURNTRANSFER, true);
+							curl_setopt($ch_curl, CURLOPT_USERAGENT, "FoxyClient");
+							curl_setopt($ch_curl, CURLOPT_TIMEOUT, 10);
+							if (file_exists($cacert)) curl_setopt($ch_curl, CURLOPT_CAINFO, $cacert);
+							$resp = curl_exec($ch_curl);
+							curl_close($ch_curl);
+							if ($resp) {
+								$data = json_decode($resp, true);
+								if ($data && isset($data["tag_name"])) {
+									$ch->send((string)$data["tag_name"]);
+									continue;
+								}
+							}
+						} catch (\Throwable $e) {}
+						$ch->send("");
+					} elseif ($type === 'ui_update') {
+						$ch = $job['ch'];
+						$cacertPath = $job['cacert'];
+						try {
+							$url = "https://api.github.com/repos/Minosuko/FoxyClient/releases/latest";
+							$curl = curl_init($url);
+							curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+							curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-Updater");
+							curl_setopt($curl, CURLOPT_TIMEOUT, 15);
+							curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
+							if (file_exists($cacertPath)) {
+								curl_setopt($curl, CURLOPT_CAINFO, $cacertPath);
+							} else {
+								curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
+							}
+							
+							$json = curl_exec($curl);
+							$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+							$curlErr = curl_error($curl);
+							curl_close($curl);
+							
+							if ($json === false) {
+								$ch->send(['type' => 'ui_update_err', 'msg' => "Network error: $curlErr"]);
+								continue;
+							}
+							if ($code === 200 && $json) {
+								$data = json_decode($json, true);
+								if (isset($data['tag_name'])) {
+									$ch->send(['type' => 'ui_update_res', 'version' => $data['tag_name']]);
+								} else {
+									$ch->send(['type' => 'ui_update_err', 'msg' => 'Invalid release data format.']);
+								}
+							} else {
+								$ch->send(['type' => 'ui_update_err', 'msg' => "HTTP $code failed to fetch."]);
+							}
+						} catch (\Throwable $e) {
+							$ch->send(['type' => 'ui_update_err', 'msg' => "Crash: " . $e->getMessage()]);
+						}
+					} elseif ($type === 'ca_update') {
+						$ch = $job['ch'];
+						$cacertPath = $job['cacertPath'];
+						try {
+							$url = "https://curl.se/ca/cacert.pem";
+							
+							$head = curl_init($url);
+							curl_setopt($head, CURLOPT_NOBODY, true);
+							curl_setopt($head, CURLOPT_RETURNTRANSFER, true);
+							curl_setopt($head, CURLOPT_SSL_VERIFYPEER, false);
+							curl_setopt($head, CURLOPT_TIMEOUT, 10);
+							curl_setopt($head, CURLOPT_FOLLOWLOCATION, true);
+							curl_exec($head);
+							$totalSize = (int) curl_getinfo($head, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
+							curl_close($head);
+							
+							if ($totalSize <= 0) $totalSize = 225076; 
+							
+							$curl = curl_init($url);
+							curl_setopt($curl, CURLOPT_TIMEOUT, 30);
+							curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 15);
+							curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
+							curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+							curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-CAUpdater");
+							
+							$buffer = '';
+							$downloaded = 0;
+							$lastPct = -1;
+							
+							curl_setopt($curl, CURLOPT_WRITEFUNCTION, function($curl, $chunk) use ($ch, &$buffer, &$downloaded, &$lastPct, $totalSize) {
+								$len = strlen($chunk);
+								$buffer .= $chunk;
+								$downloaded += $len;
+								
+								$pct = (int) min(99, floor(($downloaded / $totalSize) * 100));
+								if ($pct !== $lastPct) {
+									$ch->send(['type' => 'ca_update_progress', 'pct' => $pct]);
+									$lastPct = $pct;
+								}
+								return $len; 
+							});
+							
+							curl_exec($curl);
+							$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+							$curlErr = curl_error($curl);
+							curl_close($curl);
+							
+							if ($downloaded === 0 || $curlErr) {
+								$ch->send(['type' => 'ca_update_err', 'msg' => "Download failed: $curlErr"]);
+								continue;
+							}
+
+							if ($code === 200 && $buffer && strpos($buffer, 'CERTIFICATE') !== false) {
+								if (@file_put_contents($cacertPath, $buffer) === false) {
+									$ch->send(['type' => 'ca_update_err', 'msg' => "Failed to write to config/cacert.pem"]);
+								} else {
+									$ch->send(['type' => 'ca_update_progress', 'pct' => 100]);
+									$ch->send(['type' => 'ca_update_res']);
+								}
+							} else {
+								$ch->send(['type' => 'ca_update_err', 'msg' => "HTTP $code - Invalid CA data."]);
+							}
+						} catch (\Throwable $e) {
+							$ch->send(['type' => 'ca_update_err', 'msg' => "Crash: " . $e->getMessage()]);
+						}
 					} else {
 						// Generic download or fetch
 						$url = $job['url'];
@@ -881,8 +1005,13 @@ class FoxyClient
 		$this->updateDiscordPresence();
 
 		// Silent background update check
-		// Defer update check to switchPage(PAGE_MODS) to prevent early network idle hangs
-		// $this->triggerCheckForUpdate(true);
+		$this->triggerCheckForUpdate(true);
+		
+		// Silent CA Cert update if missing
+		$cacert = $this->getAbsolutePath(self::CACERT);
+		if (!file_exists($cacert) && !$this->isUpdatingCacert) {
+			$this->triggerCaUpdate(true);
+		}
 
 		// Initial sidebar selection position (Centered)
 		$sidebarH = $this->height - self::TITLEBAR_H;
@@ -1554,41 +1683,42 @@ class FoxyClient
 						} elseif (
 							$this->currentPage === self::PAGE_FOXYCLIENT
 						) {
-							if ($this->foxySubTab === 0) {
-								$this->scrollTarget -= $delta / 3;
-								$maxScroll = $this->getMaxScroll();
-								if ($this->scrollTarget < 0) $this->scrollTarget = 0;
-								if ($this->scrollTarget > $maxScroll) $this->scrollTarget = $maxScroll;
-							} elseif ($this->foxySubTab === 1) {
-								$this->foxyKeybindScrollTarget -= $delta / 3;
-								$contentH = count($this->foxyKeybindData) * 40;
-								$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 38);
-								$maxScroll = max(0, $contentH - $listH);
-								if ($this->foxyKeybindScrollTarget < 0) $this->foxyKeybindScrollTarget = 0;
-								if ($this->foxyKeybindScrollTarget > $maxScroll) $this->foxyKeybindScrollTarget = $maxScroll;
-							} elseif ($this->foxySubTab === 2) {
-								$this->foxyMacroScrollTarget -= $delta / 3;
-								$contentH = count($this->foxyMacroData) * 44;
-								$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 38) - 40;
-								$maxScroll = max(0, $contentH - $listH);
-								if ($this->foxyMacroScrollTarget < 0) $this->foxyMacroScrollTarget = 0;
-								if ($this->foxyMacroScrollTarget > $maxScroll) $this->foxyMacroScrollTarget = $maxScroll;
-							} elseif ($this->foxySubTab === 3) {
-								$this->foxyConfigScrollTarget -= $delta / 3;
-								$hiddenKeys = ["skinName", "capeName", "slimModel", "customMusicName", "customFontName", "customBackgroundName", "customSkinPath", "customFontPath", "customBackgroundPath", "customMusicPath"];
-								$keys = array_values(array_filter(array_keys($this->foxyConfigData), function($k) use ($hiddenKeys) {
-									return !in_array($k, $hiddenKeys);
-								}));
-								$contentRows = ceil(count($keys) / 2);
-								$contentH = $contentRows * (70 + 15) + 10;
-								$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 10);
-								$maxScroll = max(0, $contentH - $listH);
-								if ($this->foxyConfigScrollTarget < 0) $this->foxyConfigScrollTarget = 0;
-								if ($this->foxyConfigScrollTarget > $maxScroll) $this->foxyConfigScrollTarget = $maxScroll;
-							} elseif ($this->foxySubTab === 2) {
-								$this->foxyPreviewZoom += ($delta > 0 ? 0.1 : -0.1);
-								if ($this->foxyPreviewZoom < 0.2) $this->foxyPreviewZoom = 0.2;
-								if ($this->foxyPreviewZoom > 5.0) $this->foxyPreviewZoom = 5.0;
+							switch($this->foxySubTab) {
+								case 0:
+									$this->scrollTarget -= $delta / 3;
+									$maxScroll = $this->getMaxScroll();
+									if ($this->scrollTarget < 0) $this->scrollTarget = 0;
+									if ($this->scrollTarget > $maxScroll) $this->scrollTarget = $maxScroll;
+									break;
+								case 1:
+									$this->foxyKeybindScrollTarget -= $delta / 3;
+									$contentH = count($this->foxyKeybindData) * 40;
+									$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 38);
+									$maxScroll = max(0, $contentH - $listH);
+									if ($this->foxyKeybindScrollTarget < 0) $this->foxyKeybindScrollTarget = 0;
+									if ($this->foxyKeybindScrollTarget > $maxScroll) $this->foxyKeybindScrollTarget = $maxScroll;
+									break;
+								case 2:
+									$this->foxyMacroScrollTarget -= $delta / 3;
+									$contentH = count($this->foxyMacroData) * 44;
+									$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 38) - 40;
+									$maxScroll = max(0, $contentH - $listH);
+									if ($this->foxyMacroScrollTarget < 0) $this->foxyMacroScrollTarget = 0;
+									if ($this->foxyMacroScrollTarget > $maxScroll) $this->foxyMacroScrollTarget = $maxScroll;
+									break;
+								case 3:
+									$this->foxyConfigScrollTarget -= $delta / 3;
+									$hiddenKeys = ["skinName", "capeName", "slimModel", "customMusicName", "customFontName", "customBackgroundName", "customSkinPath", "customFontPath", "customBackgroundPath", "customMusicPath"];
+									$keys = array_values(array_filter(array_keys($this->foxyConfigData), function($k) use ($hiddenKeys) {
+										return !in_array($k, $hiddenKeys);
+									}));
+									$contentRows = ceil(count($keys) / 2);
+									$contentH = $contentRows * (70 + 15) + 10;
+									$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 10);
+									$maxScroll = max(0, $contentH - $listH);
+									if ($this->foxyConfigScrollTarget < 0) $this->foxyConfigScrollTarget = 0;
+									if ($this->foxyConfigScrollTarget > $maxScroll) $this->foxyConfigScrollTarget = $maxScroll;
+									break;
 							}
 						} elseif ($this->currentPage === self::PAGE_ACCOUNTS) {
 							$this->accScrollTarget -= $delta / 3;
@@ -4438,7 +4568,65 @@ class FoxyClient
 				}
 			}
 		}
+
+		// Inject launchwrapper for Mixin ServiceLoader bug in Quilt/Fabric
+		if (isset($data["libraries"])) {
+			$needsLaunchwrapper = false;
+			$hasLaunchwrapper = false;
+			foreach ($data["libraries"] as $lib) {
+				$name = $lib["name"] ?? "";
+				if (strpos($name, "sponge-mixin") !== false || strpos($name, "fabric-loader") !== false || strpos($name, "quilt-loader") !== false) {
+					$needsLaunchwrapper = true;
+				}
+				if (strpos($name, "launchwrapper") !== false) {
+					$hasLaunchwrapper = true;
+				}
+			}
+			if ($needsLaunchwrapper && !$hasLaunchwrapper) {
+				$data["libraries"][] = [
+					"name" => "net.minecraft:launchwrapper:1.12",
+					"downloads" => [
+						"artifact" => [
+							"url" => "https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar",
+							"size" => 32999
+						]
+					]
+				];
+			}
+		}
+
 		return $data;
+	}
+
+	private function ensureJarManifest($jarPath)
+	{
+		if (!file_exists($jarPath)) return;
+		$zip = new \ZipArchive();
+		if ($zip->open($jarPath) === true) {
+			$manifest = $zip->getFromName("META-INF/MANIFEST.MF");
+			if ($manifest !== false && stripos($manifest, "Minecraft-Dists:") === false) {
+				$manifest = rtrim($manifest) . "\r\nMinecraft-Dists: client\r\n\r\n";
+				$zip->addFromString("META-INF/MANIFEST.MF", $manifest);
+
+				// Remove signature files to prevent SecurityException (invalid signature)
+				$filesToDelete = [];
+				for ($i = 0; $i < $zip->numFiles; $i++) {
+					$stat = $zip->statIndex($i);
+					if ($stat && isset($stat["name"])) {
+						$name = $stat["name"];
+						if (preg_match('/^META-INF\/.*\.(SF|RSA|DSA)$/i', $name)) {
+							$filesToDelete[] = $name;
+						}
+					}
+				}
+				foreach ($filesToDelete as $f) {
+					$zip->deleteName($f);
+				}
+
+				$this->log("Patched jar manifest for NeoForge compatibility and removed signatures: " . basename($jarPath));
+			}
+			$zip->close();
+		}
 	}
 
 	private function verifyAssets($vData, $mcDir)
@@ -4469,6 +4657,9 @@ class FoxyClient
 		if (!file_exists($jarPath)) {
 			return "Missing version JAR: $version.jar";
 		}
+
+		// Ensure Minecraft-Dists exists for NeoForge
+		$this->ensureJarManifest($jarPath);
 
 		// 1. Check Libraries
 		if (isset($vData["libraries"])) {
@@ -4512,6 +4703,10 @@ class FoxyClient
 				}
 				if ($libPath && !file_exists($libPath)) {
 					return "Missing library: " . basename($libPath);
+				}
+				
+				if ($libPath && stripos($lib["name"] ?? "", "minecraft-client-patched") !== false) {
+					$this->ensureJarManifest($libPath);
 				}
 			}
 		}
@@ -4642,6 +4837,10 @@ class FoxyClient
 		);
 	}
 
+	private $lastVerifyFailVersion = "";
+	private $verifyRetryCount = 0;
+	private const MAX_VERIFY_RETRIES = 1;
+
 	private function launchGame($gameDirOverride = null)
 	{
 		if (
@@ -4667,15 +4866,34 @@ class FoxyClient
 			return;
 		}
 
-		// --- NEW: Asset Verification Phase ---
+		// --- Asset Verification Phase (with loop guard) ---
 		$this->assetMessage = "VERIFYING VERSION...";
 		$verifyRes = $this->verifyAssets($vData, $baseDir);
 		if ($verifyRes !== true) {
+			// Track retries per version to prevent infinite download loops
+			if ($this->lastVerifyFailVersion === $version) {
+				$this->verifyRetryCount++;
+			} else {
+				$this->lastVerifyFailVersion = $version;
+				$this->verifyRetryCount = 0;
+			}
+
+			if ($this->verifyRetryCount > self::MAX_VERIFY_RETRIES) {
+				$this->log("Verify failed after download: $verifyRes (aborting to prevent loop)", "ERROR");
+				$this->assetMessage = "FAILED: " . $verifyRes;
+				$this->isLaunching = false;
+				$this->verifyRetryCount = 0;
+				return;
+			}
+
 			$this->assetMessage = "REPAIRING: " . $verifyRes;
 			$this->triggerVersionDownload($version, true);
 			$this->isLaunching = false;
 			return;
 		}
+		// Verify passed — reset retry counter
+		$this->verifyRetryCount = 0;
+		$this->lastVerifyFailVersion = "";
 
 		// --- NEW: Modpack Synchronization Phase ---
 		if ($this->needsModpackUpdate()) {
@@ -4852,7 +5070,7 @@ class FoxyClient
 
 		// 2. Build Full Command Array (Safe for Windows)
 		$cmdArray = [$javaExec];
-		$cmdArray[] = "-Xms512M";
+		$cmdArray[] = "-Xms" . round($this->settings["ram_mb"] / 2) . "M";
 		$cmdArray[] = "-Xmx" . $this->settings["ram_mb"] . "M";
 
 		$versionDir =
@@ -5104,6 +5322,8 @@ class FoxyClient
 				? "legacy"
 				: "mojang";
 
+		$resW = $this->settings["window_w"] ?: "1280";
+		$resH = $this->settings["window_h"] ?: "720";
 		$placeholders = [
 			'${auth_player_name}' => $this->accountName ?: "Player",
 			'${version_name}' => $version,
@@ -5117,6 +5337,8 @@ class FoxyClient
 			'${user_properties}' => "{}",
 			'${clientid}' => "FoxyClient",
 			'${auth_xuid}' => "0",
+			'${resolution_width}' => $resW,
+			'${resolution_height}' => $resH,
 		];
 		$gameArgsRaw = $vData["minecraftArguments"] ?? "";
 		if (isset($vData["arguments"]["game"])) {
@@ -5137,7 +5359,12 @@ class FoxyClient
 								}
 							}
 							if (isset($rule["features"])) {
-								$match = false;
+								// Allow has_custom_resolution (we always have window size settings)
+								if (isset($rule["features"]["has_custom_resolution"])) {
+									// treat as matched — we support custom resolution
+								} else {
+									$match = false;
+								}
 							}
 
 							if ($match) {
@@ -5187,6 +5414,22 @@ class FoxyClient
 					$cmdArray[] = $arg;
 				}
 			}
+		}
+
+		// Always ensure --width/--height are present (covers all version formats)
+		$hasWidth = false;
+		$hasHeight = false;
+		foreach ($cmdArray as $a) {
+			if ($a === "--width") $hasWidth = true;
+			if ($a === "--height") $hasHeight = true;
+		}
+		if (!$hasWidth) {
+			$cmdArray[] = "--width";
+			$cmdArray[] = $resW;
+		}
+		if (!$hasHeight) {
+			$cmdArray[] = "--height";
+			$cmdArray[] = $resH;
 		}
 
 		$this->assetMessage = "STARTING MINECRAFT...";
@@ -9132,35 +9375,20 @@ class FoxyClient
 		}
 
 		$now = time();
-		if (($forceRemote || ($now - $this->lastFoxyUpdateCheck > 3600)) && !$this->foxyUpdateProcess) {
+		if (($forceRemote || ($now - $this->lastFoxyUpdateCheck > 3600))) {
 			$this->lastFoxyUpdateCheck = $now;
-			$this->foxyUpdateChannel = new \parallel\Channel(1);
-			$this->foxyUpdateProcess = new \parallel\Runtime();
-			$cacert = $this->getAbsolutePath(self::CACERT);
-
-			try {
-				$this->foxyUpdateFuture = $this->foxyUpdateProcess->run(static function($ch, $cacert) {
-					try {
-						$url = "https://api.github.com/repos/Minosuko/FoxyClientMod/releases/latest";
-						$ch_curl = curl_init($url);
-						curl_setopt($ch_curl, CURLOPT_RETURNTRANSFER, true);
-						curl_setopt($ch_curl, CURLOPT_USERAGENT, "FoxyClient");
-						curl_setopt($ch_curl, CURLOPT_TIMEOUT, 10);
-						if (file_exists($cacert)) curl_setopt($ch_curl, CURLOPT_CAINFO, $cacert);
-						$resp = curl_exec($ch_curl);
-						curl_close($ch_curl);
-						if ($resp) {
-							$data = json_decode($resp, true);
-							if ($data && isset($data["tag_name"])) {
-								$ch->send((string)$data["tag_name"]);
-								return;
-							}
-						}
-					} catch (\Throwable $e) {}
-					$ch->send("");
-				}, [$this->foxyUpdateChannel, $cacert]);
+			
+			if (!$this->foxyUpdateChannel) {
+				$this->foxyUpdateChannel = new \parallel\Channel(1);
 				$this->pollEvents->addChannel($this->foxyUpdateChannel);
-			} catch (\Throwable $e) { $this->foxyUpdateProcess = null; }
+			}
+
+			$this->httpQueueChannel->send([
+				'id' => uniqid(),
+				'type' => 'foxy_mod_update',
+				'ch' => $this->foxyUpdateChannel,
+				'cacert' => $this->getAbsolutePath(self::CACERT)
+			]);
 		} else { $this->updateFoxyUpdateFlag(); }
 	}
 
@@ -11063,6 +11291,7 @@ class FoxyClient
 		$modLoader = "vanilla";
 		if (strpos($idLow, "fabric") !== false) $modLoader = "fabric";
 		elseif (strpos($idLow, "optifine") !== false) $modLoader = "optifine";
+		elseif (strpos($idLow, "neoforge") !== false) $modLoader = "neoforge";
 		elseif (strpos($idLow, "forge") !== false) $modLoader = "forge";
 		elseif (strpos($idLow, "quilt") !== false) $modLoader = "quilt";
 		$iconTex = $this->verIcons[$modLoader] ?? 0;
@@ -11248,6 +11477,7 @@ class FoxyClient
 					$modLoader = "vanilla";
 					if (strpos($idLow, "fabric") !== false) $modLoader = "fabric";
 					elseif (strpos($idLow, "optifine") !== false) $modLoader = "optifine";
+					elseif (strpos($idLow, "neoforge") !== false) $modLoader = "neoforge";
 					elseif (strpos($idLow, "forge") !== false) $modLoader = "forge";
 					elseif (strpos($idLow, "quilt") !== false) $modLoader = "quilt";
 
@@ -17971,77 +18201,12 @@ class FoxyClient
 		}
 		$ch = $this->caUpdateChannel;
 		
-		$this->caUpdateProcess = new \parallel\Runtime();
-		$cacertPath = $this->getAbsolutePath(self::CACERT);
-		
-		$f = $this->caUpdateProcess->run(function(\parallel\Channel $ch, $cacertPath) {
-			try {
-				$url = "https://curl.se/ca/cacert.pem";
-				
-				// Step 1: HEAD request to get file size
-				$head = curl_init($url);
-				curl_setopt($head, CURLOPT_NOBODY, true);
-				curl_setopt($head, CURLOPT_RETURNTRANSFER, true);
-				curl_setopt($head, CURLOPT_SSL_VERIFYPEER, false);
-				curl_setopt($head, CURLOPT_TIMEOUT, 10);
-				curl_setopt($head, CURLOPT_FOLLOWLOCATION, true);
-				curl_exec($head);
-				$totalSize = (int) curl_getinfo($head, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
-				curl_close($head);
-				
-				if ($totalSize <= 0) $totalSize = 225076; 
-				
-				// Step 2: Download with WRITEFUNCTION for chunk-by-chunk progress
-				$curl = curl_init($url);
-				curl_setopt($curl, CURLOPT_TIMEOUT, 30);
-				curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 15);
-				curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
-				curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
-				curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-CAUpdater");
-				
-				$buffer = '';
-				$downloaded = 0;
-				$lastPct = -1;
-				
-				curl_setopt($curl, CURLOPT_WRITEFUNCTION, function($curl, $chunk) use ($ch, &$buffer, &$downloaded, &$lastPct, $totalSize) {
-					$len = strlen($chunk);
-					$buffer .= $chunk;
-					$downloaded += $len;
-					
-					$pct = (int) min(99, floor(($downloaded / $totalSize) * 100));
-					if ($pct !== $lastPct) {
-						$ch->send(['type' => 'ca_update_progress', 'pct' => $pct]);
-						$lastPct = $pct;
-					}
-					return $len; 
-				});
-				
-				curl_exec($curl);
-				$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-				$curlErr = curl_error($curl);
-				curl_close($curl);
-				
-				if ($downloaded === 0 || $curlErr) {
-					$ch->send(['type' => 'ca_update_err', 'msg' => "Download failed: $curlErr"]);
-					return;
-				}
-
-				if ($code === 200 && $buffer && strpos($buffer, 'CERTIFICATE') !== false) {
-					if (@file_put_contents($cacertPath, $buffer) === false) {
-						$ch->send(['type' => 'ca_update_err', 'msg' => "Failed to write to config/cacert.pem"]);
-					} else {
-						$ch->send(['type' => 'ca_update_progress', 'pct' => 100]);
-						$ch->send(['type' => 'ca_update_res']);
-					}
-				} else {
-					$ch->send(['type' => 'ca_update_err', 'msg' => "HTTP $code - Invalid CA data."]);
-				}
-			} catch (\Throwable $e) {
-				$ch->send(['type' => 'ca_update_err', 'msg' => "Crash: " . $e->getMessage()]);
-			}
-		}, [$ch, $cacertPath]);
-		
-		$this->pendingFutures[] = $f;
+		$this->httpQueueChannel->send([
+			'id' => uniqid(),
+			'type' => 'ca_update',
+			'ch' => $this->caUpdateChannel,
+			'cacertPath' => $this->getAbsolutePath(self::CACERT)
+		]);
 	}
 
 	private function triggerCheckForUpdate($silent = false)
@@ -18055,49 +18220,12 @@ class FoxyClient
 			$this->pollEvents->addChannel($this->uiUpdateChannel);
 		}
 		$ch = $this->uiUpdateChannel;
-		$this->uiUpdateProcess = new \parallel\Runtime();
-		$cacert = $this->getAbsolutePath(self::CACERT);
-		
-		$f = $this->uiUpdateProcess->run(function(\parallel\Channel $ch, $cacert) {
-			try {
-				$url = "https://api.github.com/repos/Minosuko/FoxyClient/releases/latest";
-				$curl = curl_init($url);
-				curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-				curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient-Updater");
-				curl_setopt($curl, CURLOPT_TIMEOUT, 15);
-				curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
-				if (file_exists($cacert)) {
-					curl_setopt($curl, CURLOPT_CAINFO, $cacert);
-				} else {
-					curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
-				}
-				
-				$json = curl_exec($curl);
-				$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-				$curlErr = curl_error($curl);
-				curl_close($curl);
-				
-				if ($json === false) {
-					$ch->send(['type' => 'ui_update_err', 'msg' => "Network error: $curlErr"]);
-					return;
-				}
-
-				if ($code === 200 && $json) {
-					$data = json_decode($json, true);
-					if (isset($data['tag_name'])) {
-						$ch->send(['type' => 'ui_update_res', 'version' => $data['tag_name']]);
-					} else {
-						$ch->send(['type' => 'ui_update_err', 'msg' => 'Invalid release data format.']);
-					}
-				} else {
-					$ch->send(['type' => 'ui_update_err', 'msg' => "HTTP $code failed to fetch."]);
-				}
-			} catch (\Throwable $e) {
-				$ch->send(['type' => 'ui_update_err', 'msg' => "Crash: " . $e->getMessage()]);
-			}
-		}, [$ch, $cacert]);
-		
-		$this->pendingFutures[] = $f;
+		$this->httpQueueChannel->send([
+			'id' => uniqid(),
+			'type' => 'ui_update',
+			'ch' => $this->uiUpdateChannel,
+			'cacert' => $this->getAbsolutePath(self::CACERT)
+		]);
 	}
 
 	private function performSelfUpdate()
@@ -18350,6 +18478,33 @@ class FoxyVersionJob
 					}
 				}
 			}
+
+			// Inject launchwrapper for Mixin ServiceLoader bug in Quilt/Fabric
+			if (isset($vData["libraries"])) {
+				$needsLaunchwrapper = false;
+				$hasLaunchwrapper = false;
+				foreach ($vData["libraries"] as $lib) {
+					$name = $lib["name"] ?? "";
+					if (strpos($name, "sponge-mixin") !== false || strpos($name, "fabric-loader") !== false || strpos($name, "quilt-loader") !== false) {
+						$needsLaunchwrapper = true;
+					}
+					if (strpos($name, "launchwrapper") !== false) {
+						$hasLaunchwrapper = true;
+					}
+				}
+				if ($needsLaunchwrapper && !$hasLaunchwrapper) {
+					$vData["libraries"][] = [
+						"name" => "net.minecraft:launchwrapper:1.12",
+						"downloads" => [
+							"artifact" => [
+								"url" => "https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar",
+								"size" => 32999
+							]
+						]
+					];
+				}
+			}
+
 			return $vData;
 		};
 
@@ -18403,20 +18558,69 @@ class FoxyVersionJob
 		$getLibraryResources = function ($lib) use ($gamesDir) {
 			$results = [];
 
+			// Helper: resolve relative library URLs to absolute
+			$resolveUrl = function ($url) {
+				if (!$url) return "";
+				// Forge version JSONs may use relative paths like "/libraries/..."
+				if (strpos($url, "/libraries/") === 0) {
+					return "https://repo.llaun.ch" . $url;
+				}
+				// Also handle bare relative paths without leading slash
+				if (strpos($url, "http") !== 0 && strpos($url, "//") !== 0) {
+					return "https://repo.llaun.ch/libraries/" . ltrim($url, "/");
+				}
+				return $url;
+			};
+
 			// 1. Artifact
 			if (isset($lib["downloads"]["artifact"])) {
 				$a = $lib["downloads"]["artifact"];
-				$results[] = [
-					"path" =>
-						$gamesDir .
-						DIRECTORY_SEPARATOR .
-						"libraries" .
-						DIRECTORY_SEPARATOR .
-						str_replace("/", DIRECTORY_SEPARATOR, $a["path"]),
-					"url" => $a["url"],
-					"sha1" => $a["sha1"] ?? "",
-					"size" => $a["size"] ?? 0,
-				];
+				$artUrl = $resolveUrl($a["url"] ?? "");
+				if (isset($a["path"])) {
+					$results[] = [
+						"path" =>
+							$gamesDir .
+							DIRECTORY_SEPARATOR .
+							"libraries" .
+							DIRECTORY_SEPARATOR .
+							str_replace("/", DIRECTORY_SEPARATOR, $a["path"]),
+						"url" => $artUrl,
+						"sha1" => $a["sha1"] ?? "",
+						"size" => $a["size"] ?? 0,
+					];
+				} elseif (isset($lib["name"])) {
+					// Forge artifacts often lack "path" — derive from Maven coordinate
+					$parts = explode(":", $lib["name"]);
+					if (count($parts) >= 3) {
+						$group = str_replace(".", DIRECTORY_SEPARATOR, $parts[0]);
+						$artName = $parts[1];
+						$artVer = $parts[2];
+						$artClassifier = $parts[3] ?? "";
+						$relPath =
+							$group .
+							DIRECTORY_SEPARATOR .
+							$artName .
+							DIRECTORY_SEPARATOR .
+							$artVer .
+							DIRECTORY_SEPARATOR .
+							$artName .
+							"-" .
+							$artVer .
+							($artClassifier ? "-$artClassifier" : "") .
+							".jar";
+						$results[] = [
+							"path" =>
+								$gamesDir .
+								DIRECTORY_SEPARATOR .
+								"libraries" .
+								DIRECTORY_SEPARATOR .
+								$relPath,
+							"url" => $artUrl,
+							"sha1" => $a["sha1"] ?? "",
+							"size" => $a["size"] ?? 0,
+						];
+					}
+				}
 			} elseif (isset($lib["name"]) && !isset($lib["natives"])) {
 				// Fallback for older format
 				$parts = explode(":", $lib["name"]);
@@ -18453,6 +18657,10 @@ class FoxyVersionJob
 							rtrim($baseUrl, "/") .
 							"/" .
 							str_replace(DIRECTORY_SEPARATOR, "/", $relPath);
+					}
+					// If no lib-level URL, try resolving from Maven repos
+					if (!$url) {
+						$url = $resolveUrl("/libraries/" . str_replace(DIRECTORY_SEPARATOR, "/", $relPath));
 					}
 					if ($url) {
 						$results[] = [
