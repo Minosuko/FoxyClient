@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.7";
+	public const VERSION = "1.3.8";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -503,6 +503,26 @@ class FoxyClient
 		344 => "RSHIFT", 345 => "RCTRL", 346 => "RALT", 347 => "RSUPER",
 	];
 
+	private $defaultSettings = [
+		"game_dir" => "games",
+		"window_w" => "1280",
+		"window_h" => "720",
+		"java_path" => "temurin-jre/bin/javaw.exe",
+		"java_args" => "",
+		"minecraft_args" => "",
+		"jvm_optimizer" => "default",
+		"ram_mb" => 2048,
+		"bg_file" => self::DATA_DIR . "/images/background.jpg",
+		"bg_blur" => 0,
+		"theme" => "dark",
+		"language" => "en",
+		"show_modified_versions" => true,
+		"enable_modpack" => false,
+		"separate_modpack_folder" => false,
+		"font_launcher" => "Nunito",
+		"font_overlay" => "Consolas",
+	];
+
 	private $settings = [
 		"game_dir" => "games",
 		"window_w" => "1280",
@@ -615,48 +635,48 @@ class FoxyClient
 	];
 
 	private $lightColors = [
-		"bg" => [0.95, 0.96, 0.98], // Soft Pearl Blue
-		"panel" => [1.0, 1.0, 1.0, 0.55], // Frosted Glass
-		"card" => [1.0, 1.0, 1.0, 0.8],
-		"card_hover" => [0.92, 0.95, 1.0, 0.9],
-		"primary" => [0.12, 0.45, 0.9], // Modern Royal Blue
-		"primary_dim" => [0.1, 0.35, 0.75],
-		"accent" => [0.0, 0.7, 0.6], // Deep Teal
-		"text" => [0.12, 0.15, 0.2], // Slate Charcoal
-		"text_dim" => [0.45, 0.5, 0.58],
-		"button" => [0.88, 0.9, 0.94, 0.8],
-		"button_hover" => [0.82, 0.86, 0.92, 0.95],
-		"check_off" => [0.8, 0.82, 0.88],
-		"tab_bg" => [0.92, 0.93, 0.96, 0.7],
-		"tab_active" => [1.0, 1.0, 1.0, 0.9],
-		"divider" => [0.0, 0.3, 0.8, 0.08], // Subtle blue divider
-		"status_queue" => [0.1, 0.5, 0.9],
-		"status_active" => [0.15, 0.65, 0.25], // Forest Green
-		"status_done" => [0.15, 0.65, 0.25], // Forest Green
-		"status_error" => [0.9, 0.15, 0.25], // Rose Red
-		"status_update" => [0.1, 0.5, 0.9], // Royal Blue for updates
-		"warning" => [0.85, 0.6, 0.0],
-		"sidebar_bg1" => [0.96, 0.97, 0.99, 0.95],
-		"sidebar_bg2" => [0.92, 0.94, 0.97, 0.95],
-		"sidebar_active" => [0.0, 0.4, 0.9, 0.12], // Soft blue highlight
-		"sidebar_hover" => [0.0, 0.4, 0.9, 0.06],
-		"titlebar_bg" => [1.0, 1.0, 1.0, 0.95],
-		"input_bg" => [1.0, 1.0, 1.0, 0.9],
+		"bg" => [0.98, 0.98, 0.99], // Very light clean gray/white
+		"panel" => [1.0, 1.0, 1.0, 0.85], // More opaque white panel
+		"card" => [1.0, 1.0, 1.0, 0.9],
+		"card_hover" => [0.96, 0.97, 0.98, 1.0],
+		"primary" => [0.25, 0.45, 0.95], // Vibrant indigo/blue
+		"primary_dim" => [0.15, 0.35, 0.85],
+		"accent" => [0.8, 0.2, 0.5], // Vibrant pink/magenta accent for punch
+		"text" => [0.1, 0.1, 0.12], // Deep slate text
+		"text_dim" => [0.4, 0.45, 0.5],
+		"button" => [0.94, 0.95, 0.97, 1.0],
+		"button_hover" => [0.88, 0.9, 0.93, 1.0],
+		"check_off" => [0.85, 0.86, 0.9],
+		"tab_bg" => [0.96, 0.97, 0.98, 0.8],
+		"tab_active" => [1.0, 1.0, 1.0, 1.0],
+		"divider" => [0.0, 0.0, 0.0, 0.08], // Neutral subtle divider
+		"status_queue" => [0.4, 0.5, 0.6],
+		"status_active" => [0.1, 0.7, 0.4], // Punchy Green
+		"status_done" => [0.1, 0.7, 0.4],
+		"status_error" => [0.9, 0.2, 0.2], // Crisp Red
+		"status_update" => [0.25, 0.45, 0.95],
+		"warning" => [0.95, 0.6, 0.1],
+		"sidebar_bg1" => [0.98, 0.98, 0.99, 0.95],
+		"sidebar_bg2" => [0.95, 0.96, 0.97, 0.95],
+		"sidebar_active" => [0.25, 0.45, 0.95, 0.1], // Soft primary highlight
+		"sidebar_hover" => [0.0, 0.0, 0.0, 0.04],
+		"titlebar_bg" => [1.0, 1.0, 1.0, 0.98],
+		"input_bg" => [1.0, 1.0, 1.0, 1.0],
 		"input_bg_active" => [1.0, 1.0, 1.0, 1.0],
-		"button_text" => [0.12, 0.15, 0.2],
-		"acc_active" => [0.0, 0.45, 1.0, 0.15],
-		"acc_active_border" => [0.0, 0.45, 1.0],
-		"del_btn" => [0.9, 0.3, 0.35],
-		"del_btn_hover" => [1.0, 0.45, 0.5],
-		"header_bg" => [0.94, 0.95, 0.98, 0.85],
-		"dropdown_bg" => [1.0, 1.0, 1.0, 0.98],
-		"dropdown_hover" => [0.92, 0.95, 1.0, 0.8],
-		"info_bg" => [0.88, 0.92, 1.0, 0.6],
-		"subtab" => [0.92, 0.94, 0.97],
-		"pill_bg" => [0.88, 0.9, 0.95],
-		"pill_active" => [0.0, 0.45, 1.0, 0.25],
-		"scrollbar" => [0.0, 0.3, 0.8, 0.15],
-		"scrollbar_hover" => [0.0, 0.3, 0.8, 0.3],
+		"button_text" => [0.1, 0.1, 0.12],
+		"acc_active" => [0.25, 0.45, 0.95, 0.1],
+		"acc_active_border" => [0.25, 0.45, 0.95],
+		"del_btn" => [0.9, 0.2, 0.2],
+		"del_btn_hover" => [1.0, 0.3, 0.3],
+		"header_bg" => [0.98, 0.98, 0.99, 0.9],
+		"dropdown_bg" => [1.0, 1.0, 1.0, 1.0],
+		"dropdown_hover" => [0.95, 0.96, 0.97, 1.0],
+		"info_bg" => [0.25, 0.45, 0.95, 0.1],
+		"subtab" => [0.95, 0.96, 0.97],
+		"pill_bg" => [0.9, 0.92, 0.95],
+		"pill_active" => [0.25, 0.45, 0.95, 0.15],
+		"scrollbar" => [0.0, 0.0, 0.0, 0.15],
+		"scrollbar_hover" => [0.0, 0.0, 0.0, 0.3],
 		"overlay_bg" => [1.0, 1.0, 1.0, 0.85],
 		"modal_bg" => [1.0, 1.0, 1.0, 0.95],
 	];
@@ -2556,6 +2576,10 @@ class FoxyClient
 	 */
 	private function getTextWidth($text, $listBase = 1000, $spacing = 0)
 	{
+		static $cache = [];
+		$cacheKey = $text . "|" . $listBase . "|" . $spacing;
+		if (isset($cache[$cacheKey])) return $cache[$cacheKey];
+
 		if (!isset($this->fontAtlas[$listBase])) return 0;
 		$atlas = $this->fontAtlas[$listBase];
 		$h = $atlas["requestedSize"];
@@ -2581,6 +2605,7 @@ class FoxyClient
 			if (!isset($atlas["glyphs"][$ch])) continue;
 			$totalW += ($atlas["glyphs"][$ch]["advX"] * $drawScale) + (float)$spacing;
 		}
+		$cache[$cacheKey] = $totalW;
 		return $totalW;
 	}
 
@@ -5631,22 +5656,6 @@ class FoxyClient
 		) {
 			$this->modPageDebounceTimer = 0;
 			$this->searchModrinth($this->modSearchQuery, $this->modPageTarget);
-		}
-
-		if (
-			!$this->process &&
-			!$this->assetProcess &&
-			!$this->vManifestProcess &&
-			!$this->gameProcess &&
-			!$this->isStoppingOverlay &&
-			!$this->modrinthProcess &&
-			!$this->compatProcess &&
-			$this->iconDownloadProcess === null &&
-			empty($this->modDownloadRuntimes) &&
-			$this->modpackInstallProcess === null &&
-			$this->assetMessage !== "GAME RUNNING"
-		) {
-			return;
 		}
 
 		// Cleanup completed Futures to free memory (check every frame, very cheap)
@@ -10319,10 +10328,10 @@ class FoxyClient
 			if ($cx >= $bx && $cx <= $bx + $bw) {
 				// Button bounds check relative to adjusted row index
 				$clickY = $localY - ($idx * $rowH);
-				if ($clickY >= 10 && $clickY <= 50) {
+				if ($clickY >= 0 && $clickY <= 60) {
 					// "Check for FoxyClient Update"
 					if ($idx === 0) {
-						if (strpos($this->updateMessage, "New version available") !== false) {
+						if ($this->hasUiUpdate) {
 							$this->performSelfUpdate();
 						} else {
 							$this->triggerCheckForUpdate(false);
@@ -10743,22 +10752,29 @@ class FoxyClient
 		if ($this->sidebarHoverAlpha > 0.001) {
 			$hC = $this->colors["sidebar_hover"];
 			$this->drawRoundedRect(4, $this->sidebarHoverY + 2, $sw - 8, $itemH - 4, 10, [
-				$hC[0], $hC[1], $hC[2], $this->sidebarHoverAlpha
+				$hC[0], $hC[1], $hC[2], ($hC[3] ?? 1.0) * $this->sidebarHoverAlpha
 			]);
 		}
 
 		foreach ($this->sidebarItems as $i => $item) {
 			$isActive = $this->currentPage === $item["id"];
+			$isHover = $this->sidebarHover === $i;
 			$color = $isActive ? $this->colors["text"] : $this->colors["text_dim"];
 
 			// Sidebar Item Content
 			$icon = $sidebarIcons[$item["id"]] ?? "";
 			if ($item["id"] === self::PAGE_FOXYCLIENT && $this->logoTex) {
 				$size = 20;
-				$alpha = $isActive ? 1.0 : 0.6;
+				$alpha = $isActive ? 1.0 : ($isHover ? 0.8 : 0.6);
 				$this->drawTexture($this->logoTex, ($sw - $size) / 2, $y + ($itemH - $size) / 2, $size, $size, [1, 1, 1, $alpha]);
 			} elseif ($icon !== "") {
-				$iconColor = $isActive ? $this->colors["primary"] : [$color[0], $color[1], $color[2], 0.6];
+				if ($isActive) {
+					$iconColor = $this->colors["primary"];
+				} elseif ($isHover) {
+					$iconColor = $this->colors["text"];
+				} else {
+					$iconColor = [$color[0], $color[1], $color[2], 0.6];
+				}
 				
 				// Determine which font atlas to use
 				$cp = mb_ord($icon, "UTF-8");
@@ -10799,9 +10815,11 @@ class FoxyClient
 		
 		$animX = $tx + (1.0 - $this->sidebarHoverAlpha) * 10;
 		
+		$bg = $this->colors["dropdown_bg"];
+		$tc = $this->colors["text"];
 		$this->drawGlow($animX, $ty, $tw + 20, 24, 10, [0, 0, 0, 0.3 * $this->sidebarHoverAlpha]);
-		$this->drawRoundedRect($animX, $ty, $tw + 20, 24, 6, [0.05, 0.05, 0.08, 0.95 * $this->sidebarHoverAlpha], [$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.3 * $this->sidebarHoverAlpha]);
-		$this->renderText($name, $animX + 10, $ty + 17, [1, 1, 1, $this->sidebarHoverAlpha], 1000);
+		$this->drawRoundedRect($animX, $ty, $tw + 20, 24, 6, [$bg[0], $bg[1], $bg[2], ($bg[3] ?? 1.0) * $this->sidebarHoverAlpha], [$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.3 * $this->sidebarHoverAlpha]);
+		$this->renderText($name, $animX + 10, $ty + 17, [$tc[0], $tc[1], $tc[2], $this->sidebarHoverAlpha], 1000);
 	}
 
 	// ─── HOME PAGE ENGINE ───
@@ -18191,7 +18209,10 @@ class FoxyClient
 	{
 		if ($this->isUpdatingCacert) return;
 		$this->isUpdatingCacert = true;
-		if (!$silent) $this->updateMessage = "Downloading complete cacert.pem from curl.se...";
+		if (!$silent) {
+			$this->updateMessage = "Downloading complete cacert.pem from curl.se...";
+			$this->needsRedraw = true;
+		}
 		
 		if (!isset($this->pollEvents)) return;
 
@@ -18213,7 +18234,10 @@ class FoxyClient
 	{
 		if ($this->isCheckingUiUpdate) return;
 		$this->isCheckingUiUpdate = true;
-		if (!$silent) $this->updateMessage = "Checking Github for updates...";
+		if (!$silent) {
+			$this->updateMessage = "Checking Github for updates...";
+			$this->needsRedraw = true;
+		}
 
 		if (!$this->uiUpdateChannel) {
 			$this->uiUpdateChannel = new \parallel\Channel(1024);
@@ -18230,16 +18254,16 @@ class FoxyClient
 
 	private function performSelfUpdate()
 	{
-		$this->updateMessage = "Launching FoxyClient Updater... Please wait.";
+		$this->updateMessage = "Updating FoxyClient... Please wait. The launcher will now restart.";
 		$this->needsRedraw = true;
 		
 		// Launch wrapper with --update
-		$wrapper = "FoxyClient.exe";
+		$wrapper = $this->getAbsolutePath("FoxyClient.exe");
 		if (file_exists($wrapper)) {
 			pclose(popen("start \"\" \"$wrapper\" --update", "r"));
 			$this->running = false; // This will trigger exit
 		} else {
-			$this->updateMessage = "Error: FoxyClient.exe wrapper not found.";
+			$this->updateMessage = "Error: FoxyClient.exe wrapper not found at $wrapper";
 		}
 	}
 
