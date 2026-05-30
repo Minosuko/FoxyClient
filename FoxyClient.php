@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.8";
+	public const VERSION = "1.3.9";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -1365,6 +1365,8 @@ class FoxyClient
 			PVOID GlobalFree(PVOID hMem);
 			void *GetCurrentProcess();
 			BOOL TerminateProcess(void *hProcess, UINT uExitCode);
+			BOOL AllocConsole();
+			HWND GetConsoleWindow();
 		",
 			"kernel32.dll",
 		);
@@ -5306,6 +5308,23 @@ class FoxyClient
 		}
 		if (!$libraryPathApplied) {
 			$cmdArray[] = "-Djava.library.path=" . $nativesDir;
+		}
+
+		if ($javaVer >= 9) {
+			$cmdArray[] = "--add-modules";
+			if ($javaVer >= 23) {
+				// Java 23+ merged jdk.crypto.ec into java.base. 
+				// We cannot use a dummy module because java.base hardcodes a hash check for it.
+				$cmdArray[] = "jdk.naming.dns,jdk.naming.rmi";
+			} else {
+				$cmdArray[] = "jdk.naming.dns,jdk.naming.rmi,jdk.crypto.ec";
+			}
+			$cmdArray[] = "--add-exports";
+			$cmdArray[] = "java.base/sun.security.util=ALL-UNNAMED";
+			$cmdArray[] = "--add-exports";
+			$cmdArray[] = "jdk.naming.dns/com.sun.jndi.dns=java.naming";
+			$cmdArray[] = "--add-opens";
+			$cmdArray[] = "java.base/java.util.jar=ALL-UNNAMED";
 		}
 
 		if (!$hasJsonJvmArgs) {
@@ -10164,6 +10183,17 @@ class FoxyClient
 					}
 					pclose(popen('explorer "' . str_replace('/', '\\', $target) . '"', 'r'));
 				}
+			} elseif ($idx === 8) {
+				// Clear Minecraft Log
+				$bx = $fieldX + $fieldW - 140;
+				$bw = 140;
+				if ($cx >= $bx && $cx <= $bx + $bw && $cy >= $rowY && $cy <= $rowY + 50) {
+					$logPath = $this->getAbsolutePath($this->settings["game_dir"] . DIRECTORY_SEPARATOR . "logs" . DIRECTORY_SEPARATOR . "latest.log");
+					if (file_exists($logPath)) {
+						@unlink($logPath);
+						$this->needsRedraw = true;
+					}
+				}
 			}
 		} elseif ($this->propSubTab === 1) {
 			// Launcher Config
@@ -10251,6 +10281,7 @@ class FoxyClient
 							? $this->darkColors
 							: $this->lightColors;
 					$this->saveSettings();
+					$this->needsRedraw = true;
 				}
 			} elseif ($idx === 2) {
 				// Language
@@ -10297,19 +10328,30 @@ class FoxyClient
 					$this->saveSettings();
 				}
 			} elseif ($idx === 7) {
-				// Reset Settings
-				if ($cx >= $fieldX + 100 && $cx <= $fieldX + 300) {
-					$this->settings = $this->defaultSettings;
+				// Show Console
+				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
+					$this->settings["show_console"] = !($this->settings["show_console"] ?? false);
+					if ($this->settings["show_console"]) {
+						$this->kernel32->AllocConsole();
+						$hwnd = $this->kernel32->GetConsoleWindow();
+						if ($hwnd) $this->user32->ShowWindow($hwnd, 5); // SW_SHOW
+					} else {
+						$hwnd = $this->kernel32->GetConsoleWindow();
+						if ($hwnd) $this->user32->ShowWindow($hwnd, 0); // SW_HIDE
+					}
 					$this->saveSettings();
-					$this->colors = $this->settings["theme"] === "dark" ? $this->darkColors : $this->lightColors;
-					$this->loadBackground();
+					$this->needsRedraw = true;
 				}
 			} elseif ($idx === 8) {
-				// Sign Out
-				if ($cx >= $fieldX + 100 && $cx <= $fieldX + 300) {
-					$this->activeAccount = null;
-					$this->config["active_account"] = null;
-					$this->saveConfig();
+				// Clear Launcher Log
+				$bx = $fieldX + $fieldW - 140;
+				$bw = 140;
+				if ($cx >= $bx && $cx <= $bx + $bw && $cy >= $rowY && $cy <= $rowY + 50) {
+					$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
+					if (file_exists($logPath)) {
+						@unlink($logPath);
+						$this->needsRedraw = true;
+					}
 				}
 			} else {
 				$this->propFontDropdownOpen = "";
@@ -14117,6 +14159,17 @@ class FoxyClient
 		$y = $this->renderPropRow(5, $y, "Mods Folder", "Open the mods/ directory in Explorer", $folderBtnRenderer("OPEN MODS FOLDER"));
 		$y = $this->renderPropRow(6, $y, "Texture Packs", "Open the resourcepacks/ directory in Explorer", $folderBtnRenderer("OPEN RESOURCEPACKS"));
 		$y = $this->renderPropRow(7, $y, "Shader Packs", "Open the shaderpacks/ directory in Explorer", $folderBtnRenderer("OPEN SHADERPACKS"));
+		$y = $this->renderPropRow(8, $y, "Clear Log", "Delete the Minecraft log file", function ($x, $cy, $w, $h) {
+			$bx = $x + $w - 140;
+			$bw = 140;
+			$isHover = $this->mouseX >= $bx + self::SIDEBAR_W && $this->mouseX <= $bx + self::SIDEBAR_W + $bw &&
+					   $this->mouseY >= $cy + self::TITLEBAR_H && $this->mouseY <= $cy + self::TITLEBAR_H + 30;
+			$this->drawStyledButton($bx, $cy + 4, $bw, 26, "CLEAR LOG", $isHover, "danger");
+			
+			$logPath = $this->getAbsolutePath($this->settings["game_dir"] . DIRECTORY_SEPARATOR . "logs" . DIRECTORY_SEPARATOR . "latest.log");
+			$size = file_exists($logPath) ? round(filesize($logPath) / 1024, 2) . " KB" : "0 KB";
+			$this->renderText("Log size: " . $size, $bx + 4, $cy + 42, $this->colors["text_dim"], 3000);
+		});
 	}
 
 	private function renderPropertiesLauncher($y)
@@ -14217,6 +14270,35 @@ class FoxyClient
 			},
 		);
 
+		$y = $this->renderPropRow(
+			7,
+			$y,
+			"Show Console",
+			"Show the developer debug console",
+			function ($x, $cy, $w, $h) {
+				$showConsole = (bool) ($this->settings["show_console"] ?? false);
+				$isHover = $this->propFieldHover === 7;
+				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $showConsole, $isHover, "prop:show_console");
+			},
+		);
+
+		$y = $this->renderPropRow(
+			8,
+			$y,
+			"Clear Log",
+			"Delete the launcher log file",
+			function ($x, $cy, $w, $h) {
+				$bx = $x + $w - 140;
+				$bw = 140;
+				$isHover = $this->mouseX >= $bx + self::SIDEBAR_W && $this->mouseX <= $bx + self::SIDEBAR_W + $bw &&
+						   $this->mouseY >= $cy + self::TITLEBAR_H && $this->mouseY <= $cy + self::TITLEBAR_H + 30;
+				$this->drawStyledButton($bx, $cy + 4, $bw, 26, "CLEAR LOG", $isHover, "danger");
+				
+				$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
+				$size = file_exists($logPath) ? round(filesize($logPath) / 1024, 2) . " KB" : "0 KB";
+				$this->renderText("Log size: " . $size, $bx + 4, $cy + 42, $this->colors["text_dim"], 3000);
+			},
+		);
 
 	}
 
