@@ -8,7 +8,7 @@
 
 class FoxyClient
 {
-	public const VERSION = "1.3.9";
+	public const VERSION = "1.4.0";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -383,6 +383,13 @@ class FoxyClient
 	private $foxyInstallBtnHover = false;
 	private $foxyUpdateBtnHover = false;
 	private $foxyModLocalVersion = null; // e.g. "1.3.4"
+	private $foxyModOnlineVersion = null;
+
+	private $consoleHandle = null;
+	private $logSizeCache = [];
+
+	// Constructor & Core Methods
+	// ---------------------------------------------------------
 	private $foxyModLatestVersion = null; // e.g. "1.3.5"
 	private $foxyModUpdateAvailable = false;
 	private $lastFoxyUpdateCheck = 0;
@@ -457,6 +464,16 @@ class FoxyClient
 	private $bgModalOpen = false;
 	private $bgModalHoverIdx = -1;
 	private $bgModalActiveField = "";
+
+	// Crash Modal System
+	private $crashModalOpen = false;
+	private $crashModalAnim = 0.0;
+	private $crashTitle = "";
+	private $crashCause = "";
+	private $crashSolution = "";
+	private $crashCloseHover = false;
+	private $gameLogBuffer = [];
+	private $argfileToDelete = "";
 
 	// FoxyClient Tab: Keybinds / Macros / FoxyConfig / Cosmetics
 	private $foxyKeybindData = [];   // module_name => {enabled, keybind, settings}
@@ -561,6 +578,8 @@ class FoxyClient
 	private $buttonPulse = 0.0;
 	private $pageAnim = 1.0;
 	private $homeAccDropdownAnim = 0.0;
+	private $homeVerSearchQuery = "";
+	private $homeVerSearchFocus = false;
 	private $homeVerDropdownAnim = 0.0;
 	private $javaModalDropdownAnim = 0.0;
 	private $globalAlpha = 1.0;
@@ -997,6 +1016,10 @@ class FoxyClient
 		$this->user32->ShowWindow($this->hwnd, 1);
 		$this->user32->UpdateWindow($this->hwnd);
 
+		if ($this->settings["show_console"] ?? false) {
+			$this->showConsole();
+		}
+
 		$this->isLoadingFonts = true;
 		$this->fontGenerator = $this->initFontsAsync();
 
@@ -1366,7 +1389,9 @@ class FoxyClient
 			void *GetCurrentProcess();
 			BOOL TerminateProcess(void *hProcess, UINT uExitCode);
 			BOOL AllocConsole();
+			BOOL FreeConsole();
 			HWND GetConsoleWindow();
+			BOOL SetConsoleTitleA(LPCSTR lpConsoleTitle);
 		",
 			"kernel32.dll",
 		);
@@ -1416,6 +1441,7 @@ class FoxyClient
 			PVOID GetClipboardData(UINT uFormat);
 			PVOID SetClipboardData(UINT uFormat, PVOID hMem);
 			short GetKeyState(int nVirtKey);
+			HWND LoadImageA(HINSTANCE hInst, LPCSTR name, UINT type, int cx, int cy, UINT fuLoad);
 		",
 			"user32.dll",
 		);
@@ -1815,6 +1841,20 @@ class FoxyClient
 					case 0x0102: // WM_CHAR
 						$this->needsRedraw = true;
 						if (
+							$this->currentPage === self::PAGE_HOME &&
+							$this->homeVerSearchFocus
+						) {
+							$char = $wparam;
+							if ($char == 8) { // Backspace
+								$this->homeVerSearchQuery = (string) substr($this->homeVerSearchQuery, 0, -1);
+								$this->homeVerScrollOffset = 0; // Reset scroll on search change
+							} elseif ($char == 13) { // Enter
+								$this->homeVerSearchFocus = false;
+							} elseif ($char >= 32) {
+								$this->homeVerSearchQuery .= chr($char);
+								$this->homeVerScrollOffset = 0;
+							}
+						} elseif (
 							$this->currentPage === self::PAGE_MODS &&
 							$this->modSearchFocus
 						) {
@@ -2717,6 +2757,14 @@ class FoxyClient
 			return;
 		}
 
+		if ($this->crashModalOpen) {
+			if ($this->crashCloseHover) {
+				$this->crashModalOpen = false;
+				$this->needsRedraw = true;
+			}
+			return;
+		}
+
 		if ($this->bgModalOpen) {
 			$this->handleBgModalClick($x, $y);
 			return;
@@ -2824,6 +2872,17 @@ class FoxyClient
 					$thumbH = max(20, ($viewH / $contentH) * $viewH);
 					$delta = ($dy / ($viewH - $thumbH)) * $maxScroll;
 					$this->vScrollTarget = max(0, min($maxScroll, $this->dragStartOffset + $delta));
+				}
+				break;
+			case "home_dropdown":
+				$filtered = $this->getHomeVersions();
+				$ddH = min(200, count($filtered) * 40);
+				$contentH = count($filtered) * 40;
+				$maxScroll = max(0, $contentH - $ddH);
+				if ($maxScroll > 0) {
+					$thumbH = max(20, ($ddH / $contentH) * $ddH);
+					$delta = ($dy / ($ddH - $thumbH)) * $maxScroll;
+					$this->homeVerScrollTarget = max(0, min($maxScroll, $this->dragStartOffset + $delta));
 				}
 				break;
 			case "accounts":
@@ -4691,6 +4750,25 @@ class FoxyClient
 		// 1. Check Libraries
 		if (isset($vData["libraries"])) {
 			foreach ($vData["libraries"] as $lib) {
+				// --- NEW: Rule Filtering for Libraries ---
+				if (isset($lib["rules"])) {
+					$allowed = false; // MC standard: disallow by default if rules exist
+					foreach ($lib["rules"] as $rule) {
+						$match = true;
+						if (isset($rule["os"])) {
+							if (($rule["os"]["name"] ?? "") !== "windows") {
+								$match = false;
+							}
+						}
+						if ($match) {
+							$allowed = ($rule["action"] ?? "allow") === "allow";
+						}
+					}
+					if (!$allowed) {
+						continue;
+					}
+				}
+
 				$libPath = null;
 				if (isset($lib["downloads"]["artifact"]["path"])) {
 					$libPath =
@@ -4699,7 +4777,7 @@ class FoxyClient
 						"libraries" .
 						DIRECTORY_SEPARATOR .
 						$lib["downloads"]["artifact"]["path"];
-				} elseif (isset($lib["name"])) {
+				} elseif (isset($lib["name"]) && !isset($lib["natives"])) {
 					$parts = explode(":", $lib["name"]);
 					if (count($parts) >= 3) {
 						$group = str_replace(
@@ -4730,6 +4808,22 @@ class FoxyClient
 				}
 				if ($libPath && !file_exists($libPath)) {
 					return "Missing library: " . basename($libPath);
+				}
+				
+				// Only verify natives that have actual download entries
+				if (isset($lib["natives"]["windows"]) && isset($lib["downloads"]["classifiers"])) {
+					$classifier = $lib["natives"]["windows"];
+					if (isset($lib["downloads"]["classifiers"][$classifier]["path"])) {
+						$nativePath =
+							$mcDir .
+							DIRECTORY_SEPARATOR .
+							"libraries" .
+							DIRECTORY_SEPARATOR .
+							$lib["downloads"]["classifiers"][$classifier]["path"];
+						if (!file_exists($nativePath)) {
+							return "Missing native library: " . basename($nativePath);
+						}
+					}
 				}
 				
 				if ($libPath && stripos($lib["name"] ?? "", "minecraft-client-patched") !== false) {
@@ -5054,6 +5148,76 @@ class FoxyClient
 				if ($path) {
 					if (file_exists($path)) {
 						$cp[] = realpath($path);
+					}
+				}
+
+				// --- NEW: Native Library Processing ---
+				$nativePath = null;
+				if (isset($lib["natives"]["windows"])) {
+					$classifier = $lib["natives"]["windows"];
+					if (isset($lib["downloads"]["classifiers"][$classifier]["path"])) {
+						$nativePath =
+							$baseDir .
+							DIRECTORY_SEPARATOR .
+							"libraries" .
+							DIRECTORY_SEPARATOR .
+							$lib["downloads"]["classifiers"][$classifier]["path"];
+					} elseif (isset($lib["name"])) {
+						$parts = explode(":", $lib["name"]);
+						if (count($parts) >= 3) {
+							$group = str_replace(".", DIRECTORY_SEPARATOR, $parts[0]);
+							$name = $parts[1];
+							$libVersion = $parts[2];
+							$classifier = str_replace('${arch}', '64', $classifier); 
+							$nativePath =
+								$baseDir .
+								DIRECTORY_SEPARATOR .
+								"libraries" .
+								DIRECTORY_SEPARATOR .
+								$group .
+								DIRECTORY_SEPARATOR .
+								$name .
+								DIRECTORY_SEPARATOR .
+								$libVersion .
+								DIRECTORY_SEPARATOR .
+								$name .
+								"-" .
+								$libVersion .
+								"-" . $classifier .
+								".jar";
+						}
+					}
+				}
+				
+				if ($nativePath && file_exists($nativePath)) {
+					// LWJGL 3.3+ extracts from classpath automatically
+					$cp[] = realpath($nativePath);
+					$nativesToExtract[] = realpath($nativePath);
+				}
+			}
+			
+			// Extract all detected natives to the version's natives folder
+			if (!empty($nativesToExtract)) {
+				$targetNativesDir = $baseDir . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $version . DIRECTORY_SEPARATOR . "natives";
+				if (isset($vData["inheritsFrom"])) {
+					$targetNativesDir = $baseDir . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $vData["inheritsFrom"] . DIRECTORY_SEPARATOR . "natives";
+				}
+				if (!is_dir($targetNativesDir)) {
+					@mkdir($targetNativesDir, 0777, true);
+				}
+				$zip = new \ZipArchive();
+				foreach ($nativesToExtract as $nJar) {
+					if ($zip->open($nJar) === true) {
+						for ($i = 0; $i < $zip->numFiles; $i++) {
+							$filename = $zip->getNameIndex($i);
+							if (substr(strtolower($filename), -4) === '.dll') {
+								$content = $zip->getFromIndex($i);
+								if ($content !== false) {
+									@file_put_contents($targetNativesDir . DIRECTORY_SEPARATOR . basename($filename), $content);
+								}
+							}
+						}
+						$zip->close();
 					}
 				}
 			}
@@ -5383,6 +5547,9 @@ class FoxyClient
 			'${auth_xuid}' => "0",
 			'${resolution_width}' => $resW,
 			'${resolution_height}' => $resH,
+			// Legacy placeholders for pre-1.6 versions
+			'${auth_session}' => $token !== "null" ? "token:$token" : "-",
+			'${game_assets}' => realpath($baseDir . "/assets/virtual/legacy") ?: realpath($baseDir . "/assets"),
 		];
 		$gameArgsRaw = $vData["minecraftArguments"] ?? "";
 		if (isset($vData["arguments"]["game"])) {
@@ -5477,43 +5644,54 @@ class FoxyClient
 		}
 
 		$this->assetMessage = "STARTING MINECRAFT...";
+		$this->gameLogBuffer = [];
 
 		$logCmd = implode(" ", $cmdArray);
 		$logCmd = preg_replace('/--accessToken\s+[^\s]+/', '--accessToken [REDACTED]', $logCmd);
+		$logCmd = preg_replace('/token:[^\s\)]+/', 'token:<REDACTED>', $logCmd);
 		$this->log("Launching Game: " . $logCmd);
-		
-		// Write ALL args to argfile to bypass Windows 8191-char command line limit
-		$argfilePath = __DIR__ . DIRECTORY_SEPARATOR . self::CACHE_DIR . DIRECTORY_SEPARATOR . "launch_args.txt";
-		
+
 		// First element is java executable, everything else goes into the argfile
 		$javaExecCmd = array_shift($cmdArray);
-		
-		// Write argfile — each argument on its own line
+
+		// Write argfile - each argument on its own line
 		$argLines = [];
+		$rawArgsStr = "";
 		foreach ($cmdArray as $arg) {
 			$arg = trim($arg);
-			if ($arg === "") {
-				continue;
-			}
+			if ($arg === "") continue;
+			
 			// If arg contains spaces and isn't already quoted, wrap in quotes
-			// Java argfile parser treats \ as escape char inside quotes, so double them
 			if (strpos($arg, " ") !== false && $arg[0] !== '"') {
-				$arg = '"' . str_replace('\\', '\\\\', $arg) . '"';
+				// Java argfile parser treats \ as escape char inside quotes, so double them
+				$argfileArg = '"' . str_replace('\\', '\\\\', $arg) . '"';
+				$rawArg = '"' . $arg . '"';
+			} else {
+				$argfileArg = $arg;
+				$rawArg = $arg;
 			}
-			$argLines[] = $arg;
+			$argLines[] = $argfileArg;
+			$rawArgsStr .= ' ' . $rawArg;
 		}
-		file_put_contents($argfilePath, implode("\n", $argLines));
 		
-		// Build short command: just java @argfile
-		$shortCmd = '"' . $javaExecCmd . '" "@' . str_replace('/', '\\', $argfilePath) . '"';
+		$fullCmdLength = strlen('"' . $javaExecCmd . '"' . $rawArgsStr);
 		
-		$this->log("Using argfile: " . $argfilePath . " (" . count($cmdArray) . " total args)");
-		$this->log("Short command length: " . strlen($shortCmd) . " chars");
+		if ($fullCmdLength < 8000) {
+			$launchCmd = '"' . $javaExecCmd . '"' . $rawArgsStr;
+			$this->log("Using raw command line (length: " . $fullCmdLength . " chars)");
+			$this->argfileToDelete = "";
+		} else {
+			$argfilePath = __DIR__ . DIRECTORY_SEPARATOR . self::CACHE_DIR . DIRECTORY_SEPARATOR . "launch_args.txt";
+			file_put_contents($argfilePath, implode("\n", $argLines));
+			$launchCmd = '"' . $javaExecCmd . '" "@' . str_replace('/', '\\', $argfilePath) . '"';
+			$this->argfileToDelete = $argfilePath;
+			
+			$this->log("Using argfile: " . $argfilePath . " (" . count($cmdArray) . " total args)");
+			$this->log("Short command length: " . strlen($launchCmd) . " chars");
+		}
 		
 		// We launch directly, keeping handles open to read stdout/stderr.
 		// To prevent UI freezes, we launch using a parallel thread.
-		$launchCmd = $shortCmd;
-		
 		$this->gameChannel = new \parallel\Channel(\parallel\Channel::Infinite);
 		$this->gameProcess = new \parallel\Runtime();
 		$this->gameProcess->run(function(\parallel\Channel $ch, string $cmd, string $dir) {
@@ -5763,9 +5941,23 @@ class FoxyClient
 								// OSD removed
 						} elseif ($data["type"] === "log") {
 							$this->log(($data["isError"] ? "[Game/Stderr] " : "[Game/Stdout] ") . $data["msg"], $data["isError"] ? "WARN" : "INFO");
+							$this->gameLogBuffer[] = $data["msg"];
+							if (count($this->gameLogBuffer) > 200) array_shift($this->gameLogBuffer);
+							if ($this->argfileToDelete !== "") {
+								@unlink($this->argfileToDelete);
+								$this->argfileToDelete = "";
+							}
 						} elseif ($data["type"] === "log_batch") {
 							foreach ($data["msg"] as $line) {
 								$this->log(($data["isError"] ? "[Game/Stderr] " : "[Game/Stdout] ") . $line, $data["isError"] ? "WARN" : "INFO");
+								$this->gameLogBuffer[] = $line;
+							}
+							if (count($this->gameLogBuffer) > 200) {
+								$this->gameLogBuffer = array_slice($this->gameLogBuffer, -200);
+							}
+							if ($this->argfileToDelete !== "") {
+								@unlink($this->argfileToDelete);
+								$this->argfileToDelete = "";
 							}
 						} elseif ($data["type"] === "error") {
 							$this->log("Failed to start game process.", "ERROR");
@@ -5776,6 +5968,16 @@ class FoxyClient
 							// Auto-unhide launcher
 							$this->user32->ShowWindow($this->hwnd, 5); // SW_SHOW
 							
+							if ($data["code"] !== 0) {
+								$this->detectCrashBug($this->gameLogBuffer);
+							}
+							
+							// Fallback to delete argfile if game exits before logging anything
+							if ($this->argfileToDelete !== "") {
+								@unlink($this->argfileToDelete);
+								$this->argfileToDelete = "";
+							}
+
 							$this->gameProcess = null;
 							$this->gameChannel = null;
 							$this->assetMessage = "GAME CLOSED";
@@ -8137,9 +8339,103 @@ class FoxyClient
 		}
 	}
 
+	private function showConsole()
+	{
+		$hwndConsole = $this->kernel32->GetConsoleWindow();
+		$isNewConsole = false;
+		
+		if (!$hwndConsole) {
+			// Allocate a fresh console window if none exists
+			$this->kernel32->AllocConsole();
+			$hwndConsole = $this->kernel32->GetConsoleWindow();
+			$isNewConsole = true;
+		}
+
+		if ($hwndConsole) {
+			$this->kernel32->SetConsoleTitleA("FoxyClient " . self::VERSION . " - Debug Console");
+			$this->user32->ShowWindow($hwndConsole, 5); // SW_SHOW
+			
+			// Set console window icon to app.ico
+			$icoPath = __DIR__ . DIRECTORY_SEPARATOR . "app.ico";
+			if (file_exists($icoPath)) {
+				$iconSmall = $this->user32->LoadImageA(null, $icoPath, 1, 16, 16, 0x00000010); // IMAGE_ICON, LR_LOADFROMFILE
+				$iconBig = $this->user32->LoadImageA(null, $icoPath, 1, 32, 32, 0x00000010);
+				if ($iconSmall) $this->user32->SendMessageA($hwndConsole, 0x0080, 0, $iconSmall); // WM_SETICON, ICON_SMALL
+				if ($iconBig) $this->user32->SendMessageA($hwndConsole, 0x0080, 1, $iconBig); // WM_SETICON, ICON_BIG
+			}
+		}
+		
+		// Only open CONOUT and replay history if we just made a new window
+		if ($isNewConsole && !$this->consoleHandle) {
+			$this->consoleHandle = @fopen("CONOUT$", "w");
+			
+			// Replay recent log history into the new console
+			if ($this->consoleHandle) {
+				$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
+				if (file_exists($logPath)) {
+					$content = @file_get_contents($logPath);
+					if ($content) {
+						// Show last ~100 lines
+						$lines = explode("\n", $content);
+						$start = max(0, count($lines) - 100);
+						$recent = array_slice($lines, $start);
+						@fwrite($this->consoleHandle, "=== FoxyClient Debug Console ===\r\n");
+						@fwrite($this->consoleHandle, "=== Showing last " . count($recent) . " log lines ===\r\n\r\n");
+						@fwrite($this->consoleHandle, implode("\n", $recent));
+						@fflush($this->consoleHandle);
+					}
+				}
+			}
+		}
+	}
+
+	private function hideConsole()
+	{
+		$hwndConsole = $this->kernel32->GetConsoleWindow();
+		if ($hwndConsole) {
+			$this->user32->ShowWindow($hwndConsole, 0); // SW_HIDE
+		}
+	}
+
+	private function getLogDirectorySize($dir)
+	{
+		$hash = md5($dir);
+		$now = microtime(true);
+		if (!isset($this->logSizeCache[$hash]) || $now - $this->logSizeCache[$hash]['time'] > 2.0) {
+			$size = 0;
+			if (is_dir($dir)) {
+				$files = glob($dir . DIRECTORY_SEPARATOR . "*.log*");
+				if ($files) {
+					foreach ($files as $f) {
+						if (is_file($f)) $size += filesize($f);
+					}
+				}
+			}
+			$this->logSizeCache[$hash] = ['size' => $size, 'time' => $now];
+		}
+		return $this->logSizeCache[$hash]['size'];
+	}
+
+	private function clearLogDirectory($dir)
+	{
+		$hash = md5($dir);
+		unset($this->logSizeCache[$hash]);
+
+		if (is_dir($dir)) {
+			$files = glob($dir . DIRECTORY_SEPARATOR . "*.log*");
+			if ($files) {
+				foreach ($files as $f) {
+					if (is_file($f)) @unlink($f);
+				}
+			}
+		}
+	}
+
 	private function log($message, $level = "INFO")
 	{
 		$level = strtoupper($level);
+		// Redact session tokens to prevent credential leaks
+		$message = preg_replace('/Session ID is token:[^\s\)]+/', 'Session ID is token:<REDACTED>', $message);
 		$messageformated = sprintf(
 			"[%s] [%s] %s\n",
 			date("H:i:s"),
@@ -8147,7 +8443,12 @@ class FoxyClient
 			$message,
 		);
 
-		echo $messageformated;
+		if ($this->consoleHandle) {
+			@fwrite($this->consoleHandle, $messageformated);
+			@fflush($this->consoleHandle);
+		} else {
+			echo $messageformated;
+		}
 
 		if ($this->logHandle) {
 			fwrite($this->logHandle, $messageformated);
@@ -8986,6 +9287,7 @@ class FoxyClient
 				$easeAnim($this->homeAccDropdownAnim, $this->homeAccDropdownOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->homeVerDropdownAnim, $this->homeVerDropdownOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->javaModalDropdownAnim, $this->javaModalDropdownOpen ? 1.0 : 0.0, 0.25);
+				$easeAnim($this->crashModalAnim, $this->crashModalOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->modsVerDropdownAnim, $this->modsVerDropdownOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->modsFilterDropdownAnim, $this->modsFilterDropdown !== "" ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->propDropdownAnim, ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen) ? 1.0 : 0.0, 0.25);
@@ -9061,6 +9363,8 @@ class FoxyClient
 				$animating = $animating || (!$this->homeVerDropdownOpen && $this->homeVerDropdownAnim > 0.01);
 				$animating = $animating || ($this->javaModalDropdownOpen && $this->javaModalDropdownAnim < 1.0);
 				$animating = $animating || (!$this->javaModalDropdownOpen && $this->javaModalDropdownAnim > 0.01);
+				$animating = $animating || ($this->crashModalOpen && $this->crashModalAnim < 1.0);
+				$animating = $animating || (!$this->crashModalOpen && $this->crashModalAnim > 0.01);
 				$animating = $animating || ($this->modsVerDropdownOpen && $this->modsVerDropdownAnim < 1.0);
 				$animating = $animating || (!$this->modsVerDropdownOpen && $this->modsVerDropdownAnim > 0.01);
 				$animating = $animating || ($this->modsFilterDropdown !== "" && $this->modsFilterDropdownAnim < 1.0);
@@ -9119,6 +9423,19 @@ class FoxyClient
 			} else {
 				$this->titleDragHover = true;
 			}
+			return;
+		}
+
+		if ($this->crashModalOpen) {
+			$mw = 500;
+			$mh = 300;
+			$mx = ($this->width - $mw) / 2;
+			$my = ($this->height - $mh) / 2;
+			$bx = $mx + $mw / 2 - 60;
+			$by = $my + $mh - 50;
+			$bw = 120;
+			$this->crashCloseHover = ($x >= $bx && $x <= $bx + $bw && $y >= $by && $y <= $by + 30);
+			$this->needsRedraw = true;
 			return;
 		}
 
@@ -10187,12 +10504,11 @@ class FoxyClient
 				// Clear Minecraft Log
 				$bx = $fieldX + $fieldW - 140;
 				$bw = 140;
+				$rowY = $contentTop + $idx * $rowH - $this->propScrollOffset;
 				if ($cx >= $bx && $cx <= $bx + $bw && $cy >= $rowY && $cy <= $rowY + 50) {
-					$logPath = $this->getAbsolutePath($this->settings["game_dir"] . DIRECTORY_SEPARATOR . "logs" . DIRECTORY_SEPARATOR . "latest.log");
-					if (file_exists($logPath)) {
-						@unlink($logPath);
-						$this->needsRedraw = true;
-					}
+					$logDir = $this->getAbsolutePath($this->settings["game_dir"] . DIRECTORY_SEPARATOR . "logs");
+					$this->clearLogDirectory($logDir);
+					$this->needsRedraw = true;
 				}
 			}
 		} elseif ($this->propSubTab === 1) {
@@ -10332,12 +10648,9 @@ class FoxyClient
 				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
 					$this->settings["show_console"] = !($this->settings["show_console"] ?? false);
 					if ($this->settings["show_console"]) {
-						$this->kernel32->AllocConsole();
-						$hwnd = $this->kernel32->GetConsoleWindow();
-						if ($hwnd) $this->user32->ShowWindow($hwnd, 5); // SW_SHOW
+						$this->showConsole();
 					} else {
-						$hwnd = $this->kernel32->GetConsoleWindow();
-						if ($hwnd) $this->user32->ShowWindow($hwnd, 0); // SW_HIDE
+						$this->hideConsole();
 					}
 					$this->saveSettings();
 					$this->needsRedraw = true;
@@ -10346,12 +10659,18 @@ class FoxyClient
 				// Clear Launcher Log
 				$bx = $fieldX + $fieldW - 140;
 				$bw = 140;
+				$rowY = $contentTop + $idx * $rowH - $this->propScrollOffset;
 				if ($cx >= $bx && $cx <= $bx + $bw && $cy >= $rowY && $cy <= $rowY + 50) {
-					$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
-					if (file_exists($logPath)) {
-						@unlink($logPath);
-						$this->needsRedraw = true;
-					}
+					$logDir = __DIR__ . DIRECTORY_SEPARATOR . self::LOG_DIR;
+					$this->clearLogDirectory($logDir);
+					$latest = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
+					if (file_exists($latest)) @unlink($latest);
+					
+					// Re-open log handle
+					if ($this->logHandle) @fclose($this->logHandle);
+					$this->logHandle = @fopen($latest, "a");
+					
+					$this->needsRedraw = true;
 				}
 			} else {
 				$this->propFontDropdownOpen = "";
@@ -10592,6 +10911,12 @@ class FoxyClient
 
 			// Modals
 			$this->globalAlpha = $revWA > 0.9 ? 1.0 : 0.0;
+			if ($this->javaModalOpen || $this->javaModalDropdownOpen || $this->javaModalDropdownAnim > 0.01) {
+				$this->renderJavaModal();
+			}
+			if ($this->crashModalOpen || $this->crashModalAnim > 0.01) {
+				$this->renderCrashModal();
+			}
 			if ($this->modInfoModalOpen || $this->modInfoAlpha > 0.01) {
 				$this->renderModInfoModal();
 			}
@@ -11004,6 +11329,17 @@ class FoxyClient
 				}
 			}
 		}
+
+		if ($this->homeVerSearchQuery !== "") {
+			$filteredOut = [];
+			foreach ($out as $item) {
+				if (stripos($item["label"] ?? $item["id"], $this->homeVerSearchQuery) !== false) {
+					$filteredOut[] = $item;
+				}
+			}
+			$out = $filteredOut;
+		}
+
 		return $out;
 	}
 
@@ -11052,18 +11388,23 @@ class FoxyClient
 			}
 		}
 
+		$this->homeVerSearchFocus = false;
+
 		if ($this->homeVerDropdownOpen) {
 			$filtered = $this->getHomeVersions();
-			$ddH = min(200, count($filtered) * 40);
+			$searchH = 40;
+			$listH = min(160, count($filtered) * 40);
+			$ddH = $listH + $searchH;
 			// Scrollbar hit detection
 			$contentH = count($filtered) * 40;
-			if ($contentH > $ddH) {
-				$scrollH = max(20, ($ddH / $contentH) * $ddH);
+			if ($contentH > $listH) {
+				$scrollH = max(20, ($listH / $contentH) * $listH);
 				$thumbY =
 					$vy +
 					$vh +
-					($this->homeVerScrollOffset / ($contentH - $ddH)) *
-						($ddH - $scrollH);
+					$searchH +
+					($this->homeVerScrollOffset / ($contentH - $listH)) *
+						($listH - $scrollH);
 				if (
 					$cx >= $vx + $vw - 12 &&
 					$cx <= $vx + $vw &&
@@ -11084,17 +11425,25 @@ class FoxyClient
 				$y >= $vy + $vh &&
 				$y <= $vy + $vh + $ddH
 			) {
-				$localY = $y - ($vy + $vh) + $this->homeVerScrollOffset;
-				$idx = (int) floor($localY / 40);
-				if (isset($filtered[$idx])) {
-					$vId = $filtered[$idx]["id"];
-					$this->selectedVersion = $vId;
-					$this->config["minecraft_version"] = $this->selectedVersion;
-					$this->saveConfig();
-
-					// Auto-download removed (User requested manual download via button)
+				if ($y <= $vy + $vh + $searchH) {
+					if (!empty($this->homeVerSearchQuery) && $cx >= $vx + $vw - 45) {
+						$this->homeVerSearchQuery = "";
+						$this->homeVerScrollOffset = 0;
+					} else {
+						$this->homeVerSearchFocus = true;
+					}
+					return;
+				} else {
+					$localY = $y - ($vy + $vh + $searchH) + $this->homeVerScrollOffset;
+					$idx = (int) floor($localY / 40);
+					if (isset($filtered[$idx])) {
+						$vId = $filtered[$idx]["id"];
+						$this->selectedVersion = $vId;
+						$this->config["minecraft_version"] = $this->selectedVersion;
+						$this->saveConfig();
+					}
+					$this->homeVerDropdownOpen = false;
 				}
-				$this->homeVerDropdownOpen = false;
 				return;
 			}
 		}
@@ -11197,15 +11546,21 @@ class FoxyClient
 
 		if ($this->homeVerDropdownOpen) {
 			$filtered = $this->getHomeVersions();
-			$ddH = min(200, count($filtered) * 40);
+			$searchH = 40;
+			$listH = min(160, count($filtered) * 40);
+			$ddH = $listH + $searchH;
 			if (
 				$cx >= $vx &&
 				$cx <= $vx + $vw &&
 				$y >= $vy + $vh &&
 				$y <= $vy + $vh + $ddH
 			) {
-				$localY = $y - ($vy + $vh) + $this->homeVerScrollOffset;
-				$this->homeHoverIdx = 1000 + (int) floor($localY / 40);
+				if ($y <= $vy + $vh + $searchH) {
+					$this->homeHoverIdx = 10000;
+				} else {
+					$localY = $y - ($vy + $vh + $searchH) + $this->homeVerScrollOffset;
+					$this->homeHoverIdx = 1000 + (int) floor($localY / 40);
+				}
 				return;
 			}
 		}
@@ -11502,7 +11857,9 @@ class FoxyClient
 
 		if ($this->homeVerDropdownOpen || $this->homeVerDropdownAnim > 0.01) {
 			$filtered = $this->getHomeVersions();
-			$fullDDH = min(200, count($filtered) * 40);
+			$searchH = 40;
+			$listH = min(160, count($filtered) * 40);
+			$fullDDH = $listH + $searchH;
 			$ddH = $fullDDH * $this->homeVerDropdownAnim;
 			$dY = $vy + $vh - 1; // Overlap by 1px to close gaps
 
@@ -11519,74 +11876,95 @@ class FoxyClient
 			$this->drawRect($vx, $dY, $vw, 8, $this->colors["dropdown_bg"]);
 			$this->drawRect($vx, $dY, $vw, 1, $this->colors["divider"]);
 
-			$itemY = $dY - $this->homeVerScrollOffset;
-			foreach ($filtered as $i => $v) {
-				if ($itemY + 40 > $dY && $itemY < $dY + $ddH) {
-					$isHover = $this->homeHoverIdx === 1000 + $i;
-					if ($isHover) {
-						$this->drawRect($vx + 4, $itemY + 2, $vw - 8, 36, $this->colors["dropdown_hover"], 4);
-					}
-					
-					$accentColor = $v["type"] === "release" ? $this->colors["primary"] : $this->colors["text_dim"];
-					$this->drawRect($vx + 4, $itemY + 6, 2, 28, $accentColor, 1);
-					
-					$jarP = $this->settings["game_dir"] . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $v["id"] . DIRECTORY_SEPARATOR . $v["id"] . ".jar";
-					$isInst = file_exists($jarP);
-					
-					$idLow = strtolower($v["id"]);
-					$modLoader = "vanilla";
-					if (strpos($idLow, "fabric") !== false) $modLoader = "fabric";
-					elseif (strpos($idLow, "optifine") !== false) $modLoader = "optifine";
-					elseif (strpos($idLow, "neoforge") !== false) $modLoader = "neoforge";
-					elseif (strpos($idLow, "forge") !== false) $modLoader = "forge";
-					elseif (strpos($idLow, "quilt") !== false) $modLoader = "quilt";
+			// Draw Search Box
+			$searchHover = $this->homeHoverIdx === 10000;
+			$this->renderSearchBar($vx + 10, $dY + 5, $vw - 20, 30, $this->homeVerSearchQuery, $this->homeVerSearchFocus, "Search Versions...");
 
-					$iconTex = $this->verIcons[$modLoader] ?? 0;
-					$textX = $vx + 16;
-					if ($iconTex && $iconTex > 0) {
-						// Set explicit white color for texture blending
-						$this->opengl32->glColor4f(1.0, 1.0, 1.0, 1.0);
-						$this->drawTexture($iconTex, $textX, $itemY + 12, 16, 16);
-						$textX += 24;
-					}
+			// Draw Divider below search box
+			$this->drawRect($vx + 10, $dY + 39, $vw - 20, 1, $this->colors["divider"]);
 
-					// Green for installed, gray for not installed
-					if ($isInst) {
-						$textC = $isHover ? [0.4, 0.9, 0.5] : [0.3, 0.8, 0.4];
-					} else {
-						$textC = $isHover ? $this->colors["text"] : $this->colors["text_dim"];
-					}
+			$listScissorH = max(0, $ddH - $searchH);
+			if ($listScissorH > 0) {
+				// Tighten scissor for list to avoid drawing over search box
+				$gl->glScissor(
+					self::SIDEBAR_W + $vx,
+					$this->height - ($dY + self::TITLEBAR_H + $searchH + $listScissorH),
+					$vw,
+					$listScissorH
+				);
 
-					$label = $v["id"] . ($isInst ? " (Installed)" : "");
-					$this->renderText($label, $textX, $itemY + 26, $textC, 1000);
+				$itemY = $dY + $searchH - $this->homeVerScrollOffset;
+				foreach ($filtered as $i => $v) {
+					if ($itemY + 40 > $dY + $searchH && $itemY < $dY + $ddH) {
+						$isHover = $this->homeHoverIdx === 1000 + $i;
+						if ($isHover) {
+							$this->drawRect($vx + 4, $itemY + 2, $vw - 8, 36, $this->colors["dropdown_hover"], 4);
+						}
+						
+						$accentColor = $v["type"] === "release" ? $this->colors["primary"] : $this->colors["text_dim"];
+						$this->drawRect($vx + 4, $itemY + 6, 2, 28, $accentColor, 1);
+						
+						$jarP = $this->settings["game_dir"] . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $v["id"] . DIRECTORY_SEPARATOR . $v["id"] . ".jar";
+						$isInst = file_exists($jarP);
+						
+						$idLow = strtolower($v["id"]);
+						$modLoader = "vanilla";
+						if (strpos($idLow, "fabric") !== false) $modLoader = "fabric";
+						elseif (strpos($idLow, "optifine") !== false) $modLoader = "optifine";
+						elseif (strpos($idLow, "neoforge") !== false) $modLoader = "neoforge";
+						elseif (strpos($idLow, "forge") !== false) $modLoader = "forge";
+						elseif (strpos($idLow, "quilt") !== false) $modLoader = "quilt";
+
+						$iconTex = $this->verIcons[$modLoader] ?? 0;
+						$textX = $vx + 16;
+						if ($iconTex && $iconTex > 0) {
+							// Set explicit white color for texture blending
+							$this->opengl32->glColor4f(1.0, 1.0, 1.0, 1.0);
+							$this->drawTexture($iconTex, $textX, $itemY + 12, 16, 16);
+							$textX += 24;
+						}
+
+						// Green for installed, gray for not installed
+						if ($isInst) {
+							$textC = $isHover ? [0.4, 0.9, 0.5] : [0.3, 0.8, 0.4];
+						} else {
+							$textC = $isHover ? $this->colors["text"] : $this->colors["text_dim"];
+						}
+
+						$label = $v["id"] . ($isInst ? " (Installed)" : "");
+						$this->renderText($label, $textX, $itemY + 26, $textC, 1000);
+					}
+					$itemY += 40;
 				}
-				$itemY += 40;
+
+				// Scrollbar if needed
+				$contentH = count($filtered) * 40;
+				if ($contentH > $listH) {
+					$scrollH = max(20, ($listH / $contentH) * $listH);
+					$scrollY =
+						$dY +
+						$searchH +
+						($this->homeVerScrollOffset / ($contentH - $listH)) *
+							($listH - $scrollH);
+					
+					// Draw background limited to visible scissor height
+					$this->drawRect(
+						$vx + $vw - 6,
+						$dY + $searchH,
+						6,
+						$listScissorH,
+						$this->colors["bg"],
+					); // bg
+					$this->drawRect(
+						$vx + $vw - 5,
+						$scrollY,
+						4,
+						$scrollH,
+						$this->colors["tab_active"],
+					); // handle
+				}
 			}
 			$gl->glDisable(0x0c11);
-
-			// Scrollbar if needed
-			$contentH = count($filtered) * 40;
-			if ($contentH > $ddH) {
-				$scrollH = max(20, ($ddH / $contentH) * $ddH);
-				$scrollY =
-					$dY +
-					($this->homeVerScrollOffset / ($contentH - $ddH)) *
-						($ddH - $scrollH);
-				$this->drawRect(
-					$vx + $vw - 6,
-					$dY,
-					6,
-					$ddH,
-					$this->colors["bg"],
-				); // bg
-				$this->drawRect(
-					$vx + $vw - 5,
-					$scrollY,
-					4,
-					$scrollH,
-					$this->colors["tab_active"],
-				); // handle
-			}
 		}
 	}
 
@@ -14166,8 +14544,9 @@ class FoxyClient
 					   $this->mouseY >= $cy + self::TITLEBAR_H && $this->mouseY <= $cy + self::TITLEBAR_H + 30;
 			$this->drawStyledButton($bx, $cy + 4, $bw, 26, "CLEAR LOG", $isHover, "danger");
 			
-			$logPath = $this->getAbsolutePath($this->settings["game_dir"] . DIRECTORY_SEPARATOR . "logs" . DIRECTORY_SEPARATOR . "latest.log");
-			$size = file_exists($logPath) ? round(filesize($logPath) / 1024, 2) . " KB" : "0 KB";
+			$logDir = $this->getAbsolutePath($this->settings["game_dir"] . DIRECTORY_SEPARATOR . "logs");
+			$totalSize = $this->getLogDirectorySize($logDir);
+			$size = $totalSize > 1048576 ? round($totalSize / 1048576, 2) . " MB" : round($totalSize / 1024, 2) . " KB";
 			$this->renderText("Log size: " . $size, $bx + 4, $cy + 42, $this->colors["text_dim"], 3000);
 		});
 	}
@@ -14294,8 +14673,11 @@ class FoxyClient
 						   $this->mouseY >= $cy + self::TITLEBAR_H && $this->mouseY <= $cy + self::TITLEBAR_H + 30;
 				$this->drawStyledButton($bx, $cy + 4, $bw, 26, "CLEAR LOG", $isHover, "danger");
 				
-				$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
-				$size = file_exists($logPath) ? round(filesize($logPath) / 1024, 2) . " KB" : "0 KB";
+				$logDir = __DIR__ . DIRECTORY_SEPARATOR . self::LOG_DIR;
+				$totalSize = $this->getLogDirectorySize($logDir);
+				$latest = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
+				if (file_exists($latest)) $totalSize += filesize($latest);
+				$size = $totalSize > 1048576 ? round($totalSize / 1048576, 2) . " MB" : round($totalSize / 1024, 2) . " KB";
 				$this->renderText("Log size: " . $size, $bx + 4, $cy + 42, $this->colors["text_dim"], 3000);
 			},
 		);
@@ -15948,6 +16330,108 @@ class FoxyClient
 		$this->user32->ReleaseCapture();
 		// WM_NCLBUTTONDOWN = 0xA1, HTCAPTION = 2
 		$this->user32->SendMessageA($this->hwnd, 0xa1, 2, null);
+	}
+
+	private function detectCrashBug($logLines)
+	{
+		$logText = implode("\n", $logLines);
+		$title = "Minecraft Crashed";
+		$cause = "An unknown error occurred during gameplay.";
+		$solution = "Please check the game logs or FoxyClient debug console for more details.";
+
+		if (strpos($logText, "jdk.internal.loader.ClassLoaders\$AppClassLoader cannot be cast to class java.net.URLClassLoader") !== false) {
+			$title = "LaunchWrapper Incompatibility";
+			$cause = "Minecraft failed to launch because the game's old LaunchWrapper is incompatible with Java 9 or newer.";
+			$solution = "Please go to Java Settings in FoxyClient and select Java 8, then try again.";
+		} elseif (strpos($logText, "UnsupportedClassVersionError") !== false) {
+			$title = "Outdated Java Version";
+			$cause = "The version of Minecraft or a mod you are trying to run requires a newer version of Java than the one currently selected.";
+			$solution = "Please go to Java Settings and select a newer Java version (e.g., Java 17 or 21).";
+		} elseif (strpos($logText, "OutOfMemoryError") !== false) {
+			$title = "Out of Memory";
+			$cause = "Minecraft ran out of allocated RAM and crashed.";
+			$solution = "Please go to Settings and increase the Allocated Memory slider.";
+		} elseif (strpos($logText, "Pixel format not accelerated") !== false) {
+			$title = "Graphics Driver Error";
+			$cause = "Minecraft could not initialize OpenGL because of a graphics driver issue.";
+			$solution = "Please update your graphics card drivers, or ensure your PC meets the minimum OpenGL requirements.";
+		} elseif (strpos($logText, "UnsatisfiedLinkError") !== false) {
+			$title = "Missing Natives";
+			$cause = "Minecraft crashed because it couldn't load native libraries for your operating system or architecture.";
+			$solution = "Ensure you are running the correct version of Java (64-bit) for your system.";
+		}
+
+		$this->crashTitle = $title;
+		$this->crashCause = $cause;
+		$this->crashSolution = $solution;
+		$this->crashModalOpen = true;
+		$this->needsRedraw = true;
+	}
+
+	private function renderCrashModal()
+	{
+		if (!$this->crashModalOpen && $this->crashModalAnim < 0.01) {
+			return;
+		}
+
+		$gl = $this->opengl32;
+
+		// Draw dark background overlay
+		$gl->glEnable(0x0be2); // GL_BLEND
+		$gl->glBlendFunc(0x0302, 0x0303); // GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
+		$gl->glDisable(0x0de1); // Disable textures for solid color rects
+		$gl->glColor4f(0.0, 0.0, 0.0, 0.6 * $this->crashModalAnim);
+		$gl->glBegin(0x0007); // GL_QUADS
+		$gl->glVertex2f(0, 0);
+		$gl->glVertex2f($this->width, 0);
+		$gl->glVertex2f($this->width, $this->height);
+		$gl->glVertex2f(0, $this->height);
+		$gl->glEnd();
+
+		$mw = 500;
+		$mh = 300;
+		$mx = ($this->width - $mw) / 2;
+		$my = ($this->height - $mh) / 2 - (1.0 - $this->crashModalAnim) * 50; // slide up
+
+		// Modal Box
+		$this->drawRoundedRect($mx, $my, $mw, $mh, 10, [0.12, 0.12, 0.12, $this->crashModalAnim]);
+		
+		// Modal Header
+		$this->drawRoundedRect($mx, $my, $mw, 50, 10, [0.9, 0.3, 0.3, $this->crashModalAnim]);
+		$gl->glColor4f(0.12, 0.12, 0.12, $this->crashModalAnim);
+		$gl->glBegin(0x0007);
+		$gl->glVertex2f($mx, $my + 40);
+		$gl->glVertex2f($mx + $mw, $my + 40);
+		$gl->glVertex2f($mx + $mw, $my + 50);
+		$gl->glVertex2f($mx, $my + 50);
+		$gl->glEnd();
+
+		// Title
+		$this->renderText($this->crashTitle, $mx + 20, $my + 34, [1, 1, 1, $this->crashModalAnim], 1500);
+
+		// Cause
+		$this->renderText("Cause:", $mx + 20, $my + 70, $this->colors["text_dim"], 1000);
+		$wrappedCause = explode("\n", wordwrap($this->crashCause, 50, "\n", true));
+		$oy = $my + 90;
+		foreach ($wrappedCause as $line) {
+			$this->renderText($line, $mx + 20, $oy, $this->colors["text"], 1000);
+			$oy += 20;
+		}
+
+		// Solution
+		$this->renderText("Solution:", $mx + 20, $my + 170, $this->colors["text_dim"], 1000);
+		$wrappedSolution = explode("\n", wordwrap($this->crashSolution, 50, "\n", true));
+		$oy = $my + 190;
+		foreach ($wrappedSolution as $line) {
+			$this->renderText($line, $mx + 20, $oy, $this->colors["text"], 1000);
+			$oy += 20;
+		}
+
+		// Close Button
+		$bx = $mx + $mw / 2 - 60;
+		$by = $my + $mh - 50;
+		$bw = 120;
+		$this->drawStyledButton($bx, $by, $bw, 30, "CLOSE", $this->crashCloseHover);
 	}
 
 	private function renderModInfoModal()
