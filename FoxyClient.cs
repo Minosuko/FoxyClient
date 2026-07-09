@@ -59,6 +59,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
 
         bool isUpdate = args.Contains("--update");
         bool isUninstall = args.Contains("--uninstall");
+        bool isUnsigned = args.Contains("--unsigned");
 
         var handle = GetConsoleWindow();
         ShowWindow(handle, 0); // Hide console window
@@ -82,7 +83,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         }
 
         // Normal launch: verify integrity then start PHP client
-        if (!VerifyIntegrity())
+        if (!isUnsigned && !VerifyIntegrity())
         {
             ShowWindow(handle, 5);
             Log("CRITICAL: RSA integrity check failed.");
@@ -93,6 +94,9 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
                 "FoxyClient Integrity Error", 0x10);
             return;
         }
+
+        if (isUnsigned)
+            Log("Skipping integrity verification (--unsigned flag).");
 
         LaunchClient();
     }

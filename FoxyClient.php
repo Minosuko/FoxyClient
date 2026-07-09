@@ -1,19 +1,16 @@
 <?php
-
 /**
- * Foxy Client - Native OpenGL GUI
- * Implemented using PHP FFI for Win32 and OpenGL32
- * Features: Tabbed UI, smooth scrolling, hover effects
+ * Foxy Client
  */
+class FoxyClient {
 
-class FoxyClient
-{
-	public const VERSION = "1.4.0";
+	
+
+	public const VERSION = "1.4.1";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
 
-	// WGL MSAA Constants
 	public const WGL_DRAW_TO_WINDOW_ARB    = 0x2001;
 	public const WGL_SUPPORT_OPENGL_ARB    = 0x2010;
 	public const WGL_DOUBLE_BUFFER_ARB     = 0x2011;
@@ -40,8 +37,7 @@ class FoxyClient
 	private $mojangTex = 0;
 	private $elybyTex = 0;
 	private $bgTex = null;
-	private $bgW = 0,
-		$bgH = 0;
+	private $bgW = 0, $bgH = 0;
 	private $logoW = 0;
 	private $logoH = 0;
 
@@ -87,15 +83,9 @@ class FoxyClient
 	private const SIDEBAR_W = 70;
 	private const DATA_DIR = "FoxyClient";
 	private const CACHE_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "data";
-	private const CACERT =
-		self::DATA_DIR .
-		DIRECTORY_SEPARATOR .
-		"config" .
-		DIRECTORY_SEPARATOR .
-		"cacert.pem";
+	private const CACERT = self::DATA_DIR . DIRECTORY_SEPARATOR . "config" . DIRECTORY_SEPARATOR . "cacert.pem";
 	private const LOG_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "logs";
-	private const LATEST_LOG =
-		self::LOG_DIR . DIRECTORY_SEPARATOR . "latest.log";
+	private const LATEST_LOG = self::LOG_DIR . DIRECTORY_SEPARATOR . "latest.log";
 	private const ICON_CACHE_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "cache" . DIRECTORY_SEPARATOR . "icons";
 
 	private const ELY_ENDPOINT = "ely.by";
@@ -126,7 +116,6 @@ class FoxyClient
 	private $oauthServer = null;
 	private $oauthPort = 25564;
 	private $oauthState = "";
-
 
 	// Smooth scroll
 	private $scrollOffset = 0.0;
@@ -160,6 +149,8 @@ class FoxyClient
 	private $vCategory = 0; // 0=Release, 1=Snapshot
 	private $vScrollTarget = 0;
 	private $vScrollOffset = 0;
+	private $vSearchQuery = "";
+	private $vSearchFocus = false;
 	private $vTabHover = -1;
 	private $filteredVersionsCache = null;
 	private $lastVCategory = -1;
@@ -356,6 +347,18 @@ class FoxyClient
 	private $httpResultChannel = null;
 	private $httpQueueChannel = null;
 	private $httpWorkerProcesses = [];
+	private $transientWorkerPool = [];
+	private $transientWorkerIndex = 0;
+	private function runTransientTask(\Closure $task, array $args = []) {
+		if (empty($this->transientWorkerPool)) {
+			for ($i = 0; $i < 1; $i++) {
+				$this->transientWorkerPool[] = new \parallel\Runtime(__FILE__);
+			}
+		}
+		$runtime = $this->transientWorkerPool[$this->transientWorkerIndex];
+		$this->transientWorkerIndex = ($this->transientWorkerIndex + 1) % count($this->transientWorkerPool);
+		return $runtime->run($task, $args);
+	}
 	private $httpResults = [];
 	private $httpPending = [];
 	// Manifest fetch state
@@ -444,6 +447,16 @@ class FoxyClient
 	private $javaModalActiveField = "";
 	private $javaModalHoverIdx = -1;
 	private $javaModalDropdownOpen = false;
+	private $javaVersionDropdownOpen = false;
+	private $javaVersionOptions = [
+		"auto" => "Auto",
+		"8" => "Java 8",
+		"11" => "Java 11",
+		"16" => "Java 16",
+		"17" => "Java 17",
+		"21" => "Java 21",
+		"25" => "Java 25",
+	];
 	private $jvmOptions = [
 		"disable" => "Disable",
 		"default" => "Default (G1 or CMS)",
@@ -476,28 +489,13 @@ class FoxyClient
 	private $argfileToDelete = "";
 
 	// FoxyClient Tab: Keybinds / Macros / FoxyConfig / Cosmetics
-	private $foxyKeybindData = [];   // module_name => {enabled, keybind, settings}
-	private $foxyMacroData = [];     // keycode => command
 	private $foxyConfigData = [];    // setting_key => value
-	private $foxyKeybindScrollTarget = 0.0;
-	private $foxyKeybindScrollOffset = 0.0;
-	private $foxyMacroScrollTarget = 0.0;
-	private $foxyMacroScrollOffset = 0.0;
 	private $foxyConfigScrollTarget = 0.0;
 	private $foxyConfigScrollOffset = 0.0;
-	private $foxyKeybindEditIdx = -1;  // Index of keybind being edited (-1 = none)
-	private $foxyMacroEditIdx = -1;   // Index of macro being edited
-	private $foxyMacroEditCommandIdx = -1;
-	private $foxyKeybindHoverIdx = -1;
-	private $foxyMacroHoverIdx = -1;
 	private $foxyConfigHoverIdx = -1;
 	private $foxyCosmeticsHoverIdx = -1;
 	private $accScrollTarget = 0.0;
 	private $accScrollOffset = 0.0;
-	private $foxyKeybindSearchQuery = "";
-	private $foxyKeybindSearchFocus = false;
-	private $foxyKeybindListenMode = false; // true when waiting for keypress
-	private $foxyMacroListenMode = false; // true when waiting for macro keybind
 	private $glfw_key_names = [
 		-1 => "NONE", 32 => "SPACE", 39 => "'", 44 => ",", 45 => "-", 46 => ".", 47 => "/",
 		48 => "0", 49 => "1", 50 => "2", 51 => "3", 52 => "4", 53 => "5",
@@ -520,14 +518,29 @@ class FoxyClient
 		344 => "RSHIFT", 345 => "RCTRL", 346 => "RALT", 347 => "RSUPER",
 	];
 
+	// Store mcVer as string "major.minor[.patch]" for comparison
+	private function mcVersionCmp($a, $b)
+	{
+		$pa = explode(".", $a);
+		$pb = explode(".", $b);
+		for ($i = 0; $i < 3; $i++) {
+			$va = (int)($pa[$i] ?? 0);
+			$vb = (int)($pb[$i] ?? 0);
+			if ($va !== $vb) return $va - $vb;
+		}
+		return 0;
+	}
+
 	private $defaultSettings = [
 		"game_dir" => "games",
 		"window_w" => "1280",
 		"window_h" => "720",
-		"java_path" => "temurin-jre/bin/javaw.exe",
+		"java_mode" => "auto",
+		"java_path" => "",
 		"java_args" => "",
 		"minecraft_args" => "",
 		"jvm_optimizer" => "default",
+		"java_version" => "auto",
 		"ram_mb" => 2048,
 		"bg_file" => self::DATA_DIR . "/images/background.jpg",
 		"bg_blur" => 0,
@@ -544,7 +557,8 @@ class FoxyClient
 		"game_dir" => "games",
 		"window_w" => "1280",
 		"window_h" => "720",
-		"java_path" => "temurin-jre/bin/javaw.exe",
+		"java_mode" => "auto",
+		"java_path" => "",
 		"java_args" => "",
 		"minecraft_args" => "",
 		"jvm_optimizer" => "default",
@@ -582,6 +596,7 @@ class FoxyClient
 	private $homeVerSearchFocus = false;
 	private $homeVerDropdownAnim = 0.0;
 	private $javaModalDropdownAnim = 0.0;
+	private $javaVersionDropdownAnim = 0.0;
 	private $globalAlpha = 1.0;
 	private $sidebarIndicatorY = 20.0;
 	private $sidebarTargetY = 20.0;
@@ -721,10 +736,10 @@ class FoxyClient
 		$this->httpResultChannel = new \parallel\Channel(\parallel\Channel::Infinite);
 		$this->pollEvents->addChannel($this->httpResultChannel);
 		
-		// Initialize persistent HTTP worker pool (8 concurrent workers for general tasks)
+		// Initialize persistent HTTP worker pool (2 concurrent workers for general tasks)
 		$this->httpQueueChannel = new \parallel\Channel(\parallel\Channel::Infinite);
 		$this->httpWorkerProcesses = [];
-		for ($i = 0; $i < 8; $i++) {
+		for ($i = 0; $i < 1; $i++) {
 			$this->httpWorkerProcesses[] = new \parallel\Runtime();
 		}
 		
@@ -737,6 +752,7 @@ class FoxyClient
 		$acc_offline = self::ACC_OFFLINE;
 		$acc_mojang = self::ACC_MOJANG;
 
+		putenv('FOXY_BACKGROUND=1');
 		foreach ($this->httpWorkerProcesses as $worker) {
 			$worker->run(function(\parallel\Channel $q, \parallel\Channel $r, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang) {
 			$log = function($msg, $lvl = "INFO") use ($r) {
@@ -1004,26 +1020,18 @@ class FoxyClient
 		$this->loadFoxyConfig();
 		$this->checkLocalMods();
 		$this->applyTheme();
-		$this->initFFI();
-		$this->detectSystemRam();
+		$this->initFFI(); $this->detectSystemRam();
 		$this->initGDIPlus();
 		$this->initMicrosoftLogin();
 		$this->createWindow();
 		$this->initGL();
-		$this->loadLogo();
-		$this->loadBackground();
-
-		$this->user32->ShowWindow($this->hwnd, 1);
-		$this->user32->UpdateWindow($this->hwnd);
+		$this->loadLogo(); $this->loadBackground(); $this->user32->ShowWindow($this->hwnd, 1); $this->user32->UpdateWindow($this->hwnd);
 
 		if ($this->settings["show_console"] ?? false) {
 			$this->showConsole();
 		}
 
-		$this->isLoadingFonts = true;
-		$this->fontGenerator = $this->initFontsAsync();
-
-		// Load version cache first
+		$this->isLoadingFonts = true; $this->fontGenerator = $this->initFontsAsync(); // Load version cache first
 		$cacheFile = self::CACHE_DIR . DIRECTORY_SEPARATOR . "versions_cache.json";
 		if (file_exists($cacheFile)) {
 			$cacheData = json_decode(file_get_contents($cacheFile), true);
@@ -1510,6 +1518,7 @@ class FoxyClient
 			void glDeleteTextures(int n, const UINT *textures);
 			void glBindTexture(UINT target, UINT texture);
 			void glTexImage2D(UINT target, int level, int internalformat, int width, int height, int border, UINT format, UINT type, const void *pixels);
+			void glTexSubImage2D(UINT target, int level, int xoffset, int yoffset, int width, int height, UINT format, UINT type, const void *pixels);
 			void glTexParameteri(UINT target, UINT pname, int param);
 			void glTexParameterf(UINT target, UINT pname, float param);
 			void glGetFloatv(UINT pname, float *params);
@@ -1738,35 +1747,15 @@ class FoxyClient
 									if ($this->scrollTarget < 0) $this->scrollTarget = 0;
 									if ($this->scrollTarget > $maxScroll) $this->scrollTarget = $maxScroll;
 									break;
-								case 1:
-									$this->foxyKeybindScrollTarget -= $delta / 3;
-									$contentH = count($this->foxyKeybindData) * 40;
-									$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 38);
-									$maxScroll = max(0, $contentH - $listH);
-									if ($this->foxyKeybindScrollTarget < 0) $this->foxyKeybindScrollTarget = 0;
-									if ($this->foxyKeybindScrollTarget > $maxScroll) $this->foxyKeybindScrollTarget = $maxScroll;
-									break;
-								case 2:
-									$this->foxyMacroScrollTarget -= $delta / 3;
-									$contentH = count($this->foxyMacroData) * 44;
-									$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 38) - 40;
-									$maxScroll = max(0, $contentH - $listH);
-									if ($this->foxyMacroScrollTarget < 0) $this->foxyMacroScrollTarget = 0;
-									if ($this->foxyMacroScrollTarget > $maxScroll) $this->foxyMacroScrollTarget = $maxScroll;
-									break;
-								case 3:
+								case 1: // Config
 									$this->foxyConfigScrollTarget -= $delta / 3;
-									$hiddenKeys = ["skinName", "capeName", "slimModel", "customMusicName", "customFontName", "customBackgroundName", "customSkinPath", "customFontPath", "customBackgroundPath", "customMusicPath"];
-									$keys = array_values(array_filter(array_keys($this->foxyConfigData), function($k) use ($hiddenKeys) {
-										return !in_array($k, $hiddenKeys);
-									}));
-									$contentRows = ceil(count($keys) / 2);
-									$contentH = $contentRows * (70 + 15) + 10;
+									$contentH = count($this->foxyConfigData) * 70;
 									$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - (self::HEADER_H + self::TAB_H + 10);
 									$maxScroll = max(0, $contentH - $listH);
 									if ($this->foxyConfigScrollTarget < 0) $this->foxyConfigScrollTarget = 0;
 									if ($this->foxyConfigScrollTarget > $maxScroll) $this->foxyConfigScrollTarget = $maxScroll;
 									break;
+								
 							}
 						} elseif ($this->currentPage === self::PAGE_ACCOUNTS) {
 							$this->accScrollTarget -= $delta / 3;
@@ -1792,48 +1781,6 @@ class FoxyClient
 						}
 						return 0;
 					case 0x0100: // WM_KEYDOWN
-						// Keybind listen mode: capture the pressed key
-						if ($this->foxyKeybindListenMode && $this->foxyKeybindEditIdx >= 0) {
-							$this->needsRedraw = true;
-							$filteredKeys = [];
-							foreach (array_keys($this->foxyKeybindData) as $k) {
-								if ($this->foxyKeybindSearchQuery === "" || stripos($k, $this->foxyKeybindSearchQuery) !== false) {
-									$filteredKeys[] = $k;
-								}
-							}
-							if ($this->foxyKeybindEditIdx < count($filteredKeys)) {
-								$moduleName = $filteredKeys[$this->foxyKeybindEditIdx];
-								if ($wparam === 0x1B) { // VK_ESCAPE = unbind
-									$this->foxyKeybindData[$moduleName]["keybind"] = -1;
-								} else {
-									$glfwKey = $this->vkToGlfw($wparam);
-									$this->foxyKeybindData[$moduleName]["keybind"] = $glfwKey;
-								}
-								$this->saveFoxyKeybinds();
-							}
-							$this->foxyKeybindListenMode = false;
-							$this->foxyKeybindEditIdx = -1;
-							return 0;
-						}
-						// Macro listen mode: reassign macro to new key
-						if ($this->foxyMacroListenMode && $this->foxyMacroEditIdx >= 0) {
-							$this->needsRedraw = true;
-							$keys = array_keys($this->foxyMacroData);
-							if ($this->foxyMacroEditIdx < count($keys)) {
-								$oldKey = $keys[$this->foxyMacroEditIdx];
-								$command = $this->foxyMacroData[$oldKey];
-								if ($wparam !== 0x1B) { // Not ESC = rebind
-									$newKey = (string) $this->vkToGlfw($wparam);
-									unset($this->foxyMacroData[$oldKey]);
-									$this->foxyMacroData[$newKey] = $command;
-									$this->saveFoxyMacros();
-								}
-								// ESC just cancels
-							}
-							$this->foxyMacroListenMode = false;
-							$this->foxyMacroEditIdx = -1;
-							return 0;
-						}
 						if ($this->handleClipboardInput($wparam)) {
 							return 0;
 						}
@@ -1847,12 +1794,14 @@ class FoxyClient
 							$char = $wparam;
 							if ($char == 8) { // Backspace
 								$this->homeVerSearchQuery = (string) substr($this->homeVerSearchQuery, 0, -1);
-								$this->homeVerScrollOffset = 0; // Reset scroll on search change
+								$this->homeVerScrollOffset = 0;
+								$this->homeVerScrollTarget = 0; // Reset scroll on search change
 							} elseif ($char == 13) { // Enter
 								$this->homeVerSearchFocus = false;
 							} elseif ($char >= 32) {
 								$this->homeVerSearchQuery .= chr($char);
 								$this->homeVerScrollOffset = 0;
+								$this->homeVerScrollTarget = 0;
 							}
 						} elseif (
 							$this->currentPage === self::PAGE_MODS &&
@@ -1868,6 +1817,8 @@ class FoxyClient
 								);
 								$this->modSearchDebounceTimer =
 									microtime(true) + 0.4;
+								$this->scrollOffset = 0;
+								$this->scrollTarget = 0;
 							} elseif ($char == 13) {
 								// Enter
 								$this->modSearchFocus = false;
@@ -1877,6 +1828,24 @@ class FoxyClient
 								$this->modSearchQuery .= chr($char);
 								$this->modSearchDebounceTimer =
 									microtime(true) + 0.4;
+								$this->scrollOffset = 0;
+								$this->scrollTarget = 0;
+							}
+						} elseif (
+							$this->currentPage === self::PAGE_VERSIONS &&
+							$this->vSearchFocus
+						) {
+							$char = $wparam;
+							if ($char == 8) {
+								$this->vSearchQuery = (string) substr($this->vSearchQuery, 0, -1);
+								$this->vScrollOffset = 0;
+								$this->vScrollTarget = 0;
+							} elseif ($char == 13) {
+								$this->vSearchFocus = false;
+							} elseif ($char >= 32) {
+								$this->vSearchQuery .= chr($char);
+								$this->vScrollOffset = 0;
+								$this->vScrollTarget = 0;
 							}
 						} elseif (
 							$this->currentPage === self::PAGE_LOGIN &&
@@ -2000,53 +1969,10 @@ class FoxyClient
 							} elseif ($char == 13) {
 								$this->bgModalActiveField = "";
 								$this->saveSettings();
-								$this->loadBackground();
-							} elseif ($char >= 32) {
+								$this->loadBackground(); } elseif ($char >= 32) {
 								$this->settings[$key] .= chr($char);
 							}
-						} elseif (
-							$this->currentPage === self::PAGE_FOXYCLIENT &&
-							$this->foxySubTab === 1 &&
-							$this->foxyKeybindSearchFocus
-						) {
-							$char = $wparam;
-							if ($char == 8) {
-								// Backspace
-								$this->foxyKeybindSearchQuery = (string) substr(
-									$this->foxyKeybindSearchQuery,
-									0,
-									-1,
-								);
-								$this->foxyKeybindScrollTarget = 0; // Reset scroll on search change
-							} elseif ($char == 13) {
-								// Enter
-								$this->foxyKeybindSearchFocus = false;
-							} elseif ($char >= 32) {
-								$this->foxyKeybindSearchQuery .= chr($char);
-								$this->foxyKeybindScrollTarget = 0;
-							}
-						} elseif (
-							$this->currentPage === self::PAGE_FOXYCLIENT &&
-							$this->foxySubTab === 2 &&
-							$this->foxyMacroEditCommandIdx >= 0
-						) {
-							$char = $wparam;
-							$keys = array_keys($this->foxyMacroData);
-							if ($this->foxyMacroEditCommandIdx < count($keys)) {
-								$key = $keys[$this->foxyMacroEditCommandIdx];
-								if ($char == 8) {
-									$this->foxyMacroData[$key] = (string) substr($this->foxyMacroData[$key], 0, -1);
-									$this->saveFoxyMacros();
-								} elseif ($char == 13) {
-									$this->foxyMacroEditCommandIdx = -1;
-									$this->saveFoxyMacros();
-								} elseif ($char >= 32) {
-									$this->foxyMacroData[$key] .= chr($char);
-									$this->saveFoxyMacros();
-								}
-							}
 						}
-						return 0;
 				}
 			} catch (\Throwable $e) {
 				$this->log(
@@ -2281,7 +2207,8 @@ class FoxyClient
 	 *   4. Extract real font metrics (ascent/descent/space width) from GDI+.
 	 *   5. Store per-glyph advance widths for typographically correct spacing.
 	 */
-	private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = null)
+	
+private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = null)
 	{
 		$gdi = $this->gdi32;
 		$gl  = $this->opengl32;
@@ -2310,7 +2237,7 @@ class FoxyClient
 		// 4x supersampling for sharp box-filter downsampling
 		$scale = 4;
 		$renderPx = $fontSize * $scale;
-		$this->log("Building Browser-Fidelity Atlas: $fontFace ({$fontSize}px, {$scale}x box-filter)");
+		$this->log("Building Browser-Fidelity Atlas: $fontFace ({$fontSize}px, {$scale}x box-filter) with Zero-Copy Chunking");
 
 		// ── Font setup ──
 		$memDC = $gdi->CreateCompatibleDC($this->hdc);
@@ -2378,8 +2305,7 @@ class FoxyClient
 			$rawMeasures[$ch] = ["w" => $w, "h" => $h, "advX" => $bound[2] / $scale];
 		}
 
-		// ── Pack Glyphs (single entry per codepoint, no phases) ──
-		// Padding must survive 4x downsample + GL_LINEAR bleed (12/4 = 3px final)
+		// ── Pack Glyphs ──
 		$pad = 12;
 		$texW = 1024;
 		if ($fontSize > 18) $texW = 2048;
@@ -2387,26 +2313,62 @@ class FoxyClient
 
 		$cx = 0; $cy = 0;
 		$glyphs = [];
+		$rows = []; // Store glyphs per row
+		$currentRow = [];
+
 		foreach ($charList as $ch) {
 			$m = $rawMeasures[$ch];
 			if ($cx + $m["w"] + $pad > $texW) {
+				$rows[] = ["y" => $cy, "glyphs" => $currentRow];
+				$currentRow = [];
 				$cx = 0;
 				$cy += $maxH + $pad;
 			}
-			$glyphs[$ch] = ["tx" => $cx, "ty" => $cy, "w" => $m["w"], "advX" => $m["advX"]];
+			$gData = ["tx" => $cx, "ty" => $cy, "w" => $m["w"], "advX" => $m["advX"], "ch" => $ch];
+			$glyphs[$ch] = $gData;
+			$currentRow[] = $gData;
 			$cx += $m["w"] + $pad;
 		}
+		if (!empty($currentRow)) {
+			$rows[] = ["y" => $cy, "glyphs" => $currentRow];
+		}
 		$texH = $cy + $maxH + $pad;
+		
+		$outW = (int)($texW / $scale);
+		$outH = (int)($texH / $scale);
 
-		// ── Render white on black at 4x ──
+		// ── Create GL Texture directly (NULL data) ──
+		$tid = $gl->new("UINT[1]");
+		$gl->glGenTextures(1, $tid);
+		$texId = $tid[0];
+		$gl->glBindTexture(0x0de1, $texId);
+		$gl->glTexParameteri(0x0de1, 0x2801, 0x2601); // MIN_FILTER = LINEAR
+		$gl->glTexParameteri(0x0de1, 0x2800, 0x2601); // MAG_FILTER = LINEAR
+		
+		// Upload empty texture
+		$gl->glTexImage2D(0x0de1, 0, 0x1908, $outW, $outH, 0, 0x1908, 0x1401, null);
+
+		// Build sRGB → linear LUT
+		$srgbToLinear = [];
+		for ($v = 0; $v < 256; $v++) {
+			$s = $v / 255.0;
+			$srgbToLinear[$v] = ($s <= 0.04045) ? ($s / 12.92) : pow(($s + 0.055) / 1.055, 2.4);
+		}
+		$invArea = 1.0 / ($scale * $scale);
+
+		// ── Render Row by Row ──
+		$rowTexH = $maxH + $pad;
+		if ($rowTexH % $scale !== 0) {
+			$rowTexH += $scale - ($rowTexH % $scale);
+		}
+		$rowOutH = (int)ceil($rowTexH / $scale);
+
+		// Allocate a SMALL GDI+ Bitmap for just one row!
 		$bmp = FFI::new("void*");
-		$gp->GdipCreateBitmapFromScan0($texW, $texH, 0, 0x26200a, null, FFI::addr($bmp));
+		$gp->GdipCreateBitmapFromScan0($texW, $rowTexH, 0, 0x26200a, null, FFI::addr($bmp));
 		$gfx = FFI::new("void*");
 		$gp->GdipGetImageGraphicsContext($bmp, FFI::addr($gfx));
 
-		$gp->GdipGraphicsClear($gfx, 0xFF000000);
-
-		// AntiAlias mode 4 (no grid-fit) = browser/DirectWrite-style smooth glyphs
 		$gp->GdipSetTextRenderingHint($gfx, 4);
 		$gp->GdipSetSmoothingMode($gfx, 4);
 
@@ -2414,86 +2376,81 @@ class FoxyClient
 		$gp->GdipCreateSolidFill(0xFFFFFFFF, FFI::addr($brush));
 
 		$rect = $gp->new("float[4]");
-		foreach ($glyphs as $ch => $g) {
-			$wc = mb_convert_encoding(mb_chr($ch, "UTF-8"), "UTF-16LE", "UTF-8") . "\0\0";
-			$wcPtr = $gp->new("wchar_t[2]");
-			FFI::memcpy($wcPtr, $wc, 2);
-
-			$rect[0] = (float)$g["tx"];
-			$rect[1] = (float)$g["ty"];
-			$rect[2] = (float)$g["w"];
-			$rect[3] = (float)$maxH;
-			$gp->GdipDrawString($gfx, $wcPtr, 1, $font, $rect, $strFmt, $brush);
-		}
-		$gp->GdipDeleteBrush($brush);
-
-		// ── Lock bits for pixel access ──
 		$bd = $gp->new("BitmapData");
 		$lockRect = FFI::new("int[4]");
 		$lockRect[0] = 0; $lockRect[1] = 0;
-		$lockRect[2] = $texW; $lockRect[3] = $texH;
-		$gp->GdipBitmapLockBits($bmp, $lockRect, 1, 0x26200a, FFI::addr($bd));
+		$lockRect[2] = $texW; $lockRect[3] = $rowTexH;
 
-		$srcN = $texW * $texH;
-		$src  = FFI::cast("unsigned char[" . ($srcN * 4) . "]", $bd->scan0);
+		// Reusable output buffer for a single row
+		$rowDst = FFI::new("unsigned char[" . ($outW * $rowOutH * 4) . "]");
 
-		// ── Box-filter downsample in linear color space (sRGB-correct) ──
-		$outW = (int)($texW / $scale);
-		$outH = (int)($texH / $scale);
-		$dst  = FFI::new("unsigned char[" . ($outW * $outH * 4) . "]");
+		foreach ($rows as $rIdx => $row) {
+			yield "Optimizing font glyphs (" . round(($rIdx / count($rows)) * 100) . "%)...";
+			
+			$gp->GdipGraphicsClear($gfx, 0xFF000000);
+			
+			foreach ($row["glyphs"] as $g) {
+				$ch = $g["ch"];
+				$wc = mb_convert_encoding(mb_chr($ch, "UTF-8"), "UTF-16LE", "UTF-8") . "\0\0";
+				$wcPtr = $gp->new("wchar_t[2]");
+				FFI::memcpy($wcPtr, $wc, 2);
 
-		// Build sRGB → linear LUT (matches Chrome/Edge/Firefox alpha blending)
-		$srgbToLinear = [];
-		for ($v = 0; $v < 256; $v++) {
-			$s = $v / 255.0;
-			$srgbToLinear[$v] = ($s <= 0.04045) ? ($s / 12.92) : pow(($s + 0.055) / 1.055, 2.4);
-		}
-
-		$invArea = 1.0 / ($scale * $scale); // 1/16 for 4x4 box
-		for ($dy = 0; $dy < $outH; $dy++) {
-			if ($dy % 4 === 0) {
-				yield "Optimizing font glyphs (" . round(($dy / $outH) * 100) . "%)...";
+				$rect[0] = (float)$g["tx"];
+				$rect[1] = 0.0; // Draw at Y=0 relative to the row bitmap!
+				$rect[2] = (float)$g["w"];
+				$rect[3] = (float)$maxH;
+				$gp->GdipDrawString($gfx, $wcPtr, 1, $font, $rect, $strFmt, $brush);
 			}
-			$sy = $dy * $scale;
-			for ($dx = 0; $dx < $outW; $dx++) {
-				$sx = $dx * $scale;
-				$linSum = 0.0;
-				for ($ky = 0; $ky < $scale; $ky++) {
-					$rowOff = ($sy + $ky) * $texW;
-					for ($kx = 0; $kx < $scale; $kx++) {
-						$si = ($rowOff + $sx + $kx) * 4;
-						// Max of RGB channels as luminance
-						$lum = max($src[$si], $src[$si + 1], $src[$si + 2]);
-						$linSum += $srgbToLinear[$lum];
+
+			$gp->GdipBitmapLockBits($bmp, $lockRect, 1, 0x26200a, FFI::addr($bd));
+			$srcN = $texW * $rowTexH;
+			$src  = FFI::cast("unsigned char[" . ($srcN * 4) . "]", $bd->scan0);
+
+			// Downsample this row
+			for ($dy = 0; $dy < $rowOutH; $dy++) {
+				$sy = $dy * $scale;
+				for ($dx = 0; $dx < $outW; $dx++) {
+					$sx = $dx * $scale;
+					$linSum = 0.0;
+					for ($ky = 0; $ky < $scale; $ky++) {
+						$rowOff = ($sy + $ky) * $texW;
+						for ($kx = 0; $kx < $scale; $kx++) {
+							$si = ($rowOff + $sx + $kx) * 4;
+							$lum = max($src[$si], $src[$si + 1], $src[$si + 2]);
+							$linSum += $srgbToLinear[$lum];
+						}
 					}
-				}
-				// Average in linear space, then re-encode to sRGB
-				$linAvg = $linSum * $invArea;
-				$srgbVal = ($linAvg <= 0.0031308)
-					? ($linAvg * 12.92)
-					: (1.055 * pow($linAvg, 1.0 / 2.4) - 0.055);
-				$alpha = min(255, max(0, (int)($srgbVal * 255.0 + 0.5)));
-				// Kill dust: sub-visible fragments from GDI+ AA on narrow glyphs
-				if ($alpha < 3) $alpha = 0;
+					$linAvg = $linSum * $invArea;
+					$srgbVal = ($linAvg <= 0.0031308)
+						? ($linAvg * 12.92)
+						: (1.055 * pow($linAvg, 1.0 / 2.4) - 0.055);
+					$alpha = min(255, max(0, (int)($srgbVal * 255.0 + 0.5)));
+					if ($alpha < 3) $alpha = 0;
 
-				$di = ($dy * $outW + $dx) * 4;
-				$dst[$di    ] = 255; // R
-				$dst[$di + 1] = 255; // G
-				$dst[$di + 2] = 255; // B
-				$dst[$di + 3] = $alpha;
+					$di = ($dy * $outW + $dx) * 4;
+					$rowDst[$di    ] = 255;
+					$rowDst[$di + 1] = 255;
+					$rowDst[$di + 2] = 255;
+					$rowDst[$di + 3] = $alpha;
+				}
+				
+				// Yield every 8 downsampled lines to maintain high FPS during loading animation
+				if (($dy % 8) === 7) {
+					yield "Optimizing font glyphs (" . round((($rIdx + ($dy / $rowOutH)) / count($rows)) * 100) . "%)...";
+				}
+			}
+
+			$gp->GdipBitmapUnlockBits($bmp, FFI::addr($bd));
+
+			// Upload row to GL
+			$glOffsetY = (int)($row["y"] / $scale);
+			$actualH = min($rowOutH, $outH - $glOffsetY);
+			if ($actualH > 0) {
+				$gl->glBindTexture(0x0de1, $texId);
+				$gl->glTexSubImage2D(0x0de1, 0, 0, $glOffsetY, $outW, $actualH, 0x1908, 0x1401, $rowDst);
 			}
 		}
 
-		$gp->GdipBitmapUnlockBits($bmp, FFI::addr($bd));
-
-		// ── Upload downsampled atlas to GL ──
-		$tid = $gl->new("UINT[1]");
-		$gl->glGenTextures(1, FFI::addr($tid[0]));
-		$texId = $tid[0];
-		$gl->glBindTexture(0x0de1, $texId);
-		$gl->glTexParameteri(0x0de1, 0x2801, 0x2601); // MIN_FILTER = LINEAR
-		$gl->glTexParameteri(0x0de1, 0x2800, 0x2601); // MAG_FILTER = LINEAR
-		$gl->glTexImage2D(0x0de1, 0, 0x1908, $outW, $outH, 0, 0x1908, 0x1401, $dst);
 		$gl->glBindTexture(0x0de1, 0);
 
 		// ── Map glyph coordinates to downsampled atlas ──
@@ -2511,12 +2468,16 @@ class FoxyClient
 
 		// ── Cleanup ──
 		$gp->GdipDeleteStringFormat($strFmt);
+		$gp->GdipDeleteBrush($brush);
 		$gp->GdipDeleteFont($font);
 		$gp->GdipDeleteFontFamily($family);
 		$gp->GdipDeleteGraphics($measGfx);
 		$gp->GdipDeleteGraphics($gfx);
 		$gp->GdipDisposeImage($bmp);
 		$gdi->DeleteDC($memDC);
+		
+		unset($rowDst);
+		unset($src);
 
 		$this->fontAtlas[$listBase] = [
 			"texId"         => $texId,
@@ -2532,7 +2493,6 @@ class FoxyClient
 
 		$this->log("Atlas ready: {$outW}x{$outH} texture, " . count($finalGlyphs) . " glyphs, glyphH=" . round($glyphH, 1) . "px, spaceW=" . round($spaceW, 1) . "px");
 	}
-
 	private function renderIcon($icon, $x, $y, $color, $size = 24)
 	{
 		$char = is_int($icon) ? mb_chr($icon, "UTF-8") : $icon;
@@ -2914,9 +2874,7 @@ class FoxyClient
 					$thumbH = max(20, ($listH / ($maxS + $listH)) * $listH);
 					$delta = ($dy / ($listH - $thumbH)) * $maxS;
 					$val = max(0, min($maxS, $this->dragStartOffset + $delta));
-					if ($this->foxySubTab === 1) $this->foxyKeybindScrollTarget = $val;
-					elseif ($this->foxySubTab === 2) $this->foxyMacroScrollTarget = $val;
-					elseif ($this->foxySubTab === 3) $this->foxyConfigScrollTarget = $val;
+					if ($this->foxySubTab === 1) $this->foxyConfigScrollTarget = $val;
 				}
 				break;
 			case "ram_slider":
@@ -3031,8 +2989,24 @@ class FoxyClient
 				}
 			}
 		}
-
 		$cw = $this->width - self::SIDEBAR_W;
+
+		// Search Box Focus
+		$searchW = 300;
+		$searchX = $cw - self::PAD - $searchW;
+		$searchY = 100;
+		if ($cx >= $searchX && $cx <= $searchX + $searchW && $cy >= $searchY && $cy <= $searchY + 40) {
+			if (!empty($this->vSearchQuery) && $cx >= $searchX + $searchW - 35) {
+				$this->vSearchQuery = "";
+				$this->vScrollOffset = 0;
+				$this->vScrollTarget = 0;
+				return;
+			}
+			$this->vSearchFocus = true;
+			return;
+		} else {
+			$this->vSearchFocus = false;
+		}
 
 		// Category tabs (Y=100, H=40)
 		if ($cy >= 100 && $cy < 140) {
@@ -3114,10 +3088,10 @@ class FoxyClient
 			// Launch parallel background downloader
 			$this->assetChannel = new \parallel\Channel();
 			putenv("FOXY_BACKGROUND=1");
-			$this->assetProcess = new \parallel\Runtime(__FILE__);
+			
 			putenv("FOXY_BACKGROUND=0");
 			$cacert = __DIR__ . DIRECTORY_SEPARATOR . self::CACERT;
-			$this->assetFuture = $this->assetProcess->run(
+			$this->assetFuture = $this->runTransientTask(
 				function (
 					\parallel\Channel $ch,
 					string $version,
@@ -3251,7 +3225,7 @@ class FoxyClient
 						"client_id" => $this->elyClientId,
 						"client_secret" => $this->elyClientSecret,
 						"response_type" => "code",
-						"scope" => "account_info minecraft_server_session",
+						"scope" => "account_info minecraft_server_session offline_access",
 						"redirect_uri" => $redirectUri,
 						"state" => $this->oauthState,
 						"prompt" => "select_account"
@@ -3613,7 +3587,7 @@ class FoxyClient
 								}
 							}
 							unset($this->installedModpacks[$slug]);
-							$this->saveSettings();
+							$this->saveModpacks();
 							return;
 						}
 
@@ -3788,21 +3762,7 @@ class FoxyClient
 				$this->modSearchFocus
 			) {
 				$val = $this->modSearchQuery;
-			} elseif (
-				$this->currentPage === self::PAGE_FOXYCLIENT &&
-				$this->foxySubTab === 2 &&
-				$this->foxyMacroEditCommandIdx >= 0
-			) {
-				$keys = array_keys($this->foxyMacroData);
-				if ($this->foxyMacroEditCommandIdx < count($keys)) {
-					$val = $this->foxyMacroData[$keys[$this->foxyMacroEditCommandIdx]];
-				}
-			}
-			if ($val !== "") {
-				$this->copyToClipboard($val);
-			}
-			return true;
-		} elseif ($key === ord("V") || $key === ord("v")) {
+			} } elseif ($key === ord("V") || $key === ord("v")) {
 			// Paste
 			$text = $this->getClipboardText();
 			if ($text !== "") {
@@ -3836,24 +3796,13 @@ class FoxyClient
 				) {
 					$this->modSearchQuery .= $text;
 					$this->searchModrinth($this->modSearchQuery);
-				} elseif (
-					$this->currentPage === self::PAGE_FOXYCLIENT &&
-					$this->foxySubTab === 2 &&
-					$this->foxyMacroEditCommandIdx >= 0
-				) {
-					$keys = array_keys($this->foxyMacroData);
-					if ($this->foxyMacroEditCommandIdx < count($keys)) {
-						$this->foxyMacroData[$keys[$this->foxyMacroEditCommandIdx]] .= $text;
-						$this->saveFoxyMacros();
-					}
 				}
+			} elseif ($key === ord("A") || $key === ord("a")) {
+				// Ctrl+A (Select All - for our simplified inputs, we'll just clear and prepare for next input or just do nothing for now since we don't have true selection)
+				// But user might expect it to "highlight". Since we don't have highlighting, we'll just leave it or clear.
+				// Let's implement "Clear and Focus" if needed, but standard Ctrl+A is usually follow by delete or replace.
+				return true;
 			}
-			return true;
-		} elseif ($key === ord("A") || $key === ord("a")) {
-			// Ctrl+A (Select All - for our simplified inputs, we'll just clear and prepare for next input or just do nothing for now since we don't have true selection)
-			// But user might expect it to "highlight". Since we don't have highlighting, we'll just leave it or clear.
-			// Let's implement "Clear and Focus" if needed, but standard Ctrl+A is usually follow by delete or replace.
-			return true;
 		}
 		return false;
 	}
@@ -3878,13 +3827,13 @@ class FoxyClient
 		$this->isCheckingCompat = true;
 		$this->compatChannel = new \parallel\Channel();
 		putenv("FOXY_BACKGROUND=1");
-		$this->compatProcess = new \parallel\Runtime(__FILE__);
+		
 		putenv("FOXY_BACKGROUND=0");
 
 		$mcVersion = $this->config["minecraft_version"];
 		$loader = $this->config["loader"];
 
-		$this->compatFuture = $this->compatProcess->run(
+		$this->compatFuture = $this->runTransientTask(
 			["FoxyCompatCheckJob", "run"],
 			[$this->compatChannel, $ids, $mcVersion, $loader],
 		);
@@ -4016,7 +3965,7 @@ class FoxyClient
 		$this->isInstallingModpack = true;
 		$this->modpackInstallProgress = "Starting modpack install...";
 		$this->modpackInstallChannel = new \parallel\Channel();
-		$this->modpackInstallProcess = new \parallel\Runtime();
+		
 
 		$version = $this->config["minecraft_version"] ?? "1.20.1";
 		$loader = $this->config["loader"] ?? "fabric";
@@ -4053,7 +4002,7 @@ class FoxyClient
 		$cacert = self::CACERT;
 		$this->log("Installing modpack: $projectName ($projectId) for $cleanVer $loader");
 
-		$this->modpackInstallFuture = $this->modpackInstallProcess->run(
+		$this->modpackInstallFuture = $this->runTransientTask(
 			function (
 				\parallel\Channel $ch,
 				$pid,
@@ -4546,7 +4495,7 @@ class FoxyClient
 
 		$this->modChannel = new \parallel\Channel();
 		putenv("FOXY_BACKGROUND=1");
-		$this->process = new \parallel\Runtime(__FILE__);
+		
 		putenv("FOXY_BACKGROUND=0");
 		$modsDir =
 			$this->getAbsolutePath($this->settings["game_dir"]) .
@@ -4869,6 +4818,23 @@ class FoxyClient
 					return "Missing asset: " . basename($name);
 				}
 			}
+
+			// 4. Ensure virtual legacy directory for pre-1.6 versions
+			if ($assetId === "legacy" && $objects) {
+				$virtualBase = $mcDir . DIRECTORY_SEPARATOR . "assets" . DIRECTORY_SEPARATOR . "virtual" . DIRECTORY_SEPARATOR . "legacy";
+				if (!is_dir($virtualBase)) {
+					foreach ($objects as $name => $obj) {
+						$hash = $obj["hash"];
+						$prefix = substr($hash, 0, 2);
+						$src = $mcDir . DIRECTORY_SEPARATOR . "assets" . DIRECTORY_SEPARATOR . "objects" . DIRECTORY_SEPARATOR . $prefix . DIRECTORY_SEPARATOR . $hash;
+						if (!file_exists($src)) continue;
+						$dest = $virtualBase . DIRECTORY_SEPARATOR . str_replace("/", DIRECTORY_SEPARATOR, $name);
+						$destDir = dirname($dest);
+						if (!is_dir($destDir)) @mkdir($destDir, 0777, true);
+						if (!file_exists($dest)) copy($src, $dest);
+					}
+				}
+			}
 		}
 
 		return true;
@@ -4899,14 +4865,14 @@ class FoxyClient
 		$this->iconDownloadChannel = new \parallel\Channel();
 		$this->pollEvents->addChannel($this->iconDownloadChannel);
 		$this->iconCancelChannel = new \parallel\Channel(1);
-		$this->iconDownloadProcess = new \parallel\Runtime();
+		
 		$cacert = self::CACERT;
 
 		if ($this->iconDownloadFuture) {
 			$this->pendingFutures[] = $this->iconDownloadFuture;
 		}
 
-		$this->iconDownloadFuture = $this->iconDownloadProcess->run(
+		$this->iconDownloadFuture = $this->runTransientTask(
 			function (\parallel\Channel $ch, \parallel\Channel $cancelCh, $icons, $cacert) {
 				$mh = curl_multi_init();
 				$handles = [];
@@ -4987,6 +4953,52 @@ class FoxyClient
 			return;
 		}
 
+		// Resolve Java path (auto or custom) - do this before asset verification
+		$javaMode = $this->settings["java_mode"] ?? "auto";
+		if ($javaMode === "auto") {
+			$javaVerSetting = $this->settings["java_version"] ?? "auto";
+			$needJavaVer = $javaVerSetting !== "auto" ? (int)$javaVerSetting : $this->resolveMcJavaVersion($version);
+			$java = $this->resolveAutoJavaPath($needJavaVer);
+			if (!$java) {
+				$this->isDownloadingAssets = true;
+				$this->assetProgress = 0.0;
+				$this->assetMessage = "DOWNLOADING JAVA JRE...";
+				$this->shouldAutoLaunchAfterDownload = true;
+				$this->isLaunching = false;
+
+				$this->assetChannel = new \parallel\Channel();
+				$this->assetFuture = $this->runTransientTask(
+					function(
+						\parallel\Channel $ch,
+						int $javaVer,
+						string $dataDir,
+						string $cacert,
+						string $cacheDir,
+					) {
+						FoxyJreDownloadJob::run($ch, $javaVer, $dataDir, $cacert, $cacheDir);
+					},
+					[
+						$this->assetChannel,
+						$needJavaVer,
+						self::DATA_DIR,
+						self::CACERT,
+						self::CACHE_DIR,
+					],
+				);
+				$this->pollEvents->addChannel($this->assetChannel);
+				return;
+			}
+		} else {
+			$java = $this->settings["java_path"] ?: "java";
+		}
+		$javaAbs = realpath($java);
+		if (!$javaAbs && $java !== "java") {
+			$this->assetMessage = "FAILED: Java not found at $java";
+			$this->isLaunching = false;
+			return;
+		}
+		$javaExec = $javaAbs ?: $java;
+
 		// --- Asset Verification Phase (with loop guard) ---
 		$this->assetMessage = "VERIFYING VERSION...";
 		$verifyRes = $this->verifyAssets($vData, $baseDir);
@@ -5056,18 +5068,6 @@ class FoxyClient
 				}
 			}
 		}
-		// -------------------------------------
-
-		// Get absolute Java path
-		$java = $this->settings["java_path"] ?: "java";
-		$javaAbs = realpath($java);
-		if (!$javaAbs && $java !== "java") {
-			$this->assetMessage = "FAILED: Java not found at $java";
-			$this->isLaunching = false;
-			return;
-		}
-		$javaExec = $javaAbs ?: $java;
-
 		// Detect Java major version
 		$javaVer = 8;
 		$out = [];
@@ -6228,7 +6228,7 @@ class FoxyClient
 								);
 
 								// Fresh runtime each time - a persistent runtime BLOCKS if old task is still running
-								$this->iconDownloadProcess = new \parallel\Runtime();
+								
 
 								$cacert = self::CACERT;
 
@@ -6237,7 +6237,7 @@ class FoxyClient
 									$this->pendingFutures[] =
 										$this->iconDownloadFuture;
 								}
-								$this->iconDownloadFuture = $this->iconDownloadProcess->run(
+								$this->iconDownloadFuture = $this->runTransientTask(
 									function (
 										\parallel\Channel $ch,
 										\parallel\Channel $cancelCh,
@@ -6456,7 +6456,7 @@ class FoxyClient
 								);
 								unset($this->modDownloadProgresses[$projIdMsg]);
 								unset($this->modDownloadChannels[$projIdMsg]);
-								unset($this->modDownloadRuntimes[$projIdMsg]);
+								// unset($this->modDownloadRuntimes[$projIdMsg]);
 								unset($this->modDownloadFutures[$projIdMsg]);
 								unset($this->channelToModId[(string)$event->source]);
 								$this->checkLocalMods(); // Refresh statuses
@@ -6468,7 +6468,7 @@ class FoxyClient
 								$this->modrinthError = $data["message"];
 								unset($this->modDownloadProgresses[$projIdMsg]);
 								unset($this->modDownloadChannels[$projIdMsg]);
-								unset($this->modDownloadRuntimes[$projIdMsg]);
+								// unset($this->modDownloadRuntimes[$projIdMsg]);
 								unset($this->modDownloadFutures[$projIdMsg]);
 								unset($this->channelToModId[(string)$event->source]);
 							}
@@ -6494,14 +6494,14 @@ class FoxyClient
 							$this->saveModpacks();
 							$this->modpackInstallProgress = "Installed successfully!";
 							$this->isInstallingModpack = false;
-							$this->modpackInstallProcess = null;
+							// $this->modpackInstallProcess = null;
 							$this->modpackInstallChannel = null;
 							$this->checkLocalMods();
 						} elseif ($data["type"] === "error") {
 							$this->log("[Modpack] Error: " . $data["message"], "ERROR");
 							$this->modpackInstallProgress = "Error: " . ($data["message"] ?? "Unknown");
 							$this->isInstallingModpack = false;
-							$this->modpackInstallProcess = null;
+							// $this->modpackInstallProcess = null;
 							$this->modpackInstallChannel = null;
 						}
 					}
@@ -6682,7 +6682,7 @@ class FoxyClient
 							$this->assetMessage = "DOWNLOAD COMPLETE";
 							$this->assetProgress = 1.0;
 							$this->isDownloadingAssets = false;
-							$this->assetProcess = null;
+							// $this->assetProcess = null;
 							$this->assetChannel = null;
 
 							if ($this->shouldAutoLaunchAfterDownload) {
@@ -6704,15 +6704,15 @@ class FoxyClient
 								"ERROR: " . ($data["message"] ?? "Unknown");
 							$this->shouldAutoLaunchAfterDownload = false;
 							$this->isDownloadingAssets = false;
-							$this->assetProcess = null;
+							// $this->assetProcess = null;
 							$this->assetChannel = null;
 						} elseif ($isManifest) {
 							$this->vManifestError =
 								$data["message"] ?? "Failed to load manifest";
 							$this->isFetchingVersions = false;
 							if ($this->vManifestProcess) {
-								$this->vManifestProcess->close();
-								$this->vManifestProcess = null;
+								// $this->vManifestProcess->close();
+								// $this->vManifestProcess = null;
 							}
 							$this->vManifestChannel = null;
 						}
@@ -6760,20 +6760,20 @@ class FoxyClient
 		// Modrinth cleanup - ONLY after results are processed and future is done
 		if (
 			!$this->isSearchingModrinth &&
-			$this->modrinthProcess &&
+			true &&
 			$this->modrinthFuture &&
 			$this->modrinthFuture->done()
 		) {
-			$this->modrinthProcess->close();
-			$this->modrinthProcess = null;
+			// $this->modrinthProcess->close();
+			// $this->modrinthProcess = null;
 			$this->modrinthFuture = null;
 			$this->modrinthChannel = null;
 		}
 
 		// Check if thread futures are done to clean up state
-		if ($this->process && $this->modFuture && $this->modFuture->done()) {
-			$this->process->close();
-			$this->process = null;
+		if (true && $this->modFuture && $this->modFuture->done()) {
+			// $this->process->close();
+			// $this->process = null;
 			$this->modChannel = null;
 			$this->modFuture = null;
 			// Mark stuck mods as done
@@ -6802,19 +6802,19 @@ class FoxyClient
 
 		// Compat check cleanup
 		if (
-			$this->compatProcess &&
+			true &&
 			$this->compatFuture &&
 			$this->compatFuture->done()
 		) {
-			$this->compatProcess->close();
-			$this->compatProcess = null;
+			// $this->compatProcess->close();
+			// $this->compatProcess = null;
 			$this->compatChannel = null;
 			$this->compatFuture = null;
 			$this->isCheckingCompat = false;
 		}
 
 		if (
-			$this->assetProcess &&
+			true &&
 			$this->assetFuture &&
 			$this->assetFuture->done()
 		) {
@@ -6824,24 +6824,24 @@ class FoxyClient
 				$this->assetMessage =
 					"CRASH: " . substr($e->getMessage(), 0, 30);
 			}
-			$this->assetProcess = null;
+			// $this->assetProcess = null;
 			$this->assetChannel = null;
 			$this->assetFuture = null;
 			$this->isDownloadingAssets = false;
 		}
 		if (
-			$this->vManifestProcess &&
+			true &&
 			$this->vManifestFuture &&
 			$this->vManifestFuture->done()
 		) {
-			$this->vManifestProcess = null;
+			// $this->vManifestProcess = null;
 			$this->vManifestFuture = null;
 			$this->vManifestChannel = null;
 		}
 
 		// Modpack Install Monitoring
 		if (
-			$this->modpackInstallProcess &&
+			true &&
 			$this->modpackInstallFuture &&
 			$this->modpackInstallFuture->done()
 		) {
@@ -6851,7 +6851,7 @@ class FoxyClient
 				$this->log("Modpack Install Thread CRASHED: " . $e->getMessage(), "ERROR");
 				$this->modpackInstallProgress = "Error: Install thread crashed.";
 			}
-			$this->modpackInstallProcess = null;
+			// $this->modpackInstallProcess = null;
 			$this->modpackInstallFuture = null;
 			$this->modpackInstallChannel = null;
 			$this->isInstallingModpack = false;
@@ -8431,6 +8431,7 @@ class FoxyClient
 		}
 	}
 
+	private function logMem($step) { $this->log('MEM_DEBUG [' . $step . ']: ' . round(memory_get_usage() / 1024 / 1024, 2) . ' MB'); }
 	private function log($message, $level = "INFO")
 	{
 		$level = strtoupper($level);
@@ -9015,10 +9016,60 @@ class FoxyClient
 			case self::ACC_MICROSOFT:
 				$this->refreshMicrosoftToken($refreshToken);
 				break;
+			case self::ACC_FOXY:
+				$this->refreshFoxyToken($refreshToken);
+				break;
+			case self::ACC_ELYBY:
+				$this->refreshElybyToken($refreshToken);
+				break;
 			default:
 				// Offline or Mojang accounts don't need refresh
 				break;
 		}
+	}
+
+	private function refreshElybyToken($refreshToken)
+	{
+		$res = $this->httpPost("https://account.ely.by/api/oauth2/v1/token", [
+			"grant_type" => "refresh_token",
+			"refresh_token" => $refreshToken,
+			"client_id" => $this->elyClientId,
+			"client_secret" => $this->elyClientSecret,
+		]);
+
+		$data = json_decode($res, true);
+		if (isset($data["access_token"])) {
+			$uuid = $this->activeAccount;
+			$name = $this->accountName;
+			$this->addOrUpdateAccount($uuid, $name, $data["access_token"], $data["refresh_token"] ?? "", time() + ($data["expires_in"] ?? 3600), self::ACC_ELYBY);
+			$this->log("Ely.by token refreshed successfully");
+			return true;
+		}
+
+		$this->log("Ely.by token refresh failed: " . ($data["error"] ?? "Unknown error"), "ERROR");
+		return false;
+	}
+
+	private function refreshFoxyToken($refreshToken)
+	{
+		$res = $this->httpPost("https://foxyclient.qzz.io/oauth/token/", [
+			"grant_type" => "refresh_token",
+			"refresh_token" => $refreshToken,
+			"client_id" => $this->foxyClientId,
+			"client_secret" => $this->foxyClientSecret,
+		]);
+
+		$data = json_decode($res, true);
+		if (isset($data["access_token"])) {
+			$uuid = $this->activeAccount;
+			$name = $this->accountName;
+			$this->addOrUpdateAccount($uuid, $name, $data["access_token"], $data["refresh_token"] ?? "", time() + ($data["expires_in"] ?? 3600), self::ACC_FOXY);
+			$this->log("FoxyClient token refreshed successfully");
+			return true;
+		}
+
+		$this->log("FoxyClient token refresh failed: " . ($data["error"] ?? "Unknown error"), "ERROR");
+		return false;
 	}
 
 	private function refreshMicrosoftToken($refreshToken)
@@ -9143,6 +9194,10 @@ class FoxyClient
 
 				// If no redraw needed AND no background work, go idle
 				if (!$this->needsRedraw && !$this->hasActiveBackgroundTasks()) {
+					if (!$this->isIdle) {
+						// gc_collect_cycles(); // Free unused FFI allocations & buffer caches when entering idle state
+						// $this->log('Memory Usage: ' . round(memory_get_usage() / 1024 / 1024, 2) . ' MB');
+					}
 					$this->isIdle = true;
 					continue;
 				}
@@ -9194,14 +9249,6 @@ class FoxyClient
 				$aDiff = $this->accScrollTarget - $this->accScrollOffset;
 				if (abs($aDiff) > 0.5) $this->accScrollOffset += $aDiff * $this->scrollSpeed;
 				else $this->accScrollOffset = $this->accScrollTarget;
-
-				$fkDiff = $this->foxyKeybindScrollTarget - $this->foxyKeybindScrollOffset;
-				if (abs($fkDiff) > 0.5) $this->foxyKeybindScrollOffset += $fkDiff * $this->scrollSpeed;
-				else $this->foxyKeybindScrollOffset = $this->foxyKeybindScrollTarget;
-
-				$fmDiff = $this->foxyMacroScrollTarget - $this->foxyMacroScrollOffset;
-				if (abs($fmDiff) > 0.5) $this->foxyMacroScrollOffset += $fmDiff * $this->scrollSpeed;
-				else $this->foxyMacroScrollOffset = $this->foxyMacroScrollTarget;
 
 				$fcDiff = $this->foxyConfigScrollTarget - $this->foxyConfigScrollOffset;
 				if (abs($fcDiff) > 0.5) $this->foxyConfigScrollOffset += $fcDiff * $this->scrollSpeed;
@@ -9287,6 +9334,7 @@ class FoxyClient
 				$easeAnim($this->homeAccDropdownAnim, $this->homeAccDropdownOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->homeVerDropdownAnim, $this->homeVerDropdownOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->javaModalDropdownAnim, $this->javaModalDropdownOpen ? 1.0 : 0.0, 0.25);
+				$easeAnim($this->javaVersionDropdownAnim, $this->javaVersionDropdownOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->crashModalAnim, $this->crashModalOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->modsVerDropdownAnim, $this->modsVerDropdownOpen ? 1.0 : 0.0, 0.25);
 				$easeAnim($this->modsFilterDropdownAnim, $this->modsFilterDropdown !== "" ? 1.0 : 0.0, 0.25);
@@ -9335,8 +9383,6 @@ class FoxyClient
 				$animating = $animating || abs($this->vScrollTarget - $this->vScrollOffset) > 0.5;
 				$animating = $animating || abs($this->propScrollTarget - $this->propScrollOffset) > 0.5;
 				$animating = $animating || abs($this->accScrollTarget - $this->accScrollOffset) > 0.5;
-				$animating = $animating || abs($this->foxyKeybindScrollTarget - $this->foxyKeybindScrollOffset) > 0.5;
-				$animating = $animating || abs($this->foxyMacroScrollTarget - $this->foxyMacroScrollOffset) > 0.5;
 				$animating = $animating || abs($this->foxyConfigScrollTarget - $this->foxyConfigScrollOffset) > 0.5;
 				foreach ($this->toggleAnims as $id => $val) {
 					$target = 0.0;
@@ -9363,6 +9409,8 @@ class FoxyClient
 				$animating = $animating || (!$this->homeVerDropdownOpen && $this->homeVerDropdownAnim > 0.01);
 				$animating = $animating || ($this->javaModalDropdownOpen && $this->javaModalDropdownAnim < 1.0);
 				$animating = $animating || (!$this->javaModalDropdownOpen && $this->javaModalDropdownAnim > 0.01);
+				$animating = $animating || ($this->javaVersionDropdownOpen && $this->javaVersionDropdownAnim < 1.0);
+				$animating = $animating || (!$this->javaVersionDropdownOpen && $this->javaVersionDropdownAnim > 0.01);
 				$animating = $animating || ($this->crashModalOpen && $this->crashModalAnim < 1.0);
 				$animating = $animating || (!$this->crashModalOpen && $this->crashModalAnim > 0.01);
 				$animating = $animating || ($this->modsVerDropdownOpen && $this->modsVerDropdownAnim < 1.0);
@@ -9787,7 +9835,7 @@ class FoxyClient
 				
 				if ($cy >= $thumbY && $cy <= $thumbY + $thumbH) {
 					$this->isDraggingScroll = true;
-					$this->dragType = ($this->foxySubTab === 1) ? "keybinds" : (($this->foxySubTab === 2) ? "macros" : "config");
+					$this->dragType = "config";
 					$this->dragStartY = $this->mouseY;
 					$this->dragStartOffset = $offset;
 					return;
@@ -9807,7 +9855,6 @@ class FoxyClient
 						$this->scrollOffset = 0;
 						$this->scrollTarget = 0;
 						$this->hoverModIndex = -1;
-						$this->foxyKeybindListenMode = false;
 						
 						// Trigger mod status check when entering Foxy tab
 						$this->checkFoxyModStatus();
@@ -10217,7 +10264,7 @@ class FoxyClient
 
 		if ($this->propSubTab === 3) {
 			$contentTop = self::HEADER_H + self::TAB_H + 20;
-			$usableY = $this->mouseY - self::TITLEBAR_H - $contentTop + $this->propScrollOffset;
+			$usableY = $this->mouseY - $contentTop + $this->propScrollOffset;
 			$usableX = $this->mouseX - self::SIDEBAR_W; // Local X relative to Content Area
 
 			// Calculate widths (matching renderPropertiesAbout)
@@ -10279,8 +10326,7 @@ class FoxyClient
 				$this->settings = $this->defaultSettings;
 				$this->saveSettings();
 				$this->colors = $this->settings["theme"] === "dark" ? $this->darkColors : $this->lightColors;
-				$this->loadBackground();
-				return;
+				$this->loadBackground(); return;
 			} elseif ($cx >= $startX + $btnW + $btnGap && $cx <= $startX + $btnW + $btnGap + $btnW) {
 				// Sign Out
 				$this->activeAccount = null;
@@ -10443,6 +10489,7 @@ class FoxyClient
 					$this->javaModalOpen = true;
 					$this->javaModalActiveField = "";
 					$this->javaModalDropdownOpen = false;
+					$this->javaVersionDropdownOpen = false;
 				}
 			} elseif ($idx === 3) {
 				// RAM MB Interaction
@@ -11469,6 +11516,7 @@ class FoxyClient
 			if (
 				$this->isLoggedIn &&
 				!$this->isLaunching &&
+				!$this->isDownloadingAssets &&
 				$this->assetMessage !== "GAME RUNNING" 
 			) {
 				$jarPath =
@@ -12088,199 +12136,7 @@ class FoxyClient
 
 		$this->renderScrollbar($y, $h);
 		$this->activeTab = $oldActive;
-	}
-
-	private function renderFoxyKeybindsTab($y, $h, $cw)
-	{
-		$gl = $this->opengl32;
-		$modules = $this->foxyKeybindData;
-		if (empty($modules)) {
-			$this->renderText(
-				"No keybind data found. Make sure FoxyClient mod is installed.",
-				self::PAD, $y + 40, $this->colors["text_dim"], 1000,
-			);
-			return;
-		}
-
-		// Search Bar
-		$searchW = 250;
-		$searchX = $cw - self::PAD - $searchW;
-		$this->renderSearchBar(
-			$searchX,
-			$y + 1,
-			$searchW,
-			32,
-			$this->foxyKeybindSearchQuery,
-			$this->foxyKeybindSearchFocus,
-			"Search modules..."
-		);
-
-		// Column headers
-		$headerY = $y + 38;
-		$this->drawRect(0, $headerY, $cw, 30, $this->colors["card"]);
-		$this->renderText("MODULE", self::PAD + 10, $headerY + 20, $this->colors["text_dim"], 3000);
-		$this->renderText("KEYBIND", $cw - 200, $headerY + 20, $this->colors["text_dim"], 3000);
-		$this->renderText("ON/OFF", $cw - 80, $headerY + 20, $this->colors["text_dim"], 3000);
-
-		$listTop = $y + 68;
-		$listH = $h - 68;
-
-		$allKeys = array_keys($modules);
-		$filteredKeys = [];
-		foreach ($allKeys as $k) {
-			if ($this->foxyKeybindSearchQuery === "" || stripos($k, $this->foxyKeybindSearchQuery) !== false) {
-				$filteredKeys[] = $k;
-			}
-		}
-
-		$itemH = 48; // Slightly taller
-		$iy = $listTop - $this->foxyKeybindScrollOffset;
-		$gl->glEnable(0x0c11); // SCISSOR
-		$gl->glScissor(
-			self::SIDEBAR_W,
-			$this->height - ($listTop + self::TITLEBAR_H + $listH),
-			$cw,
-			$listH,
-		);
-
-		foreach ($filteredKeys as $fidx => $moduleName) {
-			$idx = array_search($moduleName, $allKeys);
-
-			if ($iy + $itemH > $listTop && $iy < $listTop + $listH) {
-				$mod = $modules[$moduleName];
-				$isHover = $this->foxyKeybindHoverIdx === $fidx;
-				$isEnabled = $mod["enabled"] ?? false;
-				$keyCode = $mod["keybind"] ?? -1;
-				$isEditing = $this->foxyKeybindEditIdx === $fidx && $this->foxyKeybindListenMode;
-
-				// Card background (Glassy)
-				$cardBg = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
-				$this->drawRect(self::PAD, $iy + 2, $cw - self::PAD * 2, $itemH - 4, $cardBg, 6);
-				
-				// Decorative accent bar
-				if ($isEnabled) {
-					$this->drawRect(self::PAD, $iy + 6, 3, $itemH - 12, $this->colors["primary"], 2);
-				}
-
-				// Module Name
-				$nameColor = $isEnabled ? $this->colors["text"] : $this->colors["text_dim"];
-				$this->renderText($moduleName, self::PAD + 16, $iy + 31, $nameColor, 1000);
-
-				// Keybind interaction area
-				$keyW = 120;
-				$keyX = $cw - self::PAD - $keyW - 80;
-				$keyText = $isEditing ? "PRESS..." : "[" . $this->getGlfwKeyName($keyCode) . "]";
-				$keyColor = $isEditing ? $this->colors["warning"] : ($isEnabled ? $this->colors["accent"] : $this->colors["text_dim"]);
-				
-				$this->renderText($keyText, $keyX, $iy + 31, $keyColor, 1000);
-
-				// Toggle Switch
-				$swW = 38;
-				$swH = 18;
-				$swX = $cw - self::PAD - $swW - 12;
-				$swY = $iy + ($itemH - $swH) / 2;
-				$swBg = $isEnabled ? $this->colors["primary"] : $this->colors["check_off"];
-				$this->drawRect($swX, $swY, $swW, $swH, $swBg, 9); // Fully rounded
-				
-				$knobS = 14;
-				$knobX = $isEnabled ? $swX + $swW - $knobS - 2 : $swX + 2;
-				$this->drawRect($knobX, $swY + 2, $knobS, $knobS, [1, 1, 1, 0.9], 7);
-			}
-			$iy += $itemH;
-		}
-
-		$gl->glDisable(0x0c11);
-
-
-
-		// Scrollbar
-		$contentH = count($filteredKeys) * $itemH;
-		if ($contentH > $listH) {
-			$thumbH = max(20, ($listH / $contentH) * $listH);
-			$scrollRatio = $this->foxyKeybindScrollOffset / max(1, $contentH - $listH);
-			$thumbY = $listTop + ($listH - $thumbH) * $scrollRatio;
-			$this->drawRect($cw - 6, $listTop, 6, $listH, $this->colors["bg"]);
-			$this->drawRect($cw - 5, $thumbY, 4, $thumbH, $this->colors["tab_active"]);
-		}
-	}
-
-	private function renderFoxyMacrosTab($y, $h, $cw)
-	{
-		$gl = $this->opengl32;
-		$macros = $this->foxyMacroData;
-
-		// Header
-		$headerY = $y + 5;
-		$this->drawRect(0, $headerY, $cw, 30, $this->colors["card"]);
-		$this->renderText("KEY", self::PAD + 10, $headerY + 20, $this->colors["text_dim"], 3000);
-		$this->renderText("COMMAND", self::PAD + 120, $headerY + 20, $this->colors["text_dim"], 3000);
-
-		$listTop = $y + 38;
-		$listH = $h - 80; // Leave room for Add button
-
-		$keys = array_keys($macros);
-		$itemH = 44;
-		$iy = $listTop - $this->foxyMacroScrollOffset;
-		$gl->glEnable(0x0c11); // SCISSOR
-		$gl->glScissor(
-			self::SIDEBAR_W,
-			$this->height - ($listTop + self::TITLEBAR_H + $listH),
-			$cw,
-			$listH,
-		);
-
-		foreach ($keys as $idx => $keyCode) {
-			if ($iy + $itemH > $listTop && $iy < $listTop + $listH) {
-				$command = $macros[$keyCode];
-				$isHover = $this->foxyMacroHoverIdx === $idx;
-
-				// Row background
-				$bg = $isHover ? $this->colors["card_hover"] : (($idx % 2 === 0) ? $this->colors["card"] : $this->colors["panel"]);
-				$this->drawRect(self::PAD, $iy, $cw - self::PAD * 2, $itemH - 2, $bg);
-
-				// Key badge
-				$isEditingMacro = $this->foxyMacroEditIdx === $idx && $this->foxyMacroListenMode;
-				$keyName = $isEditingMacro ? "PRESS..." : $this->getGlfwKeyName((int)$keyCode);
-				$badgeW = max(60, $this->getTextWidth($keyName, 1000) + 20);
-				$badgeBg = $isEditingMacro ? $this->colors["accent"] : $this->colors["primary"];
-				$this->drawRect(self::PAD + 8, $iy + 8, $badgeW, 26, $badgeBg);
-				$this->renderText($keyName, self::PAD + 18, $iy + 28, $this->colors["button_text"], 1000);
-
-				// Command text
-				if ($this->foxyMacroEditCommandIdx === $idx) {
-					$cmdW = $cw - self::PAD * 2 - 180;
-					$this->drawRect(self::PAD + 110, $iy + 6, $cmdW, 30, $this->colors["input_bg"], 6);
-					$disp = $command . (fmod(microtime(true), 1.0) < 0.5 ? "_" : "");
-					$this->renderText($disp, self::PAD + 120, $iy + 28, $this->colors["text"], 1000);
-				} else {
-					$this->renderText($command, self::PAD + 120, $iy + 28, $this->colors["text_dim"], 1000);
-				}
-
-				// Delete button
-				$delX = $cw - self::PAD - 40;
-				$delY = $iy + 6;
-				$isDelHover = $isHover && $this->mouseX >= self::SIDEBAR_W + $delX;
-				$delBg = $isDelHover ? $this->colors["del_btn_hover"] : [0.15, 0.15, 0.17, 1.0];
-				$textColor = $isDelHover ? [1, 1, 1, 1] : $this->colors["text_dim"];
-				$this->drawRect($delX, $delY, 30, 30, $delBg, 15); // Perfectly round
-				$this->renderText("X", $delX + 10, $delY + 20, $textColor, 1000);
-			}
-			$iy += $itemH;
-		}
-
-		$gl->glDisable(0x0c11);
-
-
-
-		// Add Macro button
-		$addBtnY = $y + $h - 40;
-		$addBtnW = 150;
-		$addBtnH = 36;
-		$addBtnHover = $this->foxyMacroHoverIdx === -2;
-		$this->drawStyledButton(self::PAD, $addBtnY, $addBtnW, $addBtnH, "+ ADD MACRO", $addBtnHover);
-	}
-
-	private function renderFoxyConfigTab($y, $h, $cw)
+	}private function renderFoxyConfigTab($y, $h, $cw)
 	{
 		$gl = $this->opengl32;
 		$config = $this->foxyConfigData;
@@ -13017,8 +12873,8 @@ class FoxyClient
 		$this->pollEvents->addChannel($this->foxyModInstallChannel);
 		$ch = $this->foxyModInstallChannel;
 
-		$this->foxyModInstallProcess = new \parallel\Runtime();
-		$this->foxyModInstallFuture = $this->foxyModInstallProcess->run(
+		
+		$this->foxyModInstallFuture = $this->runTransientTask(
 			static function ($modsDir, $cacert, $ch) {
 				try {
 					if (!is_dir($modsDir)) {
@@ -13630,6 +13486,11 @@ class FoxyClient
 			}
 			$tx += $tw;
 		}
+		// Search Bar Positioning
+		$searchW = 300;
+		$searchX = $cw - self::PAD - $searchW;
+		$searchY = 100;
+		$this->renderSearchBar($searchX, $searchY, $searchW, 40, $this->vSearchQuery, $this->vSearchFocus, "Search versions...");
 
 		if (!$this->versionsLoaded) {
 			if ($this->isFetchingVersions) {
@@ -13745,7 +13606,8 @@ class FoxyClient
 		$showMod = (bool) ($this->settings["show_modified_versions"] ?? false);
 		$cacheKey =
 			$this->vCategory .
-			($this->vCategory === 0 ? ($showMod ? "_mod" : "") : "");
+			($this->vCategory === 0 ? ($showMod ? "_mod" : "") : "") .
+			"_" . $this->vSearchQuery;
 
 		if (
 			$this->filteredVersionsCache !== null &&
@@ -13763,9 +13625,13 @@ class FoxyClient
 		}
 
 		$out = [];
+		$searchLower = strtolower($this->vSearchQuery ?? "");
 		foreach ($this->versions as $v) {
 			$vType = $v["type"] ?? "";
 			if ($vType === $type) {
+				if ($searchLower !== "" && strpos(strtolower($v["id"]), $searchLower) === false) {
+					continue;
+				}
 				$out[] = $v;
 			}
 		}
@@ -14022,8 +13888,8 @@ class FoxyClient
 		$this->vManifestError = "";
 
 		$this->vManifestChannel = new \parallel\Channel();
-		$this->vManifestProcess = new \parallel\Runtime(); // No custom classes needed here
-		$this->vManifestFuture = $this->vManifestProcess->run(
+		
+		$this->vManifestFuture = $this->runTransientTask(
 			function (\parallel\Channel $ch) {
 				$urls = [
 					"mojang" =>
@@ -14456,9 +14322,21 @@ class FoxyClient
 			"Java / JRE Settings",
 			"Arguments and executable path configuration",
 			function ($x, $cy, $w, $h) {
-				// Expanded config button
+				$mode = $this->settings["java_mode"] ?? "auto";
 				$isHover = $this->propFieldHover === 2;
-				$this->drawStyledButton($x, $cy, $w, $h, "CONFIGURE ADVANCED SETTINGS", $isHover, "primary", 3000);
+				if ($mode === "auto") {
+					$javaVerSetting = $this->settings["java_version"] ?? "auto";
+					if ($javaVerSetting !== "auto") {
+						$suffix = " (Java $javaVerSetting)";
+					} elseif ($this->selectedVersion) {
+						$suffix = " (Java " . $this->resolveMcJavaVersion($this->selectedVersion) . " - Auto)";
+					} else {
+						$suffix = " (Auto)";
+					}
+				} else {
+					$suffix = " (Custom)";
+				}
+				$this->drawStyledButton($x, $cy, $w, $h, "CONFIG$suffix", $isHover, "primary", 3000);
 			},
 		);
 
@@ -16368,6 +16246,47 @@ class FoxyClient
 		$this->needsRedraw = true;
 	}
 
+	private function resolveMcJavaVersion($mcVersion)
+	{
+		// Extract clean MC version (strip loader suffixes like -fabric, -forge, etc.)
+		if (!preg_match('/^(\d+\.\d+(?:\.\d+)?)/', $mcVersion, $m)) return 21;
+		$parts = explode(".", $m[1]);
+		$major = (int)($parts[0] ?? 0);
+		$minor = (int)($parts[1] ?? 0);
+		$patch = (int)($parts[2] ?? 0);
+
+		// 26.1+ -> Java 25
+		if ($major >= 26) return 25;
+
+		// Only 1.x versions below
+		if ($major !== 1) return 21;
+
+		// 1.0 – 1.11.2 -> Java 8
+		if ($minor < 12 || ($minor === 11 && $patch <= 2)) return 8;
+
+		// 1.12 – 1.16.5 -> Java 11
+		if ($minor <= 16 && ($minor < 16 || $patch <= 5)) return 11;
+
+		// 1.17 – 1.17.1 -> Java 16
+		if ($minor === 17 && $patch <= 1) return 16;
+
+		// 1.18 – 1.20.4 -> Java 17
+		if ($minor <= 20 && ($minor < 20 || $patch <= 4)) return 17;
+
+		// 1.20.5 – 1.21.11 -> Java 21
+		if ($minor <= 21 && ($minor < 21 || $patch <= 11)) return 21;
+
+		// Beyond 1.21.11 -> Java 21 (stable default)
+		return 21;
+	}
+
+	private function resolveAutoJavaPath($javaVer)
+	{
+		$base = realpath(self::DATA_DIR . "/jre/jre-$javaVer/bin/javaw.exe");
+		if ($base) return $base;
+		return null;
+	}
+
 	private function renderCrashModal()
 	{
 		if (!$this->crashModalOpen && $this->crashModalAnim < 0.01) {
@@ -16659,17 +16578,15 @@ class FoxyClient
 	private function renderJavaModal()
 	{
 		$gl = $this->opengl32;
-		// Dim background
 		$this->drawRect(0, 0, $this->width, $this->height, [0, 0, 0, 0.7]);
 
 		$mw = 500;
-		$mh = 450;
+		$mh = 480;
 		$mx = ($this->width - $mw) / 2;
 		$my = ($this->height - $mh) / 2;
 
-		// Modal card
 		$this->drawRect($mx, $my, $mw, $mh, $this->colors["panel"]);
-		$this->drawRect($mx, $my, $mw, 3, $this->colors["primary"]); // Top accent
+		$this->drawRect($mx, $my, $mw, 3, $this->colors["primary"]);
 
 		$this->renderText(
 			"JAVA / JRE CONFIGURATION",
@@ -16679,46 +16596,99 @@ class FoxyClient
 			2000,
 		);
 
-		$y = $my + 80;
+		$y = $my + 75;
+		$mode = $this->settings["java_mode"] ?? "auto";
 
-		// Java Path
-		$this->renderText(
-			"Java Executable Path",
-			$mx + 20,
-			$y,
-			$this->colors["text"],
-			1000,
-		);
-		$this->renderModalTextField(
-			$mx + 20,
-			$y + 10,
-			$mw - 130,
-			40,
-			"java_path",
-			"java",
-		);
+		// Mode toggle (Custom / Auto)
+		$this->renderText("Java Mode", $mx + 20, $y, $this->colors["text"], 1000);
+		$toggleY = $y + 12;
+		$toggleW = 160;
+		$toggleItemW = 80;
+		$toggleH = 32;
+		$toggleX = $mx + 20;
 
-		// Browse button (ID 98)
-		$bx = $mx + $mw - 100;
-		$by = $y + 10;
-		$bw = 80;
-		$bh = 40;
-		$isBHover = $this->javaModalHoverIdx === 98;
-		$this->drawRect(
-			$bx,
-			$by,
-			$bw,
-			$bh,
-			$isBHover ? $this->colors["button_hover"] : $this->colors["button"],
-		);
-		$this->renderText(
-			"BROWSE",
-			$bx + 10,
-			$by + 26,
-			$this->colors["button_text"],
-			3000,
-		);
-		$y += 70;
+		// Custom button
+		$isCustom = $mode === "custom";
+		$isCustomHover = $this->javaModalHoverIdx === 97;
+		if ($isCustom) {
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($toggleX, $toggleY, $toggleItemW, $toggleH, 6, [$pc[0], $pc[1], $pc[2], 0.8]);
+		} elseif ($isCustomHover) {
+			$this->drawRoundedRect($toggleX, $toggleY, $toggleItemW, $toggleH, 6, [1, 1, 1, 0.08]);
+		}
+		$this->renderText("Custom", $toggleX + 14, $toggleY + 22, $isCustom ? [1, 1, 1] : $this->colors["text"], 1000);
+
+		// Auto button
+		$isAuto = $mode === "auto";
+		$isAutoHover = $this->javaModalHoverIdx === 96;
+		if ($isAuto) {
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($toggleX + $toggleItemW, $toggleY, $toggleItemW, $toggleH, 6, [$pc[0], $pc[1], $pc[2], 0.8]);
+		} elseif ($isAutoHover) {
+			$this->drawRoundedRect($toggleX + $toggleItemW, $toggleY, $toggleItemW, $toggleH, 6, [1, 1, 1, 0.08]);
+		}
+		$this->renderText("Auto", $toggleX + $toggleItemW + 20, $toggleY + 22, $isAuto ? [1, 1, 1] : $this->colors["text"], 1000);
+
+		$y += 55;
+
+		if ($mode === "custom") {
+			// Java Executable Path (Custom mode)
+			$this->renderText(
+				"Java Executable Path",
+				$mx + 20,
+				$y,
+				$this->colors["text"],
+				1000,
+			);
+			$this->renderModalTextField(
+				$mx + 20,
+				$y + 10,
+				$mw - 130,
+				40,
+				"java_path",
+				"java",
+			);
+
+			$bx = $mx + $mw - 100;
+			$by = $y + 10;
+			$bw = 80;
+			$bh = 40;
+			$isBHover = $this->javaModalHoverIdx === 98;
+			$this->drawRect(
+				$bx,
+				$by,
+				$bw,
+				$bh,
+				$isBHover ? $this->colors["button_hover"] : $this->colors["button"],
+			);
+			$this->renderText(
+				"BROWSE",
+				$bx + 10,
+				$by + 26,
+				$this->colors["button_text"],
+				3000,
+			);
+			$y += 70;
+		} else {
+			// Java Version dropdown (Auto mode)
+			$this->renderText("Java Version", $mx + 20, $y, $this->colors["text"], 1000);
+			$verDropY = $y + 10;
+			$verDropW = $mw - 40;
+			$verDropH = 40;
+			$currentVer = $this->settings["java_version"] ?? "auto";
+			$verLabel = $this->javaVersionOptions[$currentVer] ?? "Auto";
+			$this->drawRect($mx + 20, $verDropY, $verDropW, $verDropH, $this->colors["input_bg"]);
+			$this->drawRect($mx + 20, $verDropY + $verDropH - 2, $verDropW, 2, $this->colors["divider"]);
+			$this->renderText($verLabel, $mx + 30, $verDropY + 26, $this->colors["text"], 1000);
+			$this->renderText(
+				$this->javaVersionDropdownOpen ? "▲" : "▼",
+				$mx + $verDropW - 25,
+				$verDropY + 26,
+				$this->colors["primary"],
+				3000,
+			);
+			$y += 70;
+		}
 
 		// Java Arguments
 		$this->renderText(
@@ -16756,7 +16726,7 @@ class FoxyClient
 		);
 		$y += 70;
 
-		// GC Optimizer Dropdown
+		// Improved JVM Arguments label + collapsed box (always visible)
 		$this->renderText(
 			"Improved JVM Arguments",
 			$mx + 20,
@@ -16764,10 +16734,25 @@ class FoxyClient
 			$this->colors["text"],
 			1000,
 		);
-		$this->renderModalDropdown($mx + 20, $y + 10, $mw - 40, 40);
+		$ddX = $mx + 20;
+		$ddY = $y + 10;
+		$ddW = $mw - 40;
+		$ddH = 40;
+		$this->drawRect($ddX, $ddY, $ddW, $ddH, $this->colors["input_bg"]);
+		$this->drawRect($ddX, $ddY + $ddH - 2, $ddW, 2, $this->colors["divider"]);
+		$curVal = $this->settings["jvm_optimizer"];
+		$label = $this->jvmOptions[$curVal] ?? $curVal;
+		$this->renderText($label, $ddX + 10, $ddY + 26, $this->colors["text"], 1000);
+		$this->renderText(
+			$this->javaModalDropdownOpen ? "▲" : "▼",
+			$ddX + $ddW - 25,
+			$ddY + 26,
+			$this->colors["primary"],
+			3000,
+		);
 		$y += 80;
 
-		// Close button
+		// Close button (rendered BEFORE dropdown list to fix z-index)
 		$btnW = 120;
 		$btnH = 36;
 		$btnX = $mx + $mw - $btnW - 20;
@@ -16784,6 +16769,80 @@ class FoxyClient
 			$this->colors["button_text"],
 			3000,
 		);
+
+		// Dropdown list overlay (rendered last, on top of close button)
+		if (
+			$this->javaModalDropdownOpen ||
+			$this->javaModalDropdownAnim > 0.01
+		) {
+			$maxH = count($this->jvmOptions) * 35;
+			$ddListH = $maxH * $this->javaModalDropdownAnim;
+			$dy = $ddY + $ddH;
+
+			$gl->glEnable(0x0c11);
+			$gl->glScissor($ddX, $this->height - ($dy + $ddListH), $ddW, $ddListH);
+
+			$bgColor = $this->colors["dropdown_bg"];
+			$this->drawRoundedRect($ddX, $dy, $ddW, $maxH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98], [1, 1, 1, 0.1]);
+			if ($this->javaModalDropdownAnim > 0.5) $this->drawRect($ddX, $dy, $ddW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98]);
+			$idx = 0;
+			foreach ($this->jvmOptions as $optKey => $optLabel) {
+				$itemY = $dy + $idx * 35;
+				$isItemHover = $this->javaModalHoverIdx === $idx + 10;
+				$isSelected = $optKey === $curVal;
+				if ($isSelected) {
+					$pc = $this->colors["primary"];
+					$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, 31, 8, [$pc[0], $pc[1], $pc[2], 0.8]);
+					$this->drawGlow($ddX + 6, $itemY + 2, $ddW - 12, 31, 10, [$pc[0], $pc[1], $pc[2], 0.2]);
+				} elseif ($isItemHover) {
+					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05] : [1, 1, 1, 0.08];
+					$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, 31, 8, $sh);
+				}
+				$color = $isSelected ? [1, 1, 1] : ($isItemHover ? $this->colors["text"] : $this->colors["text_dim"]);
+				$this->renderText($optLabel, $ddX + 16, $itemY + 23, $color, 1000, $this->javaModalDropdownAnim);
+				$idx++;
+			}
+			$gl->glDisable(0x0c11);
+		}
+
+		// Java Version dropdown list (auto mode only, rendered on top of close button)
+		$javaMode = $this->settings["java_mode"] ?? "auto";
+		if ($javaMode === "auto" && ($this->javaVersionDropdownOpen || $this->javaVersionDropdownAnim > 0.01)) {
+			$vDropX = $mx + 20;
+			$vDropW = $mw - 40;
+			$vDropY = $my + 140;
+			$vDropH = 40;
+			$vAlpha = $this->javaVersionDropdownAnim;
+			$vMaxH = count($this->javaVersionOptions) * 35;
+			$vListH = $vMaxH * $vAlpha;
+			$vDy = $vDropY + $vDropH;
+			$vCurVer = $this->settings["java_version"] ?? "auto";
+
+			$gl->glEnable(0x0c11);
+			$gl->glScissor($vDropX, $this->height - ($vDy + $vListH), $vDropW, $vListH);
+
+			$bgColor = $this->colors["dropdown_bg"];
+			$this->drawRoundedRect($vDropX, $vDy, $vDropW, $vMaxH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98], [1, 1, 1, 0.1]);
+			if ($vAlpha > 0.5) $this->drawRect($vDropX, $vDy, $vDropW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98]);
+			$vIdx = 0;
+			foreach ($this->javaVersionOptions as $vKey => $vLabel) {
+				$itemY = $vDy + $vIdx * 35;
+				$isItemHover = $this->javaModalHoverIdx === $vIdx + 70;
+				$isSelected = (string)$vKey === (string)$vCurVer;
+				if ($isSelected) {
+					$pc = $this->colors["primary"];
+					$this->drawRoundedRect($vDropX + 6, $itemY + 2, $vDropW - 12, 31, 8, [$pc[0], $pc[1], $pc[2], 0.8]);
+					$this->drawGlow($vDropX + 6, $itemY + 2, $vDropW - 12, 31, 10, [$pc[0], $pc[1], $pc[2], 0.2]);
+				} elseif ($isItemHover) {
+					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05] : [1, 1, 1, 0.08];
+					$this->drawRoundedRect($vDropX + 6, $itemY + 2, $vDropW - 12, 31, 8, $sh);
+				}
+				$color = $isSelected ? [1, 1, 1] : ($isItemHover ? $this->colors["text"] : $this->colors["text_dim"]);
+				$this->renderText($vLabel, $vDropX + 16, $itemY + 23, $color, 1000, $vAlpha);
+				$vIdx++;
+			}
+			$gl->glDisable(0x0c11);
+		}
 	}
 
 	private function renderModalTextField($x, $y, $w, $h, $key, $placeholder)
@@ -16899,7 +16958,7 @@ class FoxyClient
 	{
 		$this->javaModalHoverIdx = -1;
 		$mw = 500;
-		$mh = 450;
+		$mh = 480;
 		$mx = ($this->width - $mw) / 2;
 		$my = ($this->height - $mh) / 2;
 
@@ -16917,24 +16976,56 @@ class FoxyClient
 			$this->javaModalHoverIdx = 99;
 		}
 
-		// Browse button (ID 98)
-		$yBase = $my + 80 + 10; // Y for the Java Path text field
-		$bx = $mx + $mw - 100;
-		$by = $yBase;
-		$bw = 80;
-		$bh = 40;
-		if ($x >= $bx && $x <= $bx + $bw && $y >= $by && $y <= $by + $bh) {
-			$this->javaModalHoverIdx = 98;
+		// Mode toggle (ID 97 = Custom, 96 = Auto)
+		$toggleY = $my + 87;
+		$toggleItemW = 80;
+		$toggleH = 32;
+		$toggleX = $mx + 20;
+		if ($y >= $toggleY && $y <= $toggleY + $toggleH) {
+			if ($x >= $toggleX && $x <= $toggleX + $toggleItemW) {
+				$this->javaModalHoverIdx = 97;
+			} elseif ($x >= $toggleX + $toggleItemW && $x <= $toggleX + $toggleItemW * 2) {
+				$this->javaModalHoverIdx = 96;
+			}
 		}
 
-		// Dropdown hover (IDs 10-14)
+		// Browse button (ID 98) - only in custom mode
+		$mode = $this->settings["java_mode"] ?? "auto";
+		if ($mode === "custom") {
+			$yBase = $my + 130 + 10;
+			$bx = $mx + $mw - 100;
+			$by = $yBase;
+			$bw = 80;
+			$bh = 40;
+			if ($x >= $bx && $x <= $bx + $bw && $y >= $by && $y <= $by + $bh) {
+				$this->javaModalHoverIdx = 98;
+			}
+		}
+
+		// Java version dropdown items (IDs 70-76) - only in auto mode
+		$optCountVer = count($this->javaVersionOptions);
+		if ($mode === "auto" && $this->javaVersionDropdownOpen) {
+			$verDropX = $mx + 20;
+			$verDropW = $mw - 40;
+			$verDropY = $my + 180;
+			if ($x >= $verDropX && $x <= $verDropX + $verDropW) {
+				$idx = (int) floor(($y - $verDropY) / 35);
+				if ($idx >= 0 && $idx < $optCountVer) {
+					$this->javaModalHoverIdx = 70 + $idx;
+					return;
+				}
+			}
+		}
+
+		// Dropdown hover (IDs 10+)
+		$optCount = count($this->jvmOptions);
 		if ($this->javaModalDropdownOpen) {
 			$dropX = $mx + 20;
 			$dropW = $mw - 40;
-			$dropY = $my + 80 + 70 * 3 + 10 + 40; // After 3 rows + dropdown header
+			$dropY = $mode === "custom" ? ($my + 390) : ($my + 375);
 			if ($x >= $dropX && $x <= $dropX + $dropW) {
 				$idx = (int) floor(($y - $dropY) / 35);
-				if ($idx >= 0 && $idx < count($this->jvmOptions)) {
+				if ($idx >= 0 && $idx < $optCount) {
 					$this->javaModalHoverIdx = $idx + 10;
 					return;
 				}
@@ -16945,20 +17036,48 @@ class FoxyClient
 	private function handleJavaModalClick($x, $y)
 	{
 		$mw = 500;
-		$mh = 450;
+		$mh = 480;
 		$mx = ($this->width - $mw) / 2;
 		$my = ($this->height - $mh) / 2;
 
-		// Reset active field if clicking outside text boxes
 		$oldField = $this->javaModalActiveField;
 		$this->javaModalActiveField = "";
 
 		// Close button
 		if ($this->javaModalHoverIdx === 99) {
 			$this->javaModalOpen = false;
+			$this->javaModalDropdownOpen = false;
+			$this->javaVersionDropdownOpen = false;
 			$this->saveSettings();
-		} elseif ($this->javaModalHoverIdx === 98) {
-			// Browse for Java
+			return;
+		}
+
+		// Mode toggle (97 = Custom, 96 = Auto)
+		if ($this->javaModalHoverIdx === 97) {
+			$this->settings["java_mode"] = "custom";
+			$this->saveSettings();
+			return;
+		}
+		if ($this->javaModalHoverIdx === 96) {
+			$this->settings["java_mode"] = "auto";
+			$this->saveSettings();
+			return;
+		}
+
+		// Java version dropdown items (IDs 70-76) - only in auto mode
+		if ($this->javaModalHoverIdx >= 70 && $this->javaModalHoverIdx < 70 + count($this->javaVersionOptions)) {
+			$keys = array_keys($this->javaVersionOptions);
+			$idx = $this->javaModalHoverIdx - 70;
+			if (isset($keys[$idx])) {
+				$this->settings["java_version"] = $keys[$idx];
+				$this->javaVersionDropdownOpen = false;
+				$this->saveSettings();
+			}
+			return;
+		}
+
+		// Browse button (ID 98) - only in custom mode
+		if ($this->javaModalHoverIdx === 98) {
 			$ofn = $this->comdlg32->new("OPENFILENAMEA");
 			FFI::memset(FFI::addr($ofn), 0, FFI::sizeof($ofn));
 			$ofn->lStructSize = FFI::sizeof($ofn);
@@ -16973,7 +17092,7 @@ class FoxyClient
 			FFI::memset($fileBuf, 0, 260);
 			$ofn->lpstrFile = FFI::cast("char*", $fileBuf);
 			$ofn->nMaxFile = 260;
-			$ofn->Flags = 0x00000800 | 0x00000008; // OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR
+			$ofn->Flags = 0x00000800 | 0x00000008;
 
 			if ($this->comdlg32->GetOpenFileNameA(FFI::addr($ofn))) {
 				$newPath = FFI::string($fileBuf);
@@ -16982,11 +17101,15 @@ class FoxyClient
 					$this->saveSettings();
 				}
 			}
+			return;
 		}
 
 		// Text fields
-		$fields = ["java_path", "java_args", "minecraft_args"];
-		$fy = $my + 90;
+		$mode = $this->settings["java_mode"] ?? "auto";
+		$fields = $mode === "custom"
+			? ["java_path", "java_args", "minecraft_args"]
+			: ["java_args", "minecraft_args"];
+		$fy = $mode === "custom" ? ($my + 140) : ($my + 210);
 		foreach ($fields as $field) {
 			if (
 				$x >= $mx + 20 &&
@@ -17000,22 +17123,40 @@ class FoxyClient
 			$fy += 70;
 		}
 
-		// Dropdown toggle
+		// Java version dropdown header toggle (auto mode only)
+		if ($mode === "auto") {
+			$verDropToggleY = $my + 140;
+			if (
+				$x >= $mx + 20 &&
+				$x <= $mx + $mw - 20 &&
+				$y >= $verDropToggleY &&
+				$y <= $verDropToggleY + 40
+			) {
+				$this->javaVersionDropdownOpen = !$this->javaVersionDropdownOpen;
+				$this->javaModalDropdownOpen = false;
+				return;
+			}
+		}
+
+		// Dropdown header toggle
+		$ddY = $mode === "custom" ? ($my + 350) : ($my + 335);
 		if (
 			$x >= $mx + 20 &&
 			$x <= $mx + $mw - 20 &&
-			$y >= $fy &&
-			$y <= $fy + 40
+			$y >= $ddY &&
+			$y <= $ddY + 40
 		) {
 			$this->javaModalDropdownOpen = !$this->javaModalDropdownOpen;
+			$this->javaVersionDropdownOpen = false;
 			return;
 		}
 
 		// Dropdown selection
+		$optCount = count($this->jvmOptions);
 		if (
 			$this->javaModalDropdownOpen &&
 			$this->javaModalHoverIdx >= 10 &&
-			$this->javaModalHoverIdx < 15
+			$this->javaModalHoverIdx < 10 + $optCount
 		) {
 			$idx = $this->javaModalHoverIdx - 10;
 			$keys = array_keys($this->jvmOptions);
@@ -17028,6 +17169,7 @@ class FoxyClient
 		}
 
 		$this->javaModalDropdownOpen = false;
+		$this->javaVersionDropdownOpen = false;
 	}
 
 	// ─── Background Modal System ───
@@ -17223,16 +17365,14 @@ class FoxyClient
 			$this->settings["bg_file"] = "";
 			$this->settings["bg_blur"] = 0;
 			$this->saveSettings();
-			$this->loadBackground();
-			return;
+			$this->loadBackground(); return;
 		}
 
 		// Close button
 		if ($this->bgModalHoverIdx === 99) {
 			$this->bgModalOpen = false;
 			$this->saveSettings();
-			$this->loadBackground();
-			return;
+			$this->loadBackground(); return;
 		}
 
 		// Browse button
@@ -17288,8 +17428,7 @@ class FoxyClient
 						$this->settings["bg_file"] = $newPath;
 						$this->saveSettings();
 					}
-					$this->loadBackground();
-				}
+					$this->loadBackground(); }
 			}
 			return;
 		}
@@ -18090,15 +18229,15 @@ class FoxyClient
 			$this->assetMessage === "GAME RUNNING" ||
 			!empty($this->httpPending) ||
 			!empty($this->pendingFutures) ||
-			$this->process !== null ||
-			$this->assetProcess !== null ||
-			$this->modrinthProcess !== null ||
-			!empty($this->modDownloadRuntimes) ||
-			$this->modpackInstallProcess !== null ||
-			$this->iconDownloadProcess !== null ||
-			$this->vManifestProcess !== null ||
+			$this->assetFuture !== null ||
+			$this->modrinthFuture !== null ||
+			!empty($this->modDownloadFutures) ||
+			$this->modpackInstallFuture !== null ||
+			$this->iconDownloadFuture !== null ||
+			$this->vManifestFuture !== null ||
 			$this->isInstallingFoxyMod ||
-			$this->foxyModInstallProcess !== null;
+			$this->foxyModInstallFuture !== null ||
+			$this->oauthServer !== null;
 	}
 
 	private function getAbsolutePath($path)
@@ -18196,7 +18335,7 @@ class FoxyClient
 		}
 
 		$this->modrinthChannel = new \parallel\Channel();
-		$this->modrinthProcess = new \parallel\Runtime();
+		
 
 		$projectType = 'mod';
 		if ($this->modpackSubTab === 1) $projectType = 'shader';
@@ -18290,7 +18429,7 @@ class FoxyClient
 
 		$cacert = self::CACERT;
 		if ($this->modrinthFuture) $this->pendingFutures[] = $this->modrinthFuture;
-		$this->modrinthFuture = $this->modrinthProcess->run(
+		$this->modrinthFuture = $this->runTransientTask(
 			function (
 				\parallel\Channel $ch,
 				$url,
@@ -18361,7 +18500,7 @@ class FoxyClient
 		$modDownloadChannel = new \parallel\Channel();
 		$this->modDownloadChannels[$projectId] = $modDownloadChannel;
 		$this->channelToModId[(string)$modDownloadChannel] = $projectId;
-		$this->modDownloadRuntimes[$projectId] = new \parallel\Runtime();
+		
 		$this->modDownloadProgresses[$projectId] = 0.0;
 
 		$version = $this->config["minecraft_version"] ?? "1.20.1";
@@ -18392,7 +18531,7 @@ class FoxyClient
 		);
 
 		$cacert = self::CACERT;
-		$this->modDownloadFutures[$projectId] = $this->modDownloadRuntimes[$projectId]->run(
+		$this->modDownloadFutures[$projectId] = $this->runTransientTask(
 			function (
 				\parallel\Channel $ch,
 				$pid,
@@ -18908,9 +19047,10 @@ class FoxyClient
 			$this->renderText($name, $ddX + 44, $itemY + 23, $tc, 3000, $alpha);
 		}
 
-		$gl->glDisable(0x0c11);
+			$gl->glDisable(0x0c11);
+		}
+
 	}
-}
 
 class FoxyVersionJob
 {
@@ -19611,6 +19751,131 @@ class FoxyVersionJob
 	}
 }
 
+class FoxyJreDownloadJob
+{
+	public const VERSION = FoxyClient::VERSION;
+	public static function run(
+		\parallel\Channel $ch,
+		int $javaVer,
+		string $dataDir,
+		string $cacert,
+		string $cacheDir,
+	) {
+		$targetDir = $dataDir . "/jre/jre-$javaVer";
+		if (is_dir($targetDir) && file_exists($targetDir . "/bin/javaw.exe")) {
+			$ch->send(json_encode(["type" => "progress", "msg" => "JRE already installed!"]));
+			$ch->send(json_encode(["type" => "progress", "done" => true]));
+			$ch->close();
+			return;
+		}
+
+		$ch->send(json_encode(["type" => "progress", "pct" => 0, "msg" => "Fetching latest JRE info..."]));
+
+		// Fetch latest release from GitHub API
+		$apiUrl = "https://api.github.com/repos/adoptium/temurin{$javaVer}-binaries/releases/latest";
+		$curl = curl_init($apiUrl);
+		curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+		curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/1.0");
+		curl_setopt($curl, CURLOPT_HTTPHEADER, ["Accept: application/json"]);
+		if (file_exists($cacert)) curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+		$apiRes = curl_exec($curl);
+		$apiCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+		curl_close($curl);
+
+		if ($apiCode !== 200 || !$apiRes) {
+			$ch->send(json_encode(["type" => "error", "message" => "Failed to fetch latest JRE info (HTTP $apiCode)"]));
+			$ch->close();
+			return;
+		}
+
+		$release = json_decode($apiRes, true);
+		$tagName = $release["tag_name"] ?? null;
+		if (!$tagName) {
+			$ch->send(json_encode(["type" => "error", "message" => "Invalid release data from GitHub"]));
+			$ch->close();
+			return;
+		}
+
+		// Find Windows x64 JRE zip asset
+		$assetUrl = null;
+		$assetName = null;
+		foreach ($release["assets"] ?? [] as $asset) {
+			$name = $asset["name"] ?? "";
+			if (
+				stripos($name, "jre") !== false &&
+				stripos($name, "windows") !== false &&
+				stripos($name, "x64") !== false &&
+				substr($name, -4) === ".zip"
+			) {
+				$assetUrl = $asset["browser_download_url"] ?? null;
+				$assetName = $name;
+				break;
+			}
+		}
+
+		if (!$assetUrl) {
+			$ch->send(json_encode(["type" => "error", "message" => "No Windows x64 JRE asset found in latest release"]));
+			$ch->close();
+			return;
+		}
+
+		$stripPrefix = $tagName . "-jre";
+		$zipPath = $cacheDir . "/" . $assetName;
+		$zipDir = dirname($zipPath);
+		if (!is_dir($zipDir)) @mkdir($zipDir, 0777, true);
+
+		// Download
+		$ch->send(json_encode(["type" => "progress", "pct" => 1, "msg" => "Downloading Java JRE..."]));
+		$fp = fopen($zipPath, "w+");
+		$curl = curl_init($assetUrl);
+		curl_setopt($curl, CURLOPT_FILE, $fp);
+		curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($curl, CURLOPT_BUFFERSIZE, 1048576);
+		curl_setopt($curl, CURLOPT_TCP_NODELAY, true);
+		curl_setopt($curl, CURLOPT_NOPROGRESS, false);
+		curl_setopt($curl, CURLOPT_PROGRESSFUNCTION, function($resource, $downloadSize, $downloaded, $uploadSize, $uploaded) use ($ch) {
+			if ($downloadSize > 0) {
+				$pct = min(90, (int)round(($downloaded / $downloadSize) * 100));
+				$ch->send(json_encode(["type" => "progress", "pct" => $pct, "msg" => "Downloading Java JRE ($pct%)"]));
+			}
+		});
+		if (file_exists($cacert)) curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+		curl_exec($curl);
+		$httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+		curl_close($curl);
+		fclose($fp);
+
+		if ($httpCode !== 200) {
+			@unlink($zipPath);
+			$ch->send(json_encode(["type" => "error", "message" => "Java JRE download failed (HTTP $httpCode)"]));
+			$ch->close();
+			return;
+		}
+
+		$ch->send(json_encode(["type" => "progress", "pct" => 92, "msg" => "Extracting JRE..."]));
+		$zip = new \ZipArchive();
+		if ($zip->open($zipPath) === true) {
+			for ($i = 0; $i < $zip->numFiles; $i++) {
+				$name = $zip->getNameIndex($i);
+				if (strpos($name, "$stripPrefix/") === 0) {
+					$newName = substr($name, strlen($stripPrefix) + 1);
+					if ($newName === "") continue;
+					$dest = $targetDir . "/" . $newName;
+					if (substr($name, -1) === "/") { @mkdir($dest, 0777, true); }
+					else { @mkdir(dirname($dest), 0777, true); copy("zip://$zipPath#$name", $dest); }
+				}
+			}
+			$zip->close();
+		}
+		@unlink($zipPath);
+
+		$ch->send(json_encode(["type" => "progress", "msg" => "JRE ready!"]));
+		$ch->send(json_encode(["type" => "progress", "done" => true]));
+		$ch->close();
+	}
+}
+
 class FoxyCompatCheckJob
 {
 	public const VERSION = FoxyClient::VERSION;
@@ -19964,3 +20229,9 @@ class DiscordRPC
 		}
 	}
 }
+
+
+
+
+
+
