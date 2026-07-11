@@ -6,21 +6,21 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.1";
+	public const VERSION = "1.4.2";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
 
-	public const WGL_DRAW_TO_WINDOW_ARB    = 0x2001;
-	public const WGL_SUPPORT_OPENGL_ARB    = 0x2010;
-	public const WGL_DOUBLE_BUFFER_ARB     = 0x2011;
-	public const WGL_PIXEL_TYPE_ARB        = 0x2013;
-	public const WGL_TYPE_RGBA_ARB         = 0x202B;
-	public const WGL_COLOR_BITS_ARB        = 0x2014;
-	public const WGL_DEPTH_BITS_ARB        = 0x2022;
-	public const WGL_STENCIL_BITS_ARB      = 0x2023;
-	public const WGL_SAMPLE_BUFFERS_ARB    = 0x2041;
-	public const WGL_SAMPLES_ARB           = 0x2042;
+	public const WGL_DRAW_TO_WINDOW_ARB		= 0x2001;
+	public const WGL_SUPPORT_OPENGL_ARB		= 0x2010;
+	public const WGL_DOUBLE_BUFFER_ARB		= 0x2011;
+	public const WGL_PIXEL_TYPE_ARB			= 0x2013;
+	public const WGL_TYPE_RGBA_ARB			= 0x202B;
+	public const WGL_COLOR_BITS_ARB			= 0x2014;
+	public const WGL_DEPTH_BITS_ARB			= 0x2022;
+	public const WGL_STENCIL_BITS_ARB		= 0x2023;
+	public const WGL_SAMPLE_BUFFERS_ARB		= 0x2041;
+	public const WGL_SAMPLES_ARB			= 0x2042;
 
 	private $hwnd;
 	private $hdc;
@@ -36,6 +36,7 @@ class FoxyClient {
 	private $logoTex = 0;
 	private $mojangTex = 0;
 	private $elybyTex = 0;
+	private $localTex = 0;
 	private $bgTex = null;
 	private $bgW = 0, $bgH = 0;
 	private $logoW = 0;
@@ -61,6 +62,7 @@ class FoxyClient {
 	private const ACC_ELYBY = "elyby";
 	private const ACC_FOXY = "foxy";
 	private const ACC_MOJANG = "mojang";
+	private const ACC_LOCAL = "local";
 
 	private $currentPage = self::PAGE_HOME;
 	private $sidebarHover = -1;
@@ -90,6 +92,16 @@ class FoxyClient {
 
 	private const ELY_ENDPOINT = "ely.by";
 	private const FOXY_ENDPOINT = "foxyclient.qzz.io";
+	private const LOCAL_SERVER_PORT = 9876;
+	private const LOCAL_SERVER_SSL_PORT = 9877;
+	private $localServerProc = null;
+	private $localServerPipes = null;
+	private $localServerPid = 0;
+	private $localServerSslProc = null;
+	private $localServerSslPipes = null;
+	private $localServerSslPid = 0;
+	private $uploadSkinMessage = "";
+	private $uploadSkinMessageTimer = 0;
 
 	// Login system state
 	private $loginType = self::ACC_OFFLINE; // current sub-mode of login
@@ -165,10 +177,10 @@ class FoxyClient {
 	private $modsLoaderOptions = ["fabric", "forge", "quilt", "neoforge"];
 
 	// Mods page filter dropdowns (Multi-Select Arrays)
-	private $modsFilterCategories = []; // Selected category slugs
-	private $modsFilterLoaders = [];    // Selected loader filters
-	private $modsFilterEnvs = [];       // "client", "server"
-	private $modsFilterVersions = [];   // Selected Minecraft versions
+	private $modsFilterCategories = [];	// Selected category slugs
+	private $modsFilterLoaders = [];	// Selected loader filters
+	private $modsFilterEnvs = [];		// "client", "server"
+	private $modsFilterVersions = [];	// Selected Minecraft versions
 	
 	// Shader Specific Filters
 	private $shaderFilterCategories = [];
@@ -489,7 +501,7 @@ class FoxyClient {
 	private $argfileToDelete = "";
 
 	// FoxyClient Tab: Keybinds / Macros / FoxyConfig / Cosmetics
-	private $foxyConfigData = [];    // setting_key => value
+	private $foxyConfigData = [];	// setting_key => value
 	private $foxyConfigScrollTarget = 0.0;
 	private $foxyConfigScrollOffset = 0.0;
 	private $foxyConfigHoverIdx = -1;
@@ -535,6 +547,7 @@ class FoxyClient {
 		"game_dir" => "games",
 		"window_w" => "1280",
 		"window_h" => "720",
+		"fullscreen" => false,
 		"java_mode" => "auto",
 		"java_path" => "",
 		"java_args" => "",
@@ -557,6 +570,7 @@ class FoxyClient {
 		"game_dir" => "games",
 		"window_w" => "1280",
 		"window_h" => "720",
+		"fullscreen" => false,
 		"java_mode" => "auto",
 		"java_path" => "",
 		"java_args" => "",
@@ -751,10 +765,11 @@ class FoxyClient {
 		$acc_foxy = self::ACC_FOXY;
 		$acc_offline = self::ACC_OFFLINE;
 		$acc_mojang = self::ACC_MOJANG;
+		$acc_local = self::ACC_LOCAL;
 
 		putenv('FOXY_BACKGROUND=1');
 		foreach ($this->httpWorkerProcesses as $worker) {
-			$worker->run(function(\parallel\Channel $q, \parallel\Channel $r, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang) {
+			$worker->run(function(\parallel\Channel $q, \parallel\Channel $r, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang, $acc_local) {
 			$log = function($msg, $lvl = "INFO") use ($r) {
 				$r->send(["type" => "log", "msg" => "[HTTPWorker] " . $msg, "level" => $lvl]);
 			};
@@ -1010,7 +1025,7 @@ class FoxyClient {
 					$r->send(["type" => "http_result", "id" => $job['id'] ?? 'unknown', "success" => false, "error" => $e->getMessage()]);
 				}
 			}
-		}, [$this->httpQueueChannel, $this->httpResultChannel, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang]);
+		}, [$this->httpQueueChannel, $this->httpResultChannel, $cacert, $version, $acc_elyby, $acc_foxy, $acc_offline, $acc_mojang, $acc_local]);
 		}
 		
 		$this->colors = $this->darkColors; // Default initial colors to prevent null access
@@ -2033,15 +2048,15 @@ class FoxyClient {
 		if ($wglChoosePixelFormatARB) {
 			$iAttribs = FFI::new("int[21]");
 			$idx = 0;
-			$iAttribs[$idx++] = self::WGL_DRAW_TO_WINDOW_ARB; $iAttribs[$idx++] = 1;
-			$iAttribs[$idx++] = self::WGL_SUPPORT_OPENGL_ARB; $iAttribs[$idx++] = 1;
-			$iAttribs[$idx++] = self::WGL_DOUBLE_BUFFER_ARB;  $iAttribs[$idx++] = 1;
-			$iAttribs[$idx++] = self::WGL_PIXEL_TYPE_ARB;     $iAttribs[$idx++] = self::WGL_TYPE_RGBA_ARB;
-			$iAttribs[$idx++] = self::WGL_COLOR_BITS_ARB;    $iAttribs[$idx++] = 32;
-			$iAttribs[$idx++] = self::WGL_DEPTH_BITS_ARB;    $iAttribs[$idx++] = 24;
-			$iAttribs[$idx++] = self::WGL_STENCIL_BITS_ARB;  $iAttribs[$idx++] = 8;
-			$iAttribs[$idx++] = self::WGL_SAMPLE_BUFFERS_ARB; $iAttribs[$idx++] = 1;
-			$iAttribs[$idx++] = self::WGL_SAMPLES_ARB;        $iAttribs[$idx++] = 4; // 4x MSAA
+			$iAttribs[$idx++] = self::WGL_DRAW_TO_WINDOW_ARB;	$iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_SUPPORT_OPENGL_ARB;	$iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_DOUBLE_BUFFER_ARB;	$iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_PIXEL_TYPE_ARB;		$iAttribs[$idx++] = self::WGL_TYPE_RGBA_ARB;
+			$iAttribs[$idx++] = self::WGL_COLOR_BITS_ARB;		$iAttribs[$idx++] = 32;
+			$iAttribs[$idx++] = self::WGL_DEPTH_BITS_ARB;		$iAttribs[$idx++] = 24;
+			$iAttribs[$idx++] = self::WGL_STENCIL_BITS_ARB;		$iAttribs[$idx++] = 8;
+			$iAttribs[$idx++] = self::WGL_SAMPLE_BUFFERS_ARB;	$iAttribs[$idx++] = 1;
+			$iAttribs[$idx++] = self::WGL_SAMPLES_ARB;			$iAttribs[$idx++] = 4; // 4x MSAA
 			$iAttribs[$idx++] = 0;
 
 			$numFormats = FFI::new("unsigned int[1]");
@@ -2142,7 +2157,7 @@ class FoxyClient {
 				
 				$this->log("DEBUG: Found font family in registry: [$u8Name]");
 				
-				if (str_contains($u8Name, "Material")) {
+				if (str_contains($u8Name, "Material") || str_contains($u8Name, "Symbols")) {
 					$this->iconFontFace = $u8Name;
 				} else {
 					if (!in_array($u8Name, $this->availableFonts)) {
@@ -2191,6 +2206,7 @@ class FoxyClient {
 			0xef4b, 0xeb45, 0xe8b1, 0xe3f4, 0xe3c7, 0xe40a, 0xe1bd, 0xe869, // Res Categories
 			0xe050, 0xe3f1, 0xe3f7, 0xea0f, 0xe23a, 0xe894, 0xeb4d, 0xf720, // Res Features
 			0xe7a5, 0xe88a, 0xef63, 0xea10, 0xe8a1, 0xe3e7, 0xe0b7, 0xe1db, 0xe531, 0xe913, 0xef66, 0xe420, 0xe894, 0xe8b6, 0xe7fd, // Mod Categories
+			0xef7b, // Apparel / Manage icon
 		];
 		yield from $this->buildFontAtlas(4000, 24, 400, $iconSet);
 		
@@ -2480,15 +2496,15 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		unset($src);
 
 		$this->fontAtlas[$listBase] = [
-			"texId"         => $texId,
-			"glyphs"        => $finalGlyphs,
-			"height"        => $glyphH,
-			"ascent"        => $ascent,
-			"descent"       => $descent,
-			"spaceW"        => $spaceW,
-			"requestedSize" => (float)$fontSize,
-			"atlasW"        => $outW,
-			"atlasH"        => $outH,
+			"texId"			=> $texId,
+			"glyphs"		=> $finalGlyphs,
+			"height"		=> $glyphH,
+			"ascent"		=> $ascent,
+			"descent"		=> $descent,
+			"spaceW"		=> $spaceW,
+			"requestedSize"	=> (float)$fontSize,
+			"atlasW"		=> $outW,
+			"atlasH"		=> $outH,
 		];
 
 		$this->log("Atlas ready: {$outW}x{$outH} texture, " . count($finalGlyphs) . " glyphs, glyphH=" . round($glyphH, 1) . "px, spaceW=" . round($spaceW, 1) . "px");
@@ -2947,6 +2963,24 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$uuid = $uuids[$idx];
 				$itemLocalY = $localY - $idx * ($itemH + $gap);
 				if ($itemLocalY <= $itemH) { 
+					// Manage button (local accounts only)
+					$accType = $this->accounts[$uuid]["Type"] ?? "";
+					if ($accType === self::ACC_LOCAL) {
+						$manageBtnW = 40;
+						$manageBtnH = 28;
+						$itemScreenY = $listTop + $idx * ($itemH + $gap) - $this->accScrollOffset;
+						$manageY = $itemScreenY + ($itemH - $manageBtnH) / 2;
+						$manageBtnX = $cw - self::PAD - $manageBtnW - 10 - 100 - 16;
+
+						if ($cx >= $manageBtnX && $cx <= $manageBtnX + $manageBtnW && $cy >= $manageY && $cy <= $manageY + $manageBtnH) {
+							$port = $this->ensureLocalServerRunning();
+							if ($port) {
+								$url = "http://localhost:$port/manage/?uuid=" . urlencode($uuid) . "&username=" . urlencode($this->accounts[$uuid]["Username"] ?? "");
+								$this->shell32->ShellExecuteA(null, "open", $url, null, null, 1);
+							}
+							return;
+						}
+					}
 					// Logout button check
 					$delW = 100;
 					$delX = $cw - self::PAD - $delW - 16;
@@ -2961,6 +2995,88 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				}
 			}
 		}
+	}
+
+	private function doUploadSkin($uuid)
+	{
+		$ofn = $this->comdlg32->new("OPENFILENAMEA");
+		FFI::memset(FFI::addr($ofn), 0, FFI::sizeof($ofn));
+		$ofn->lStructSize = FFI::sizeof($ofn);
+		$ofn->hwndOwner = $this->hwnd;
+		$filter = "PNG Image (*.png)\0*.png\0\0";
+		$filterBuf = FFI::new("char[" . strlen($filter) . "]");
+		FFI::memcpy($filterBuf, $filter, strlen($filter));
+		$ofn->lpstrFilter = FFI::cast("char*", $filterBuf);
+		$fileBuf = FFI::new("char[260]");
+		FFI::memset($fileBuf, 0, 260);
+		$ofn->lpstrFile = FFI::cast("char*", $fileBuf);
+		$ofn->nMaxFile = 260;
+		$ofn->Flags = 0x00000800 | 0x00000008;
+		if (!$this->comdlg32->GetOpenFileNameA(FFI::addr($ofn))) return;
+		$path = FFI::string($fileBuf);
+		if (!$path || !file_exists($path)) return;
+
+		$port = $this->ensureLocalServerRunning();
+		if (!$port) return;
+
+		$b64 = base64_encode(file_get_contents($path));
+		$resp = $this->httpPost("http://localhost:$port/manage/upload/skin_json",
+			json_encode(["uuid" => $uuid, "data" => $b64]),
+			["Content-Type: application/json"]
+		);
+		if ($resp) {
+			$j = json_decode($resp, true);
+			if ($j && !empty($j["success"])) {
+				$this->uploadSkinMessage = "Skin uploaded!";
+				$this->uploadSkinMessageTimer = 180;
+				$this->needsRedraw = true;
+				return;
+			}
+		}
+		$this->uploadSkinMessage = "Upload failed";
+		$this->uploadSkinMessageTimer = 180;
+		$this->needsRedraw = true;
+	}
+
+	private function doUploadCape($uuid)
+	{
+		$ofn = $this->comdlg32->new("OPENFILENAMEA");
+		FFI::memset(FFI::addr($ofn), 0, FFI::sizeof($ofn));
+		$ofn->lStructSize = FFI::sizeof($ofn);
+		$ofn->hwndOwner = $this->hwnd;
+		$filter = "PNG Image (*.png)\0*.png\0\0";
+		$filterBuf = FFI::new("char[" . strlen($filter) . "]");
+		FFI::memcpy($filterBuf, $filter, strlen($filter));
+		$ofn->lpstrFilter = FFI::cast("char*", $filterBuf);
+		$fileBuf = FFI::new("char[260]");
+		FFI::memset($fileBuf, 0, 260);
+		$ofn->lpstrFile = FFI::cast("char*", $fileBuf);
+		$ofn->nMaxFile = 260;
+		$ofn->Flags = 0x00000800 | 0x00000008;
+		if (!$this->comdlg32->GetOpenFileNameA(FFI::addr($ofn))) return;
+		$path = FFI::string($fileBuf);
+		if (!$path || !file_exists($path)) return;
+
+		$port = $this->ensureLocalServerRunning();
+		if (!$port) return;
+
+		$b64 = base64_encode(file_get_contents($path));
+		$resp = $this->httpPost("http://localhost:$port/manage/upload/cape_json",
+			json_encode(["uuid" => $uuid, "data" => $b64]),
+			["Content-Type: application/json"]
+		);
+		if ($resp) {
+			$j = json_decode($resp, true);
+			if ($j && !empty($j["success"])) {
+				$this->uploadSkinMessage = "Cape uploaded!";
+				$this->uploadSkinMessageTimer = 180;
+				$this->needsRedraw = true;
+				return;
+			}
+		}
+		$this->uploadSkinMessage = "Upload failed";
+		$this->uploadSkinMessageTimer = 180;
+		$this->needsRedraw = true;
 	}
 
 	private function handleVersionsPageClick($cx, $cy)
@@ -3139,6 +3255,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$y = 120;
 			$types = [
 				self::ACC_OFFLINE,
+				self::ACC_LOCAL,
 				self::ACC_MICROSOFT,
 				self::ACC_FOXY,
 				self::ACC_ELYBY,
@@ -3169,7 +3286,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		// Step 1: Input / Auth process
-		if ($this->loginType === self::ACC_OFFLINE) {
+		if ($this->loginType === self::ACC_OFFLINE || $this->loginType === self::ACC_LOCAL) {
 			// Input box click
 			if (
 				$cx >= $boxX &&
@@ -3190,12 +3307,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			) {
 				if (!empty($this->loginInput)) {
 					$name = $this->loginInput;
-					$uuid = $this->generateUUID();
-					$this->log("Logged in with offline account: $name");
-					$this->accounts[$uuid] = [
-						"Username" => $name,
-						"Type" => self::ACC_OFFLINE,
-					];
+					if ($this->loginType === self::ACC_LOCAL) {
+						$uuid = $this->generateLocalUUID($name);
+						$this->log("Logged in with local account: $name");
+						$this->accounts[$uuid] = [
+							"Username" => $name,
+							"Type" => self::ACC_LOCAL,
+						];
+					} else {
+						$uuid = $this->generateUUID();
+						$this->log("Logged in with offline account: $name");
+						$this->accounts[$uuid] = [
+							"Username" => $name,
+							"Type" => self::ACC_OFFLINE,
+						];
+					}
 					$this->selectAccount($uuid);
 					$this->currentPage = self::PAGE_HOME;
 					$this->loginStep = 0;
@@ -3861,6 +3987,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			mt_rand(0, 0xffff),
 			mt_rand(0, 0xffff),
 		);
+	}
+
+	private function generateLocalUUID($name)
+	{
+		$ns = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+		$hex = md5(hex2bin(str_replace("-", "", $ns)) . $name);
+		// Set version nibble (position 12) to 0 to avoid authlib-injector's
+		// isMaskedUUID check (bit 15 must be 0, meaning hex digit 0-7)
+		$hex[12] = "0";
+		return substr($hex, 0, 8) . "-" . substr($hex, 8, 4) . "-" .
+			   substr($hex, 12, 4) . "-" . substr($hex, 16, 4) . "-" . substr($hex, 20, 12);
 	}
 
 	private function loadAccounts()
@@ -5043,19 +5180,23 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$accType = $activeAcc["Type"] ?? self::ACC_OFFLINE;
 
 		// Refresh token if expired before launching the game
-		if ($accType !== self::ACC_OFFLINE) {
+		if ($accType !== self::ACC_OFFLINE && $accType !== self::ACC_LOCAL) {
 			$this->refreshTokenIfExpired();
 			// Re-fetch the account data after potential refresh
 			$activeAcc = $this->accounts[$this->activeAccount] ?? [];
 		}
 
-		// Ensure authlib-injector for FoxyClient/Ely.by skins (and Offline accounts)
+		// Ensure authlib-injector for FoxyClient/Ely.by/Local skins (and Offline accounts)
 		if (
 			$accType === self::ACC_FOXY ||
 			$accType === self::ACC_ELYBY ||
-			$accType === self::ACC_OFFLINE
+			$accType === self::ACC_OFFLINE ||
+			$accType === self::ACC_LOCAL
 		) {
 			$this->assetMessage = "PREPARING SKIN SYSTEM...";
+			if ($accType === self::ACC_LOCAL) {
+				$this->ensureLocalServerRunning();
+			}
 			if (!$this->ensureAuthlibInjector()) {
 				if (
 					$accType === self::ACC_FOXY ||
@@ -5499,7 +5640,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if (
 			$accType === self::ACC_FOXY ||
 			$accType === self::ACC_ELYBY ||
-			$accType === self::ACC_OFFLINE
+			$accType === self::ACC_OFFLINE ||
+			$accType === self::ACC_LOCAL
 		) {
 			$injectorPath =
 				__DIR__ .
@@ -5511,10 +5653,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				file_exists($injectorPath) &&
 				filesize($injectorPath) > 100000
 			) {
-				$endpoint =
-					$accType === self::ACC_FOXY
-						? self::FOXY_ENDPOINT
-						: self::ELY_ENDPOINT;
+				if ($accType === self::ACC_LOCAL) {
+					$endpoint = "http://127.0.0.1:" . self::LOCAL_SERVER_PORT . "/api/";
+				} else {
+					$endpoint =
+						$accType === self::ACC_FOXY
+							? self::FOXY_ENDPOINT
+							: self::ELY_ENDPOINT;
+				}
 				$cmdArray[] = "-javaagent:" . $injectorPath . "=" . $endpoint;
 			}
 		}
@@ -5524,7 +5670,30 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$cmdArray[] = $mainClass;
 
 		$activeAcc = $this->accounts[$this->activeAccount] ?? [];
-		$token = $activeAcc["AccessToken"] ?? "null";
+		$token = $activeAcc["AccessToken"] ?? null;
+
+		// For local accounts without an AccessToken, fetch a JWT from the skin server
+		if (empty($token) && ($activeAcc["Type"] ?? "") === self::ACC_LOCAL) {
+			$username = $activeAcc["Username"] ?? "";
+			if ($username) {
+				$authUrl = "http://127.0.0.1:" . self::LOCAL_SERVER_PORT . "/api/authenticate";
+				$authBody = json_encode(["username" => $username]);
+				$authRes = $this->httpPost($authUrl, $authBody, ["Content-Type: application/json"]);
+				if ($authRes) {
+					$authData = json_decode($authRes, true);
+					if (isset($authData["accessToken"])) {
+						$token = $authData["accessToken"];
+						$this->accounts[$this->activeAccount]["AccessToken"] = $token;
+						$this->saveAccounts();
+					}
+				}
+			}
+		}
+
+		if (empty($token)) {
+			$token = "null";
+		}
+
 		$type =
 			($activeAcc["Type"] ?? self::ACC_OFFLINE) === self::ACC_OFFLINE
 				? "legacy"
@@ -5630,9 +5799,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Always ensure --width/--height are present (covers all version formats)
 		$hasWidth = false;
 		$hasHeight = false;
+		$hasFullscreen = false;
 		foreach ($cmdArray as $a) {
 			if ($a === "--width") $hasWidth = true;
 			if ($a === "--height") $hasHeight = true;
+			if ($a === "--fullscreen") $hasFullscreen = true;
 		}
 		if (!$hasWidth) {
 			$cmdArray[] = "--width";
@@ -5641,6 +5812,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if (!$hasHeight) {
 			$cmdArray[] = "--height";
 			$cmdArray[] = $resH;
+		}
+		if (!$hasFullscreen && ($this->settings["fullscreen"] ?? false)) {
+			$cmdArray[] = "--fullscreen";
 		}
 
 		$this->assetMessage = "STARTING MINECRAFT...";
@@ -8337,6 +8511,18 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			} catch (\Throwable $e) {
 			}
 		}
+
+		// Clean logs older than 30 days
+		try {
+			$cutoff = time() - 30 * 86400;
+			$files = glob($logDir . DIRECTORY_SEPARATOR . "*.log.gz");
+			if ($files) {
+				foreach ($files as $f) {
+					if (filemtime($f) < $cutoff) @unlink($f);
+				}
+			}
+		} catch (\Throwable $e) {
+		}
 	}
 
 	private function showConsole()
@@ -8655,6 +8841,25 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$this->logNetwork($url, "POST", $data, $res, $httpCode);
 		return $res;
+	}
+
+	private function httpUploadFile($url, $fieldName, $filePath, $extraFields = [])
+	{
+		if (!file_exists($filePath)) return false;
+		$cfile = new CURLFile($filePath, mime_content_type($filePath), basename($filePath));
+		$post = $extraFields;
+		$post[$fieldName] = $cfile;
+		$ch = curl_init($url);
+		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_POST, true);
+		curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+		$res = curl_exec($ch);
+		$code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		curl_close($ch);
+		return ($code >= 200 && $code < 300) ? $res : false;
 	}
 
 	private function httpGet($url, $headers = [])
@@ -9006,7 +9211,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$refreshToken = $activeAcc["RefreshToken"] ?? "";
 
 		if (!$refreshToken || $refreshToken === "") {
-			$this->log("Token expired but no refresh token available for account: " . ($activeAcc["Username"] ?? "Unknown"), "WARN");
+			if ($type !== self::ACC_OFFLINE && $type !== self::ACC_LOCAL) {
+				$this->log("Token expired but no refresh token available for account: " . ($activeAcc["Username"] ?? "Unknown"), "WARN");
+			}
 			return;
 		}
 
@@ -9149,6 +9356,196 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		return true;
 	}
 
+	private function generateSslCert($sslDir)
+	{
+		$certFile = $sslDir . DIRECTORY_SEPARATOR . "server.crt";
+		$keyFile  = $sslDir . DIRECTORY_SEPARATOR . "server.key";
+		if (file_exists($certFile) && file_exists($keyFile)) return true;
+		if (!is_dir($sslDir)) @mkdir($sslDir, 0777, true);
+		if (!extension_loaded('openssl')) return false;
+
+		$dn = [
+			"commonName" => "FoxyClient Local",
+			"organizationName" => "FoxyClient",
+		];
+		$key = @openssl_pkey_new(["private_key_bits" => 2048, "private_key_type" => OPENSSL_KEYTYPE_RSA]);
+		if (!$key) return false;
+		$csr = @openssl_csr_new($dn, $key, ["digest_alg" => "sha256"]);
+		if (!$csr) return false;
+		$cert = @openssl_csr_sign($csr, null, $key, 3650, ["digest_alg" => "sha256"], 0);
+		if (!$cert) return false;
+		@openssl_x509_export_to_file($cert, $certFile);
+		@openssl_pkey_export_to_file($key, $keyFile);
+		$this->log("Generated self-signed SSL certificate in $sslDir");
+		return file_exists($certFile) && file_exists($keyFile);
+	}
+
+	private function ensureLocalServerRunning()
+	{
+		if ($this->localServerProc !== null) {
+			$status = @proc_get_status($this->localServerProc);
+			if (is_array($status) && ($status["running"] ?? false)) {
+				return self::LOCAL_SERVER_SSL_PORT;
+			}
+			@proc_close($this->localServerProc);
+			$this->localServerProc = null;
+			$this->localServerPipes = null;
+			$this->localServerPid = 0;
+			if ($this->localServerSslProc !== null) {
+				@proc_close($this->localServerSslProc);
+				$this->localServerSslProc = null;
+				$this->localServerSslPipes = null;
+				$this->localServerSslPid = 0;
+			}
+		}
+
+		$phpBin = PHP_BINARY;
+		$skinDir = __DIR__ . DIRECTORY_SEPARATOR . self::DATA_DIR . DIRECTORY_SEPARATOR . "skin_server";
+		$router = $skinDir . DIRECTORY_SEPARATOR . "router.php";
+		$sslProxy = $skinDir . DIRECTORY_SEPARATOR . "ssl_proxy.php";
+		$sslDir = $skinDir . DIRECTORY_SEPARATOR . "ssl";
+		$httpPort = self::LOCAL_SERVER_PORT;
+		$sslPort = self::LOCAL_SERVER_SSL_PORT;
+
+		if (!file_exists($router)) {
+			$this->log("Local skin server router not found: $router", "ERROR");
+			return null;
+		}
+
+		// Generate SSL cert if needed
+		$hasSsl = $this->generateSslCert($sslDir);
+
+		// Start HTTP server on 0.0.0.0 to avoid IPv6 issues
+		$cmd = "\"$phpBin\" -S 0.0.0.0:$httpPort -t \"$skinDir\" \"$router\"";
+		$this->log("Starting local skin server: $cmd");
+
+		$descriptors = [
+			0 => ["pipe", "r"],
+			1 => ["pipe", "w"],
+			2 => ["pipe", "w"],
+		];
+		$proc = @proc_open($cmd, $descriptors, $pipes, $skinDir);
+
+		if (!is_resource($proc)) {
+			$this->log("Failed to start local skin server", "ERROR");
+			return null;
+		}
+
+		$this->localServerProc = $proc;
+		$this->localServerPipes = $pipes;
+		$sinfo = @proc_get_status($proc);
+		$this->localServerPid = (is_array($sinfo) && ($sinfo["pid"] ?? 0) > 0) ? $sinfo["pid"] : 0;
+
+		// Wait for server to respond (retry loop)
+		$maxWait = 3;
+		$waited = 0;
+		$ok = false;
+		while ($waited < $maxWait) {
+			$test = @file_get_contents("http://127.0.0.1:$httpPort/api/");
+			if ($test !== false) {
+				$ok = true;
+				break;
+			}
+			usleep(200000);
+			$waited += 0.2;
+		}
+
+		if ($ok) {
+			$this->log("Local skin server is running on port $httpPort");
+
+			// Start SSL proxy if cert was generated
+			if ($hasSsl && file_exists($sslProxy)) {
+				$sslCmd = "\"$phpBin\" -d extension=php_openssl.dll \"$sslProxy\" $httpPort $sslPort \"$sslDir\\server.crt\" \"$sslDir\\server.key\"";
+				$sslProc = @proc_open($sslCmd, $descriptors, $sslPipes, $skinDir);
+				if (is_resource($sslProc)) {
+					$this->localServerSslProc = $sslProc;
+					$this->localServerSslPipes = $sslPipes;
+					$sslInfo = @proc_get_status($sslProc);
+					$this->localServerSslPid = (is_array($sslInfo) && ($sslInfo["pid"] ?? 0) > 0) ? $sslInfo["pid"] : 0;
+					sleep(1);
+					$this->log("SSL proxy started on port $sslPort");
+				} else {
+					$this->log("Failed to start SSL proxy", "WARN");
+				}
+			}
+		} else {
+			$this->log("Local skin server started but not responding after {$maxWait}s", "WARN");
+		}
+
+		// Sync launcher local accounts into skin server
+		$this->syncLocalAccountsToSkinServer();
+
+		return $hasSsl ? $sslPort : $httpPort;
+	}
+
+	private function syncLocalAccountsToSkinServer()
+	{
+		$skinDataDir = __DIR__ . DIRECTORY_SEPARATOR . self::DATA_DIR . DIRECTORY_SEPARATOR . "skin_server" . DIRECTORY_SEPARATOR . "data";
+		$acctsFile = $skinDataDir . DIRECTORY_SEPARATOR . "accounts.json";
+
+		if (!is_dir($skinDataDir)) return;
+
+		$serverAccts = [];
+		if (file_exists($acctsFile)) {
+			$serverAccts = json_decode(file_get_contents($acctsFile), true) ?: [];
+		}
+
+		$changed = false;
+		foreach ($this->accounts as $uuid => $acc) {
+			if (($acc["Type"] ?? "") === self::ACC_LOCAL) {
+				if (!isset($serverAccts[$uuid])) {
+					$serverAccts[$uuid] = [
+						"username" => $acc["Username"],
+						"skin_md5" => null,
+						"cape_md5" => null,
+						"is_slim" => false,
+					];
+					$changed = true;
+					$this->log("Synced local account to skin server: " . $acc["Username"]);
+				}
+			}
+		}
+
+		if ($changed) {
+			file_put_contents($acctsFile, json_encode($serverAccts, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		}
+	}
+
+	private function stopLocalServer()
+	{
+		if ($this->localServerSslProc !== null) {
+			$sslPid = $this->localServerSslPid;
+			if ($this->localServerSslPipes) {
+				foreach ($this->localServerSslPipes as $p) {
+					@fclose($p);
+				}
+			}
+			if ($sslPid > 0) {
+				@exec("taskkill /F /T /PID $sslPid 2>NUL");
+			}
+			@proc_close($this->localServerSslProc);
+			$this->localServerSslProc = null;
+			$this->localServerSslPipes = null;
+			$this->localServerSslPid = 0;
+		}
+		if ($this->localServerProc !== null) {
+			$pid = $this->localServerPid;
+			if ($this->localServerPipes) {
+				foreach ($this->localServerPipes as $p) {
+					@fclose($p);
+				}
+			}
+			if ($pid > 0) {
+				@exec("taskkill /F /T /PID $pid 2>NUL");
+			}
+			@proc_close($this->localServerProc);
+			$this->localServerProc = null;
+			$this->localServerPipes = null;
+			$this->localServerPid = 0;
+			$this->log("Local skin server stopped");
+		}
+	}
+
 	public function run()
 	{
 		try {
@@ -9249,6 +9646,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$aDiff = $this->accScrollTarget - $this->accScrollOffset;
 				if (abs($aDiff) > 0.5) $this->accScrollOffset += $aDiff * $this->scrollSpeed;
 				else $this->accScrollOffset = $this->accScrollTarget;
+
+				// Upload message auto-dismiss
+				if ($this->uploadSkinMessageTimer > 0) {
+					$this->uploadSkinMessageTimer--;
+				}
 
 				$fcDiff = $this->foxyConfigScrollTarget - $this->foxyConfigScrollOffset;
 				if (abs($fcDiff) > 0.5) $this->foxyConfigScrollOffset += $fcDiff * $this->scrollSpeed;
@@ -9586,10 +9988,25 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$itemScreenY = $listTop + $idx * ($itemH + $gap) - $this->accScrollOffset;
 					$delY = $itemScreenY + ($itemH - $delH) / 2;
 					
-					if ($cx >= $delX && $cx <= $delX + $delW && $cy >= $delY && $cy <= $delY + $delH) {
-						$this->accHoverIndex = $uuid . "_del";
+					$isLocal = ($this->accounts[$uuid]["Type"] ?? "") === self::ACC_LOCAL;
+					if ($isLocal) {
+						$manageBtnW = 40;
+						$manageBtnH = 28;
+						$manageY = $itemScreenY + ($itemH - $manageBtnH) / 2;
+						$manageBtnX = $cw - self::PAD - $manageBtnW - 10 - 100 - 16;
+						if ($cx >= $manageBtnX && $cx <= $manageBtnX + $manageBtnW && $cy >= $manageY && $cy <= $manageY + $manageBtnH) {
+							$this->accHoverIndex = $uuid . "_manage";
+						} elseif ($cx >= $delX && $cx <= $delX + $delW && $cy >= $delY && $cy <= $delY + $delH) {
+							$this->accHoverIndex = $uuid . "_del";
+						} else {
+							$this->accHoverIndex = $uuid;
+						}
 					} else {
-						$this->accHoverIndex = $uuid;
+						if ($cx >= $delX && $cx <= $delX + $delW && $cy >= $delY && $cy <= $delY + $delH) {
+							$this->accHoverIndex = $uuid . "_del";
+						} else {
+							$this->accHoverIndex = $uuid;
+						}
 					}
 				}
 			}
@@ -10484,6 +10901,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$this->propActiveField = "window_h";
 				}
 			} elseif ($idx === 2) {
+				// Force Fullscreen
+				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
+					$this->settings["fullscreen"] = !($this->settings["fullscreen"] ?? false);
+					$this->saveSettings();
+				}
+			} elseif ($idx === 3) {
 				// Java Path
 				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
 					$this->javaModalOpen = true;
@@ -10491,7 +10914,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$this->javaModalDropdownOpen = false;
 					$this->javaVersionDropdownOpen = false;
 				}
-			} elseif ($idx === 3) {
+			} elseif ($idx === 4) {
 				// RAM MB Interaction
 				$sliderW = 150;
 				$sliderX = $fieldX + 10;
@@ -11131,12 +11554,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$y = ($sidebarH - $totalH) / 2;
 
 		$sidebarIcons = [
-			self::PAGE_HOME => mb_chr(0xe88a, "UTF-8"),      // Home
-			self::PAGE_FOXYCLIENT => "",                    // Texture used instead
-			self::PAGE_ACCOUNTS => mb_chr(0xe7fd, "UTF-8"),   // Person
-			self::PAGE_MODS => mb_chr(0xe87b, "UTF-8"),       // Explore (Compass)
-			self::PAGE_VERSIONS => mb_chr(0xf135, "UTF-8"),   // List versions
-			self::PAGE_PROPERTIES => mb_chr(0xe8b8, "UTF-8"), // Settings
+			self::PAGE_HOME => mb_chr(0xe88a, "UTF-8"),			// Home
+			self::PAGE_FOXYCLIENT => "",						// Texture used instead
+			self::PAGE_ACCOUNTS => mb_chr(0xe7fd, "UTF-8"),		// Person
+			self::PAGE_MODS => mb_chr(0xe87b, "UTF-8"),			// Explore (Compass)
+			self::PAGE_VERSIONS => mb_chr(0xf135, "UTF-8"),		// List versions
+			self::PAGE_PROPERTIES => mb_chr(0xe8b8, "UTF-8"),	// Settings
 		];
 
 		$hasActiveTab = false;
@@ -11701,6 +12124,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$accIconTex = $this->elybyTex;
 			} elseif ($type === self::ACC_FOXY) {
 				$accIconTex = $this->logoTex;
+			} elseif ($type === self::ACC_LOCAL) {
+				$accIconTex = $this->localTex;
 			}
 		}
 
@@ -11878,6 +12303,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$tex = $this->elybyTex;
 				} elseif ($type === self::ACC_FOXY) {
 					$tex = $this->logoTex;
+				} elseif ($type === self::ACC_LOCAL) {
+					$tex = $this->localTex;
 				}
 
 				if ($tex) {
@@ -12434,13 +12861,26 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		return "";
 	}
 
+	private function detectSlimSkin($path)
+	{
+		if (!file_exists($path)) return null;
+		$im = @imagecreatefrompng($path);
+		if (!$im) return null;
+		$w = imagesx($im);
+		$h = imagesy($im);
+		if ($w < 64 || $h < 64) { imagedestroy($im); return false; }
+		$rgb = imagecolorat($im, 47, 20);
+		$alpha = ($rgb >> 24) & 0x7F;
+		imagedestroy($im);
+		return $alpha > 63;
+	}
+
 	private function renderFoxyCosmeticsTab($y, $h, $cw)
 	{
 		$config = $this->foxyConfigData;
 		$centerX = $cw / 2;
 
 		$skinName = $config["skinName"] ?? "Default";
-		$slimModel = $config["slimModel"] ?? false;
 		$capeName = $config["capeName"] ?? "None";
 
 		// Resolve actual paths for preview
@@ -12527,6 +12967,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$gl->glDeleteTextures(1, FFI::addr($arr[0]));
 				}
 				$this->foxySkinTexId = !empty($actualSkinPath) && file_exists($actualSkinPath) ? $this->createTextureFromFile($actualSkinPath) : 0;
+
+				// Auto-detect slim model from skin texture
+				$detected = $this->detectSlimSkin($actualSkinPath);
+				if ($detected !== null && ($this->foxyConfigData["slimModel"] ?? null) !== $detected) {
+					$this->foxyConfigData["slimModel"] = $detected;
+					$this->saveFoxyConfig();
+				}
 			}
 			if (!isset($this->foxyCapeTexPathCache) || $this->foxyCapeTexPathCache !== $actualCapePath) {
 				$this->foxyCapeTexPathCache = $actualCapePath;
@@ -12589,8 +13036,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$gl->glPopMatrix();
 
 					// Right Arm -> L0: 40,16 | L1: 40,32
-					$armW = $slimModel ? 3 : 4;
-					$offset = $slimModel ? 5.5 : 6;
+				$slim = $this->foxyConfigData["slimModel"] ?? false;
+				$armW = $slim ? 3 : 4;
+				$offset = $slim ? 5.5 : 6;
 					$gl->glPushMatrix();
 					$gl->glTranslatef(-$offset * $scale, 6 * $scale, 0);
 					$this->drawBox3D($armW, 12, 4, 40, $layer === 1 ? 32 : 16, 64, 64, $scaleL);
@@ -13225,6 +13673,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$y = 120;
 			$types = [
 				["id" => self::ACC_OFFLINE, "name" => "OFFLINE ACCOUNT"],
+				["id" => self::ACC_LOCAL, "name" => "LOCAL ACCOUNT"],
 				["id" => self::ACC_MICROSOFT, "name" => "MICROSOFT / MOJANG ACCOUNT"],
 				["id" => self::ACC_FOXY, "name" => "FOXYCLIENT ACCOUNT"],
 				["id" => self::ACC_ELYBY, "name" => "ELY.BY ACCOUNT"],
@@ -13250,14 +13699,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			2000,
 		);
 
-		if ($this->loginType === self::ACC_OFFLINE) {
-			$this->renderText(
-				"Username",
-				$boxX,
-				190,
-				$this->colors["text_dim"],
-				3000,
-			);
+		if ($this->loginType === self::ACC_OFFLINE || $this->loginType === self::ACC_LOCAL) {
+			$label = $this->loginType === self::ACC_LOCAL ? "Username (Local Skin)" : "Username";
+			$this->renderText($label, $boxX, 190, $this->colors["text_dim"], 3000);
 			$borderColor =
 				$this->inputFocus === true
 					? $this->colors["primary"]
@@ -14012,6 +14456,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$tex = $this->logoTex;
 					$typeLabel = "FoxyClient";
 					$typeColor = $this->colors["primary"];
+				} elseif ($type === self::ACC_LOCAL) {
+					$tex = $this->localTex;
+					$typeLabel = "Local";
+					$typeColor = [0.5, 0.3, 0.9];
 				}
 
 				// Small head/icon placeholder
@@ -14028,6 +14476,19 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$badgeW = $this->getTextWidth($typeLabel, 3000) + 12;
 				$this->drawRect(self::PAD + 64, $y + 38, $badgeW, 16, [0.0, 0.0, 0.0, 0.2]);
 				$this->renderText($typeLabel, self::PAD + 70, $y + 49, $typeColor, 3000);
+
+				// Manage button (local accounts only)
+				if ($type === self::ACC_LOCAL) {
+					$manageBtnW = 40;
+					$manageBtnH = 28;
+					$manageY = $y + ($itemH - $manageBtnH) / 2;
+					$manageBtnX = $cw - self::PAD - $manageBtnW - 10 - 100 - 16;
+
+					$isManageHover = $this->accHoverIndex === $uuid . "_manage";
+
+					$this->drawRoundedRect($manageBtnX, $manageY, $manageBtnW, $manageBtnH, 6, $isManageHover ? [0.5, 0.3, 0.9, 0.3] : [1.0, 1.0, 1.0, 0.08]);
+					$this->renderIcon(0xef7b, $manageBtnX + 8, $manageY + 20, $isManageHover ? [0.7, 0.5, 1.0] : $this->colors["text_dim"]);
+				}
 
 				// Log Out button
 				$delW = 100;
@@ -14060,6 +14521,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$pc = $this->colors["primary"];
 			$this->drawRoundedRect($barX, $thumbY, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
 			$this->drawGlow($barX, $thumbY, $barW, $thumbH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
+		}
+
+		// Upload status message
+		if ($this->uploadSkinMessageTimer > 0 && $this->uploadSkinMessage) {
+			$msgW = $this->getTextWidth($this->uploadSkinMessage, 2000) + 40;
+			$msgX = ($cw - $msgW) / 2;
+			$msgY = ($this->height - self::TITLEBAR_H) - 60;
+			$this->drawRoundedRect($msgX, $msgY, $msgW, 36, 8, [0.0, 0.0, 0.0, 0.7]);
+			$isSuccess = strpos($this->uploadSkinMessage, "failed") === false;
+			$msgColor = $isSuccess ? [0.2, 0.8, 0.3] : [0.9, 0.2, 0.2];
+			$this->renderText($this->uploadSkinMessage, ($cw - $this->getTextWidth($this->uploadSkinMessage, 2000)) / 2, $msgY + 25, $msgColor, 2000);
 		}
 	}
 
@@ -14319,11 +14791,23 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$y = $this->renderPropRow(
 			2,
 			$y,
+			"Force Fullscreen",
+			"Launch Minecraft in fullscreen mode",
+			function ($x, $cy, $w, $h) {
+				$enabled = (bool) ($this->settings["fullscreen"] ?? false);
+				$isHover = $this->propFieldHover === 2;
+				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $enabled, $isHover, "prop:fullscreen");
+			},
+		);
+
+		$y = $this->renderPropRow(
+			3,
+			$y,
 			"Java / JRE Settings",
 			"Arguments and executable path configuration",
 			function ($x, $cy, $w, $h) {
 				$mode = $this->settings["java_mode"] ?? "auto";
-				$isHover = $this->propFieldHover === 2;
+				$isHover = $this->propFieldHover === 3;
 				if ($mode === "auto") {
 					$javaVerSetting = $this->settings["java_version"] ?? "auto";
 					if ($javaVerSetting !== "auto") {
@@ -14341,7 +14825,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		);
 
 		$y = $this->renderPropRow(
-			3,
+			4,
 			$y,
 			"Allocated Memory",
 			"RAM for Minecraft game (in MB)",
@@ -17644,6 +18128,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->elybyTex = $this->createTextureFromFile(
 			self::DATA_DIR . "/images/Elyby-Logo.png",
 		);
+		$this->localTex = $this->createTextureFromFile(
+			self::DATA_DIR . "/images/Apparel-Icon.png",
+		);
 
 		$this->verIcons = [
 			"vanilla" => $this->createTextureFromFile(self::DATA_DIR . "/images/vanilla.png"),
@@ -18096,6 +18583,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 	private function cleanup()
 	{
+		$this->stopLocalServer();
 		// 1. Absolute Priority: Nuclear Exit (Unblockable OS-level Termination)
 		if ($this->kernel32) {
 			try {
