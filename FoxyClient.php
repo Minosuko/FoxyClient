@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.2";
+	public const VERSION = "1.4.3";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -137,6 +137,7 @@ class FoxyClient {
 	// Mouse state
 	private $mouseX = 0;
 	private $mouseY = 0;
+
 	private $hoverModIndex = -1;
 	private $buttonHover = false;
 
@@ -327,6 +328,9 @@ class FoxyClient {
 	private $modrinthResultCache = []; // page => hits
 	private $isPrefetching = false;
 	private $pendingFutures = []; // Keep old Futures alive to prevent blocking destructors
+	private $pgPrevHover = false;
+	private $pgNextHover = false;
+	private $pgPageHover = -1;
 
 	// Modrinth Download State (Concurrent)
 	private $modDownloadChannels = []; // projectId => Channel
@@ -363,9 +367,11 @@ class FoxyClient {
 	private $transientWorkerIndex = 0;
 	private function runTransientTask(\Closure $task, array $args = []) {
 		if (empty($this->transientWorkerPool)) {
+			putenv("FOXY_BACKGROUND=1");
 			for ($i = 0; $i < 1; $i++) {
 				$this->transientWorkerPool[] = new \parallel\Runtime(__FILE__);
 			}
+			putenv("FOXY_BACKGROUND=0");
 		}
 		$runtime = $this->transientWorkerPool[$this->transientWorkerIndex];
 		$this->transientWorkerIndex = ($this->transientWorkerIndex + 1) % count($this->transientWorkerPool);
@@ -425,6 +431,7 @@ class FoxyClient {
 	private $propScrollOffset = 0.0;
 	private $propFontDropdownOpen = ""; // '' = closed, 'launcher' or 'overlay'
 	private $propLangDropdownOpen = false;
+	private $propThemeDropdownOpen = false;
 	private $propDropdownAnim = 0.0;
 	private $propFontDropdownHover = -1;
 	private $propResetHover = false;
@@ -557,7 +564,7 @@ class FoxyClient {
 		"ram_mb" => 2048,
 		"bg_file" => self::DATA_DIR . "/images/background.jpg",
 		"bg_blur" => 0,
-		"theme" => "dark",
+		"theme" => "auto",
 		"language" => "en",
 		"show_modified_versions" => true,
 		"enable_modpack" => false,
@@ -579,7 +586,7 @@ class FoxyClient {
 		"ram_mb" => 2048,
 		"bg_file" => self::DATA_DIR . "/images/background.jpg",
 		"bg_blur" => 0,
-		"theme" => "dark",
+		"theme" => "auto",
 		"language" => "en",
 		"show_modified_versions" => true,
 		"enable_modpack" => false,
@@ -636,96 +643,96 @@ class FoxyClient {
 
 	// UI Color Palettes
 	private $darkColors = [
-		"bg" => [0.03, 0.04, 0.06], // Deep Midnight
-		"panel" => [0.08, 0.10, 0.14, 0.65], // Frosted Navy Glass
-		"card" => [0.12, 0.15, 0.20, 0.75],
-		"card_hover" => [0.18, 0.22, 0.28, 0.85],
-		"primary" => [0.0, 0.85, 1.0], // Vibrant Cyber Cyan
-		"primary_dim" => [0.0, 0.65, 0.9],
-		"accent" => [0.35, 1.0, 0.85], // Soft Aquamarine
-		"text" => [0.95, 0.98, 1.0], // Crisp white with blue tint
-		"text_dim" => [0.6, 0.65, 0.75],
-		"button" => [0.15, 0.18, 0.25, 0.8],
-		"button_hover" => [0.25, 0.30, 0.40, 0.9],
-		"check_off" => [0.2, 0.22, 0.28],
-		"tab_bg" => [0.05, 0.06, 0.08, 0.8],
-		"tab_active" => [0.12, 0.15, 0.22, 0.9],
-		"divider" => [0.3, 0.6, 1.0, 0.12], // Subtle blue divider
-		"status_queue" => [0.0, 0.8, 1.0],
-		"status_active" => [0.3, 1.0, 0.5], // Electric Green
-		"status_done" => [0.3, 1.0, 0.5], // Electric Green
-		"status_error" => [1.0, 0.3, 0.4], // Vivid Rose
-		"status_update" => [0.0, 0.85, 1.0], // Cyber Cyan for updates
-		"warning" => [1.0, 0.85, 0.2],
-		"sidebar_bg1" => [0.06, 0.07, 0.10, 0.88],
-		"sidebar_bg2" => [0.04, 0.05, 0.08, 0.88],
-		"sidebar_active" => [0.15, 0.35, 0.55, 0.4], // Blueish tint for active
-		"sidebar_hover" => [0.12, 0.18, 0.25, 0.5],
-		"titlebar_bg" => [0.03, 0.04, 0.06, 0.98],
-		"input_bg" => [0.0, 0.0, 0.0, 0.6],
-		"input_bg_active" => [0.05, 0.1, 0.15, 0.75],
+		"bg" => [0.05, 0.06, 0.10],
+		"panel" => [0.09, 0.11, 0.16, 0.95],
+		"card" => [0.13, 0.15, 0.21, 0.95],
+		"card_hover" => [0.17, 0.20, 0.27, 0.95],
+		"primary" => [0.26, 0.51, 0.96],
+		"primary_dim" => [0.26, 0.51, 0.96],
+		"accent" => [0.54, 0.36, 0.96],
+		"text" => [0.93, 0.95, 0.98],
+		"text_dim" => [0.58, 0.62, 0.68],
+		"button" => [0.18, 0.20, 0.27, 0.95],
+		"button_hover" => [0.22, 0.25, 0.33, 0.95],
+		"check_off" => [0.20, 0.22, 0.28],
+		"tab_bg" => [0.07, 0.08, 0.13, 0.95],
+		"tab_active" => [0.13, 0.15, 0.21, 0.95],
+		"divider" => [0.18, 0.20, 0.27, 0.5],
+		"status_queue" => [0.26, 0.51, 0.96],
+		"status_active" => [0.22, 0.78, 0.45],
+		"status_done" => [0.22, 0.78, 0.45],
+		"status_error" => [0.94, 0.33, 0.31],
+		"status_update" => [0.26, 0.51, 0.96],
+		"warning" => [0.92, 0.70, 0.20],
+		"sidebar_bg1" => [0.05, 0.06, 0.10, 0.95],
+		"sidebar_bg2" => [0.05, 0.06, 0.10, 0.95],
+		"sidebar_active" => [0.26, 0.51, 0.96, 0.15],
+		"sidebar_hover" => [0.13, 0.15, 0.21, 0.5],
+		"titlebar_bg" => [0.05, 0.06, 0.10, 0.98],
+		"input_bg" => [0.09, 0.11, 0.16, 0.95],
+		"input_bg_active" => [0.13, 0.15, 0.21, 0.95],
 		"button_text" => [1.0, 1.0, 1.0],
-		"acc_active" => [0.0, 0.8, 1.0, 0.25],
-		"acc_active_border" => [0.0, 0.8, 1.0],
-		"del_btn" => [0.9, 0.25, 0.3],
-		"del_btn_hover" => [1.0, 0.4, 0.5],
-		"header_bg" => [0.06, 0.07, 0.10, 0.8],
-		"dropdown_bg" => [0.06, 0.07, 0.12, 0.98],
-		"dropdown_hover" => [0.15, 0.25, 0.45, 0.6],
-		"info_bg" => [0.1, 0.15, 0.25, 0.6],
-		"subtab" => [0.08, 0.10, 0.14],
-		"pill_bg" => [0.15, 0.18, 0.25],
-		"pill_active" => [0.0, 0.7, 1.0, 0.35],
-		"scrollbar" => [0.0, 0.8, 1.0, 0.25],
-		"scrollbar_hover" => [0.0, 0.8, 1.0, 0.45],
-		"overlay_bg" => [0.04, 0.05, 0.07, 0.9],
-		"modal_bg" => [0.12, 0.15, 0.20, 0.95],
+		"acc_active" => [0.26, 0.51, 0.96, 0.12],
+		"acc_active_border" => [0.26, 0.51, 0.96],
+		"del_btn" => [0.94, 0.33, 0.31],
+		"del_btn_hover" => [1.0, 0.40, 0.38],
+		"header_bg" => [0.07, 0.08, 0.13, 0.95],
+		"dropdown_bg" => [0.13, 0.15, 0.21, 0.98],
+		"dropdown_hover" => [0.18, 0.20, 0.27, 0.95],
+		"info_bg" => [0.26, 0.51, 0.96, 0.10],
+		"subtab" => [0.09, 0.11, 0.16],
+		"pill_bg" => [0.18, 0.20, 0.27],
+		"pill_active" => [0.26, 0.51, 0.96, 0.20],
+		"scrollbar" => [0.26, 0.51, 0.96, 0.25],
+		"scrollbar_hover" => [0.26, 0.51, 0.96, 0.45],
+		"overlay_bg" => [0.0, 0.0, 0.0, 0.55],
+		"modal_bg" => [0.13, 0.15, 0.21, 0.98],
 	];
 
 	private $lightColors = [
-		"bg" => [0.98, 0.98, 0.99], // Very light clean gray/white
-		"panel" => [1.0, 1.0, 1.0, 0.85], // More opaque white panel
-		"card" => [1.0, 1.0, 1.0, 0.9],
-		"card_hover" => [0.96, 0.97, 0.98, 1.0],
-		"primary" => [0.25, 0.45, 0.95], // Vibrant indigo/blue
-		"primary_dim" => [0.15, 0.35, 0.85],
-		"accent" => [0.8, 0.2, 0.5], // Vibrant pink/magenta accent for punch
-		"text" => [0.1, 0.1, 0.12], // Deep slate text
-		"text_dim" => [0.4, 0.45, 0.5],
-		"button" => [0.94, 0.95, 0.97, 1.0],
-		"button_hover" => [0.88, 0.9, 0.93, 1.0],
-		"check_off" => [0.85, 0.86, 0.9],
-		"tab_bg" => [0.96, 0.97, 0.98, 0.8],
+		"bg" => [0.95, 0.96, 0.98],
+		"panel" => [1.0, 1.0, 1.0, 0.98],
+		"card" => [1.0, 1.0, 1.0, 0.98],
+		"card_hover" => [0.93, 0.94, 0.96, 1.0],
+		"primary" => [0.22, 0.44, 0.86],
+		"primary_dim" => [0.22, 0.44, 0.86],
+		"accent" => [0.50, 0.32, 0.90],
+		"text" => [0.08, 0.09, 0.11],
+		"text_dim" => [0.50, 0.52, 0.56],
+		"button" => [0.90, 0.91, 0.93, 1.0],
+		"button_hover" => [0.85, 0.86, 0.89, 1.0],
+		"check_off" => [0.82, 0.83, 0.86],
+		"tab_bg" => [0.92, 0.93, 0.95, 0.95],
 		"tab_active" => [1.0, 1.0, 1.0, 1.0],
-		"divider" => [0.0, 0.0, 0.0, 0.08], // Neutral subtle divider
-		"status_queue" => [0.4, 0.5, 0.6],
-		"status_active" => [0.1, 0.7, 0.4], // Punchy Green
-		"status_done" => [0.1, 0.7, 0.4],
-		"status_error" => [0.9, 0.2, 0.2], // Crisp Red
-		"status_update" => [0.25, 0.45, 0.95],
-		"warning" => [0.95, 0.6, 0.1],
-		"sidebar_bg1" => [0.98, 0.98, 0.99, 0.95],
-		"sidebar_bg2" => [0.95, 0.96, 0.97, 0.95],
-		"sidebar_active" => [0.25, 0.45, 0.95, 0.1], // Soft primary highlight
+		"divider" => [0.0, 0.0, 0.0, 0.08],
+		"status_queue" => [0.22, 0.44, 0.86],
+		"status_active" => [0.18, 0.72, 0.42],
+		"status_done" => [0.18, 0.72, 0.42],
+		"status_error" => [0.88, 0.25, 0.25],
+		"status_update" => [0.22, 0.44, 0.86],
+		"warning" => [0.90, 0.62, 0.10],
+		"sidebar_bg1" => [0.95, 0.96, 0.98, 0.95],
+		"sidebar_bg2" => [0.95, 0.96, 0.98, 0.95],
+		"sidebar_active" => [0.22, 0.44, 0.86, 0.10],
 		"sidebar_hover" => [0.0, 0.0, 0.0, 0.04],
-		"titlebar_bg" => [1.0, 1.0, 1.0, 0.98],
+		"titlebar_bg" => [0.98, 0.98, 0.99, 0.98],
 		"input_bg" => [1.0, 1.0, 1.0, 1.0],
 		"input_bg_active" => [1.0, 1.0, 1.0, 1.0],
-		"button_text" => [0.1, 0.1, 0.12],
-		"acc_active" => [0.25, 0.45, 0.95, 0.1],
-		"acc_active_border" => [0.25, 0.45, 0.95],
-		"del_btn" => [0.9, 0.2, 0.2],
-		"del_btn_hover" => [1.0, 0.3, 0.3],
-		"header_bg" => [0.98, 0.98, 0.99, 0.9],
+		"button_text" => [0.08, 0.09, 0.11],
+		"acc_active" => [0.22, 0.44, 0.86, 0.10],
+		"acc_active_border" => [0.22, 0.44, 0.86],
+		"del_btn" => [0.88, 0.25, 0.25],
+		"del_btn_hover" => [1.0, 0.32, 0.32],
+		"header_bg" => [0.98, 0.98, 0.99, 0.95],
 		"dropdown_bg" => [1.0, 1.0, 1.0, 1.0],
-		"dropdown_hover" => [0.95, 0.96, 0.97, 1.0],
-		"info_bg" => [0.25, 0.45, 0.95, 0.1],
+		"dropdown_hover" => [0.93, 0.94, 0.96, 1.0],
+		"info_bg" => [0.22, 0.44, 0.86, 0.08],
 		"subtab" => [0.95, 0.96, 0.97],
-		"pill_bg" => [0.9, 0.92, 0.95],
-		"pill_active" => [0.25, 0.45, 0.95, 0.15],
-		"scrollbar" => [0.0, 0.0, 0.0, 0.15],
-		"scrollbar_hover" => [0.0, 0.0, 0.0, 0.3],
-		"overlay_bg" => [1.0, 1.0, 1.0, 0.85],
+		"pill_bg" => [0.90, 0.91, 0.93],
+		"pill_active" => [0.22, 0.44, 0.86, 0.15],
+		"scrollbar" => [0.0, 0.0, 0.0, 0.10],
+		"scrollbar_hover" => [0.0, 0.0, 0.0, 0.20],
+		"overlay_bg" => [1.0, 1.0, 1.0, 0.75],
 		"modal_bg" => [1.0, 1.0, 1.0, 0.95],
 	];
 	private $titleCloseHover = false;
@@ -3203,9 +3210,6 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 			// Launch parallel background downloader
 			$this->assetChannel = new \parallel\Channel();
-			putenv("FOXY_BACKGROUND=1");
-			
-			putenv("FOXY_BACKGROUND=0");
 			$cacert = __DIR__ . DIRECTORY_SEPARATOR . self::CACERT;
 			$this->assetFuture = $this->runTransientTask(
 				function (
@@ -3621,30 +3625,43 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// 6. Pagination (Discovery Mode)
 		if ($this->currentPage === self::PAGE_MODS && $this->modrinthTotalHits > 20) {
-			$pgY = $this->height - self::TITLEBAR_H - ($this->getFooterVisibility() ? self::FOOTER_H : 0) - 45;
-			$pgW = 200; $pgX = ($cw - $pgW) / 2;
-
-			if ($cx >= $pgX && $cx <= $pgX + 60 && $cy >= $pgY && $cy <= $pgY + 30) {
-				if ($this->modrinthPage > 0) {
-					$this->modrinthPage--;
-					$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
-					$this->needsRedraw = true;
+			[$pgY, $pgX, $totalPages, $curPage, $pages, $navW, $pageW, $btnGap] = $this->getPaginationData($cw);
+			if ($cy >= $pgY && $cy <= $pgY + 30) {
+				// Prev
+				if ($cx >= $pgX && $cx <= $pgX + $navW) {
+					if ($curPage > 1) {
+						$this->modrinthPage--;
+						$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
+					}
+					return;
 				}
-				return;
-			}
-			$nextX = $pgX + $pgW - 60;
-			if ($cx >= $nextX && $cx <= $nextX + 60 && $cy >= $pgY && $cy <= $pgY + 30) {
-				if ($this->modrinthPage + 1 < ceil($this->modrinthTotalHits / 20)) {
-					$this->modrinthPage++;
-					$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
-					$this->needsRedraw = true;
+				// Page numbers
+				$bx = $pgX + $navW + $btnGap;
+				foreach ($pages as $p) {
+					if ($p === -1) { $bx += $pageW + $btnGap; continue; }
+					if ($cx >= $bx && $cx <= $bx + $pageW) {
+						$targetPage = $p - 1;
+						if ($targetPage !== $this->modrinthPage) {
+							$this->modrinthPage = $targetPage;
+							$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
+						}
+						return;
+					}
+					$bx += $pageW + $btnGap;
 				}
-				return;
+				// Next
+				if ($cx >= $bx && $cx <= $bx + $navW) {
+					if ($curPage < $totalPages) {
+						$this->modrinthPage++;
+						$this->searchModrinth($this->modSearchQuery, $this->modrinthPage);
+					}
+					return;
+				}
 			}
 		}
 
 		// 7. Grid/List Interaction (Managed, Installed, or Discovery)
-		$y = self::HEADER_H + self::TAB_H;
+		$y = self::HEADER_H + 54;
 		$usableH = $this->height - self::TITLEBAR_H;
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$h = $usableH - $footerH - $y;
@@ -3746,7 +3763,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$itemY = $gridY + $row * ($cardH + $gap);
 
 					if ($itemY + $cardH > $y && $itemY < $y + $h) {
-						$btnW = 90; $btnH = 32; $btnX = $itemX + $cardW - $btnW - 16;
+						$btnW = 100; $btnH = 32; $btnX = $itemX + $cardW - $btnW - 16;
 						$btnY2 = $itemY + 16;
 						// Install
 						if ($cx >= $btnX && $cx <= $btnX + $btnW && $cy >= $btnY2 && $cy <= $btnY2 + $btnH) {
@@ -3799,14 +3816,27 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->checkModCompatibility();
 	}
 
+	private function detectSystemTheme(): string
+	{
+		try {
+			$out = [];
+			exec('reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v AppsUseLightTheme 2>nul', $out);
+			foreach ($out as $line) {
+				if (preg_match('/AppsUseLightTheme\s+REG_DWORD\s+0x([0-9a-f]+)/i', $line, $m)) {
+					return hexdec($m[1]) ? "light" : "dark";
+				}
+			}
+		} catch (\Throwable $e) {}
+		return "dark";
+	}
+
 	private function applyTheme()
 	{
-		$theme = $this->settings["theme"] ?? "dark";
-		if ($theme === "light") {
-			$this->colors = $this->lightColors;
-		} else {
-			$this->colors = $this->darkColors;
+		$theme = $this->settings["theme"] ?? "auto";
+		if ($theme === "auto") {
+			$theme = $this->detectSystemTheme();
 		}
+		$this->colors = ($theme === "light") ? $this->lightColors : $this->darkColors;
 	}
 
 	private function copyToClipboard($text)
@@ -3952,10 +3982,6 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$this->isCheckingCompat = true;
 		$this->compatChannel = new \parallel\Channel();
-		putenv("FOXY_BACKGROUND=1");
-		
-		putenv("FOXY_BACKGROUND=0");
-
 		$mcVersion = $this->config["minecraft_version"];
 		$loader = $this->config["loader"];
 
@@ -4632,8 +4658,6 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$this->modChannel = new \parallel\Channel();
 		putenv("FOXY_BACKGROUND=1");
-		
-		putenv("FOXY_BACKGROUND=0");
 		$modsDir =
 			$this->getAbsolutePath($this->settings["game_dir"]) .
 			DIRECTORY_SEPARATOR .
@@ -4642,18 +4666,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			@mkdir($modsDir, 0777, true);
 		}
 
+		if (!$this->process) {
+			$this->process = new \parallel\Runtime(__FILE__);
+		}
 		$this->modFuture = $this->process->run(
-			function (
-				\parallel\Channel $ch,
-				array $ids,
-				string $modsDir,
-				string $mcVer,
-				string $loader,
-			) {
-				FoxyModrinthJob::run($ch, $ids, $modsDir, $mcVer, $loader);
-			},
+			\Closure::fromCallable(["FoxyModrinthJob", "run"]),
 			[$this->modChannel, $ids, $modsDir, $mcVer, $loader],
 		);
+		putenv("FOXY_BACKGROUND=0");
 		$this->pollEvents->addChannel($this->modChannel);
 	}
 
@@ -5161,7 +5181,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->isLaunching = false;
 			return;
 		}
-		// Verify passed — reset retry counter
+		// Verify passed - reset retry counter
 		$this->verifyRetryCount = 0;
 		$this->lastVerifyFailVersion = "";
 
@@ -5741,7 +5761,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							if (isset($rule["features"])) {
 								// Allow has_custom_resolution (we always have window size settings)
 								if (isset($rule["features"]["has_custom_resolution"])) {
-									// treat as matched — we support custom resolution
+									// treat as matched - we support custom resolution
 								} else {
 									$match = false;
 								}
@@ -6940,8 +6960,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		) {
 			// $this->modrinthProcess->close();
 			// $this->modrinthProcess = null;
-			$this->modrinthFuture = null;
+			try { if ($this->modrinthChannel) $this->modrinthChannel->close(); } catch (\Throwable $e) {}
 			$this->modrinthChannel = null;
+			$this->modrinthFuture = null;
 		}
 
 		// Check if thread futures are done to clean up state
@@ -9546,59 +9567,192 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 	}
 
+	private function updateAnimations(float $now): void
+	{
+		// Scroll interpolation
+		$scrollPairs = [
+			[$this->scrollTarget, &$this->scrollOffset],
+			[$this->vScrollTarget, &$this->vScrollOffset],
+			[$this->propScrollTarget, &$this->propScrollOffset],
+			[$this->accScrollTarget, &$this->accScrollOffset],
+			[$this->foxyConfigScrollTarget, &$this->foxyConfigScrollOffset],
+			[$this->homeVerScrollTarget, &$this->homeVerScrollOffset],
+			[$this->modsFilterScrollTarget, &$this->modsFilterScrollOffset],
+		];
+		foreach ($scrollPairs as [$t, &$o]) {
+			$d = $t - $o;
+			if (abs($d) > 0.5) $o += $d * $this->scrollSpeed;
+			else $o = $t;
+		}
+		unset($o);
+
+		// Upload message auto-dismiss
+		if ($this->uploadSkinMessageTimer > 0) $this->uploadSkinMessageTimer--;
+
+		// Dropdown toggles
+		$dropdownPairs = [
+			[$this->explorerSubTabDropdownOpen, &$this->explorerSubTabDropdownAnim, 0.15],
+			[$this->homeAccDropdownOpen, &$this->homeAccDropdownAnim, 0.25],
+			[$this->homeVerDropdownOpen, &$this->homeVerDropdownAnim, 0.25],
+			[$this->javaModalDropdownOpen, &$this->javaModalDropdownAnim, 0.25],
+			[$this->javaVersionDropdownOpen, &$this->javaVersionDropdownAnim, 0.25],
+			[$this->crashModalOpen, &$this->crashModalAnim, 0.25],
+			[$this->modsVerDropdownOpen, &$this->modsVerDropdownAnim, 0.25],
+		];
+		foreach ($dropdownPairs as [$open, &$anim, $speed]) {
+			$target = $open ? 1.0 : 0.0;
+			if (abs($anim - $target) > 0.005) $anim += ($target - $anim) * $speed;
+			else $anim = $target;
+		}
+		unset($anim);
+
+		// Mods filter dropdown
+		$filterTarget = ($this->modsFilterDropdown !== "") ? 1.0 : 0.0;
+		if (abs($this->modsFilterDropdownAnim - $filterTarget) > 0.005) $this->modsFilterDropdownAnim += ($filterTarget - $this->modsFilterDropdownAnim) * 0.25;
+		else $this->modsFilterDropdownAnim = $filterTarget;
+
+		// Properties dropdown
+		$propTarget = ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen || $this->propThemeDropdownOpen) ? 1.0 : 0.0;
+		if (abs($this->propDropdownAnim - $propTarget) > 0.005) $this->propDropdownAnim += ($propTarget - $this->propDropdownAnim) * 0.25;
+		else $this->propDropdownAnim = $propTarget;
+
+		// Sidebar indicator glide
+		$sDiff = $this->sidebarTargetY - $this->sidebarIndicatorY;
+		if (abs($sDiff) > 0.1) $this->sidebarIndicatorY += $sDiff * 0.25;
+		else $this->sidebarIndicatorY = $this->sidebarTargetY;
+
+		$hDiff = $this->sidebarHoverTargetY - $this->sidebarHoverY;
+		if (abs($hDiff) > 0.1) $this->sidebarHoverY += $hDiff * 0.25;
+		else $this->sidebarHoverY = $this->sidebarHoverTargetY;
+
+		// Sidebar hover alpha
+		if ($this->sidebarHover !== -1) $this->sidebarHoverAlpha = min(1.0, $this->sidebarHoverAlpha + 0.1);
+		else $this->sidebarHoverAlpha = max(0.0, $this->sidebarHoverAlpha - 0.1);
+
+		// Window launch animation
+		$elapsed = $now - $this->appLaunchTime;
+		if ($elapsed < 5.0 || $this->isLoadingFonts) {
+			$this->windowAnim = min(1.0, $elapsed / 5.0) * 0.4;
+		} elseif ($this->windowAnim < 1.0) {
+			$this->windowAnim += (1.0 - $this->windowAnim) * 0.08;
+			if ($this->windowAnim >= 0.998) $this->windowAnim = 1.0;
+		}
+
+		// Page transitions
+		if ($this->pageAnim < 1.0) $this->pageAnim = min(1.0, $this->pageAnim + 0.08);
+		$this->modrinthAnim = min(1.0, $this->modrinthAnim + 0.16);
+
+		// Button pulse
+		$this->buttonPulse += 0.03;
+		if ($this->buttonPulse > 6.283) $this->buttonPulse -= 6.283;
+
+		$this->lastTime = $now;
+
+		// Icon alphas
+		foreach ($this->modIconAlpha as $id => $alpha) {
+			if ($alpha < 1.0) {
+				$this->modIconAlpha[$id] = min(1.0, $alpha + 0.05);
+				$this->needsRedraw = true;
+			}
+		}
+	}
+
+	private function isAnyAnimationActive(): bool
+	{
+		$scrollAnims = [
+			[$this->scrollTarget, $this->scrollOffset, 0.5],
+			[$this->vScrollTarget, $this->vScrollOffset, 0.5],
+			[$this->propScrollTarget, $this->propScrollOffset, 0.5],
+			[$this->accScrollTarget, $this->accScrollOffset, 0.5],
+			[$this->foxyConfigScrollTarget, $this->foxyConfigScrollOffset, 0.5],
+			[$this->homeVerScrollTarget, $this->homeVerScrollOffset, 0.5],
+			[$this->modsFilterScrollTarget, $this->modsFilterScrollOffset, 0.5],
+		];
+		foreach ($scrollAnims as [$t, $o, $thresh]) {
+			if (abs($t - $o) > $thresh) return true;
+		}
+
+		// Toggle animations
+		foreach ($this->toggleAnims as $val) {
+			if ($val > 0.001 && $val < 0.999) return true;
+		}
+
+		// Sidebar
+		if (abs($this->sidebarTargetY - $this->sidebarIndicatorY) > 0.1) return true;
+		if (abs($this->sidebarHoverTargetY - $this->sidebarHoverY) > 0.1) return true;
+		if ($this->sidebarHover !== -1 && $this->sidebarHoverAlpha < 1.0) return true;
+		if ($this->sidebarHover === -1 && $this->sidebarHoverAlpha > 0.0) return true;
+
+		// Page/window intro animations
+		if ($this->pageAnim < 1.0) return true;
+		if ($this->modrinthAnim < 1.0) return true;
+		if ($this->windowAnim < 1.0) return true;
+
+		// Dropdown animations
+		$dropdownPairs = [
+			[$this->homeAccDropdownOpen, $this->homeAccDropdownAnim],
+			[$this->homeVerDropdownOpen, $this->homeVerDropdownAnim],
+			[$this->javaModalDropdownOpen, $this->javaModalDropdownAnim],
+			[$this->javaVersionDropdownOpen, $this->javaVersionDropdownAnim],
+			[$this->crashModalOpen, $this->crashModalAnim],
+			[$this->modsVerDropdownOpen, $this->modsVerDropdownAnim],
+			[$this->explorerSubTabDropdownOpen, $this->explorerSubTabDropdownAnim],
+		];
+		foreach ($dropdownPairs as [$open, $anim]) {
+			if ($open && $anim < 1.0) return true;
+			if (!$open && $anim > 0.01) return true;
+		}
+		if ($this->modsFilterDropdown !== "" && $this->modsFilterDropdownAnim < 1.0) return true;
+		if ($this->modsFilterDropdown === "" && $this->modsFilterDropdownAnim > 0.01) return true;
+		if ($this->modInfoModalOpen && $this->modInfoAlpha < 1.0) return true;
+		if (!$this->modInfoModalOpen && $this->modInfoAlpha > 0.01) return true;
+		$isPropOpen = ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen || $this->propThemeDropdownOpen);
+		if ($isPropOpen && $this->propDropdownAnim < 1.0) return true;
+		if (!$isPropOpen && $this->propDropdownAnim > 0.01) return true;
+
+		// Background tasks
+		if ($this->isLaunching || $this->isDownloadingAssets || $this->gameProcess !== null || $this->isStoppingOverlay || $this->isSearchingModrinth || $this->isCheckingCompat) return true;
+
+		return false;
+	}
+
 	public function run()
 	{
 		try {
 			$msg = $this->user32->new("MSG");
 			while ($this->running) {
-				// --- GPU Resource Saving: Detect state ---
+				$now = microtime(true);
 				$isFocused = ($this->user32->GetForegroundWindow() == $this->hwnd);
 				$isMinimized = $this->user32->IsIconic($this->hwnd);
 				$isHovered = $this->mouseX >= 0 && $this->mouseX <= $this->width && $this->mouseY >= 0 && $this->mouseY <= $this->height;
 				$isVisible = $this->user32->IsWindowVisible($this->hwnd);
 				$isGameRunning = $this->gameProcess !== null;
-
-				// Throttling decision: Cap FPS if unfocused/not hovered/minimized OR if game is running
 				$shouldThrottle = (!$isFocused && !$isHovered) || $isMinimized || ($isGameRunning && $isVisible);
 
-				// --- No-Rendering: Skip everything if game is running and launcher is hidden ---
+				// Game running + hidden: poll only, no render
 				if ($isGameRunning && !$isVisible) {
-					// 15ms = ~66Hz. Smooth log streaming without chewing up CPU using 1ms polls.
 					usleep(15000);
 					$this->pollProcess();
 					$this->pollOAuthServer();
 					continue;
 				}
 
-				// --- Idle detection: block on messages when nothing to do (0% CPU) ---
+				// Idle: block on messages (0% CPU)
 				if ($this->isIdle) {
-					$timeout = $shouldThrottle ? 100 : 0;
 					$this->user32->WaitMessage();
 					$this->needsRedraw = true;
 					$this->isIdle = false;
 				}
 
-				while (
-					$this->user32->PeekMessageA(FFI::addr($msg), null, 0, 0, 1)
-				) {
+				while ($this->user32->PeekMessageA(FFI::addr($msg), null, 0, 0, 1)) {
 					$this->user32->TranslateMessage(FFI::addr($msg));
 					$this->user32->DispatchMessageA(FFI::addr($msg));
 				}
 
-				// --- Fast polling: runs every iteration (~2000x/sec) ---
 				$this->pollProcess();
 				$this->pollOAuthServer();
 
-				// If no redraw needed AND no background work, go idle
-				if (!$this->needsRedraw && !$this->hasActiveBackgroundTasks()) {
-					if (!$this->isIdle) {
-						// gc_collect_cycles(); // Free unused FFI allocations & buffer caches when entering idle state
-						// $this->log('Memory Usage: ' . round(memory_get_usage() / 1024 / 1024, 2) . ' MB');
-					}
-					$this->isIdle = true;
-					continue;
-				}
-
+				// Step font loading
 				if ($this->isLoadingFonts) {
 					if ($this->fontGenerator && $this->fontGenerator->valid()) {
 						$this->fontLoadingMessage = $this->fontGenerator->current();
@@ -9610,233 +9764,44 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					}
 				}
 
-				// --- Throttling: Skip render frames if unfocused to save GPU ---
-				if ($shouldThrottle) {
-					// Cap to ~15 FPS unfocused, or ~5 FPS if game is running (and visible)
-					$throttleSleep = ($isGameRunning && $isVisible) ? 200000 : 66000;
-					usleep($throttleSleep);
-				}
+				// Update animations, compute hover, check if any animation is still running
+				$this->updateAnimations($now);
+				$isAnimating = $this->isAnyAnimationActive();
+				$this->needsRedraw = $this->needsRedraw || $isAnimating;
 
-				// --- Rendering: matches screen refresh rate via VSync ---
-				$now = microtime(true);
-				$lastRenderTime = $now;
-
-				// Smooth scroll interpolation
-				$diff = $this->scrollTarget - $this->scrollOffset;
-				if (abs($diff) > 0.5) {
-					$this->scrollOffset += $diff * $this->scrollSpeed;
-				} else {
-					$this->scrollOffset = $this->scrollTarget;
-				}
-
-				$vDiff = $this->vScrollTarget - $this->vScrollOffset;
-				if (abs($vDiff) > 0.5) {
-					$this->vScrollOffset += $vDiff * $this->scrollSpeed;
-				} else {
-					$this->vScrollOffset = $this->vScrollTarget;
-				}
-
-				$pDiff = $this->propScrollTarget - $this->propScrollOffset;
-				if (abs($pDiff) > 0.5) {
-					$this->propScrollOffset += $pDiff * $this->scrollSpeed;
-				} else {
-					$this->propScrollOffset = $this->propScrollTarget;
-				}
-
-				$aDiff = $this->accScrollTarget - $this->accScrollOffset;
-				if (abs($aDiff) > 0.5) $this->accScrollOffset += $aDiff * $this->scrollSpeed;
-				else $this->accScrollOffset = $this->accScrollTarget;
-
-				// Upload message auto-dismiss
-				if ($this->uploadSkinMessageTimer > 0) {
-					$this->uploadSkinMessageTimer--;
-				}
-
-				$fcDiff = $this->foxyConfigScrollTarget - $this->foxyConfigScrollOffset;
-				if (abs($fcDiff) > 0.5) $this->foxyConfigScrollOffset += $fcDiff * $this->scrollSpeed;
-				else $this->foxyConfigScrollOffset = $this->foxyConfigScrollTarget;
-
-				$hDiff =
-					$this->homeVerScrollTarget - $this->homeVerScrollOffset;
-				if (abs($hDiff) > 0.5) {
-					$this->homeVerScrollOffset += $hDiff * $this->scrollSpeed;
-				} else {
-					$this->homeVerScrollOffset = $this->homeVerScrollTarget;
-				}
-
-				$fDiff = $this->modsFilterScrollTarget - $this->modsFilterScrollOffset;
-				if (abs($fDiff) > 0.5) {
-					$this->modsFilterScrollOffset += $fDiff * $this->scrollSpeed;
-				} else {
-					$this->modsFilterScrollOffset = $this->modsFilterScrollTarget;
-				}
-
-				if ($this->explorerSubTabDropdownOpen) {
-					$this->explorerSubTabDropdownAnim = min(1.0, $this->explorerSubTabDropdownAnim + 0.15);
-				} else {
-					$this->explorerSubTabDropdownAnim = max(0.0, $this->explorerSubTabDropdownAnim - 0.15);
-				}
-
-				$sDiff = $this->sidebarTargetY - $this->sidebarIndicatorY;
-				if (abs($sDiff) > 0.1) {
-					// Use snappy Cubic Out easing for sidebar glide
-					$this->sidebarIndicatorY += $sDiff * 0.25;
-				} else {
-					$this->sidebarIndicatorY = $this->sidebarTargetY;
-				}
-
-				$hDiff = $this->sidebarHoverTargetY - $this->sidebarHoverY;
-				if (abs($hDiff) > 0.1) {
-					$this->sidebarHoverY += $hDiff * 0.25;
-				} else {
-					$this->sidebarHoverY = $this->sidebarHoverTargetY;
-				}
-
-				if ($this->sidebarHover !== -1) {
-					$this->sidebarHoverAlpha = min(
-						1.0,
-						$this->sidebarHoverAlpha + 0.1,
-					);
-				} else {
-					$this->sidebarHoverAlpha = max(
-						0.0,
-						$this->sidebarHoverAlpha - 0.1,
-					);
-				}
-
-				// Window launch animation interpolation
-				$elapsed = $now - $this->appLaunchTime;
-				if ($elapsed < 5.0 || $this->isLoadingFonts) {
-					$prog = min(1.0, $elapsed / 5.0);
-					$this->windowAnim = $prog * 0.4;
-				} else {
-					if ($this->windowAnim < 1.0) {
-						$this->windowAnim += (1.0 - $this->windowAnim) * 0.08;
-						if ($this->windowAnim >= 0.998) {
-							$this->windowAnim = 1.0;
-						}
-					}
-				}
-
-				// Premium Multi-Axis Transitions
-				// Cubic Out Eased Page Alpha and Slide
-				if ($this->pageAnim < 1.0) {
-					$this->pageAnim = min(1.0, $this->pageAnim + 0.08); 
-				}
-				$this->modrinthAnim = min(1.0, $this->modrinthAnim + 0.16); // Snappier Results Fade-In
-
-				$easeAnim = function(&$anim, $target, $speed) {
-					if (abs($anim - $target) > 0.005) {
-						$anim += ($target - $anim) * $speed;
-					} else {
-						$anim = $target;
-					}
-				};
-
-				$easeAnim($this->homeAccDropdownAnim, $this->homeAccDropdownOpen ? 1.0 : 0.0, 0.25);
-				$easeAnim($this->homeVerDropdownAnim, $this->homeVerDropdownOpen ? 1.0 : 0.0, 0.25);
-				$easeAnim($this->javaModalDropdownAnim, $this->javaModalDropdownOpen ? 1.0 : 0.0, 0.25);
-				$easeAnim($this->javaVersionDropdownAnim, $this->javaVersionDropdownOpen ? 1.0 : 0.0, 0.25);
-				$easeAnim($this->crashModalAnim, $this->crashModalOpen ? 1.0 : 0.0, 0.25);
-				$easeAnim($this->modsVerDropdownAnim, $this->modsVerDropdownOpen ? 1.0 : 0.0, 0.25);
-				$easeAnim($this->modsFilterDropdownAnim, $this->modsFilterDropdown !== "" ? 1.0 : 0.0, 0.25);
-				$easeAnim($this->propDropdownAnim, ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen) ? 1.0 : 0.0, 0.25);
-
-				$this->buttonPulse += 0.03;
-				if ($this->buttonPulse > 6.283) {
-					$this->buttonPulse -= 6.283;
-				}
-
-				$this->lastTime = $now;
-
-				// Interpolate Icon Alphas
-				foreach ($this->modIconAlpha as $id => $alpha) {
-					if ($alpha < 1.0) {
-						$this->modIconAlpha[$id] = min(1.0, $alpha + 0.05);
-						$this->needsRedraw = true;
-					}
-				}
-
+				// Always compute hover before deciding to go idle, so pgPrevHover etc. stay current
 				$this->computeHoverStates();
 
-				if (
-					$this->currentPage === self::PAGE_LOGIN &&
-					$this->loginType === self::ACC_MICROSOFT &&
-					$this->loginStep === 1
-				) {
+				// No work to do? Go idle
+				if (!$this->needsRedraw && !$this->hasActiveBackgroundTasks()) {
+					$this->isIdle = true;
+					continue;
+				}
+
+				// Throttle when unfocused
+				if ($shouldThrottle) {
+					usleep(($isGameRunning && $isVisible) ? 200000 : 66000);
+				}
+
+				if ($this->currentPage === self::PAGE_LOGIN && $this->loginType === self::ACC_MICROSOFT && $this->loginStep === 1) {
 					$this->pollMicrosoftStatus();
 				}
 
-				// pollProcess moved to before idle check
 				$this->render();
 				$this->gdi32->SwapBuffers($this->hdc);
 
-				// Fallback VSync for windowed mode: DwmFlush blocks until next V-Blank
+				// VSync fallback for windowed mode
 				if ($this->dwmapi) {
-					try {
-						$this->dwmapi->DwmFlush();
-					} catch (\Throwable $e) {
-					}
+					try { $this->dwmapi->DwmFlush(); } catch (\Throwable $e) {}
 				}
 
-				// Lifecycle / Redraw Logic
-				$animating = false;
-				$animating = $animating || abs($this->scrollTarget - $this->scrollOffset) > 0.5;
-				$animating = $animating || abs($this->vScrollTarget - $this->vScrollOffset) > 0.5;
-				$animating = $animating || abs($this->propScrollTarget - $this->propScrollOffset) > 0.5;
-				$animating = $animating || abs($this->accScrollTarget - $this->accScrollOffset) > 0.5;
-				$animating = $animating || abs($this->foxyConfigScrollTarget - $this->foxyConfigScrollOffset) > 0.5;
-				foreach ($this->toggleAnims as $id => $val) {
-					$target = 0.0;
-					// This is a bit tricky as we don't know the target here easily without re-evaluating logic
-					// but we can assume if it's in the array and not 0 or 1, it's animating.
-					// We'll actually handle the interpolation inside drawToggleSwitch and just stay awake if anything is != 0 and != 1
-					if ($val > 0.001 && $val < 0.999) {
-						$animating = true;
-						break;
-					}
-				}
-				$animating = $animating || abs($this->homeVerScrollTarget - $this->homeVerScrollOffset) > 0.5;
-				$animating = $animating || abs($this->modsFilterScrollTarget - $this->modsFilterScrollOffset) > 0.5;
-				$animating = $animating || abs($this->sidebarTargetY - $this->sidebarIndicatorY) > 0.1;
-				$animating = $animating || abs($this->sidebarHoverTargetY - $this->sidebarHoverY) > 0.1;
-				$animating = $animating || ($this->sidebarHover !== -1 && $this->sidebarHoverAlpha < 1.0);
-				$animating = $animating || ($this->sidebarHover === -1 && $this->sidebarHoverAlpha > 0.0);
-				$animating = $animating || $this->pageAnim < 1.0;
-				$animating = $animating || $this->modrinthAnim < 1.0;
-				$animating = $animating || $this->windowAnim < 1.0;
-				$animating = $animating || ($this->homeAccDropdownOpen && $this->homeAccDropdownAnim < 1.0);
-				$animating = $animating || (!$this->homeAccDropdownOpen && $this->homeAccDropdownAnim > 0.01);
-				$animating = $animating || ($this->homeVerDropdownOpen && $this->homeVerDropdownAnim < 1.0);
-				$animating = $animating || (!$this->homeVerDropdownOpen && $this->homeVerDropdownAnim > 0.01);
-				$animating = $animating || ($this->javaModalDropdownOpen && $this->javaModalDropdownAnim < 1.0);
-				$animating = $animating || (!$this->javaModalDropdownOpen && $this->javaModalDropdownAnim > 0.01);
-				$animating = $animating || ($this->javaVersionDropdownOpen && $this->javaVersionDropdownAnim < 1.0);
-				$animating = $animating || (!$this->javaVersionDropdownOpen && $this->javaVersionDropdownAnim > 0.01);
-				$animating = $animating || ($this->crashModalOpen && $this->crashModalAnim < 1.0);
-				$animating = $animating || (!$this->crashModalOpen && $this->crashModalAnim > 0.01);
-				$animating = $animating || ($this->modsVerDropdownOpen && $this->modsVerDropdownAnim < 1.0);
-				$animating = $animating || (!$this->modsVerDropdownOpen && $this->modsVerDropdownAnim > 0.01);
-				$animating = $animating || ($this->modsFilterDropdown !== "" && $this->modsFilterDropdownAnim < 1.0);
-				$animating = $animating || ($this->modsFilterDropdown === "" && $this->modsFilterDropdownAnim > 0.01);
-				$animating = $animating || ($this->modInfoModalOpen && $this->modInfoAlpha < 1.0);
-				$animating = $animating || (!$this->modInfoModalOpen && $this->modInfoAlpha > 0.01);
-				
-				$isPropDropdownOpen = ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen);
-				$animating = $animating || ($isPropDropdownOpen && $this->propDropdownAnim < 1.0);
-				$animating = $animating || (!$isPropDropdownOpen && $this->propDropdownAnim > 0.01);
-
-				$animating = $animating || ($this->explorerSubTabDropdownOpen && $this->explorerSubTabDropdownAnim < 1.0);
-				$animating = $animating || (!$this->explorerSubTabDropdownOpen && $this->explorerSubTabDropdownAnim > 0.01);
-				
-				$animating = $animating || $this->isLaunching || $this->isDownloadingAssets || $this->gameProcess !== null || $this->isStoppingOverlay || $this->isSearchingModrinth || $this->isCheckingCompat;
-
-				if ($animating) {
+				// Schedule redraw if animating
+				if ($isAnimating) {
 					$this->needsRedraw = true;
 				} else {
 					$this->needsRedraw = false;
 				}
-			}
+		}
 		} catch (\Throwable $e) {
 			$this->log("FATAL ERROR: " . $e->getMessage(), "ERROR");
 			$this->log("Stack Trace:\n" . $e->getTraceAsString(), "ERROR");
@@ -10576,8 +10541,29 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$cy <= $itemY + $cardH
 				) {
 					$this->hoverModIndex = $i;
-					return;
+					break;
 				}
+			}
+		}
+
+		// Pagination hover
+		$this->pgPrevHover = false;
+		$this->pgNextHover = false;
+		$this->pgPageHover = -1;
+		if ($this->currentPage === self::PAGE_MODS && $this->modrinthTotalHits > 20) {
+			[$pgY, $pgX, $totalPages, $curPage, $pages, $navW, $pageW, $btnGap] = $this->getPaginationData($cw);
+			if ($cy >= $pgY && $cy <= $pgY + 30) {
+				// Prev
+				if ($cx >= $pgX && $cx <= $pgX + $navW) $this->pgPrevHover = true;
+				// Page numbers
+				$bx = $pgX + $navW + $btnGap;
+				foreach ($pages as $p) {
+					if ($p === -1) { $bx += $pageW + $btnGap; continue; }
+					if ($cx >= $bx && $cx <= $bx + $pageW) $this->pgPageHover = $p;
+					$bx += $pageW + $btnGap;
+				}
+				// Next
+				if ($cx >= $bx && $cx <= $bx + $navW) $this->pgNextHover = true;
 			}
 		}
 	}
@@ -10596,7 +10582,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$this->propTabHover = $i;
 					break;
 				}
-				$tx += $tw + 4;
+				$tx += $tw + 12;
 			}
 		}
 
@@ -10608,7 +10594,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if ($cy >= $contentTop + $rowOffset) {
 			$rowH = 60;
 			$idx = (int) floor($localY / $rowH);
-			if ($idx >= 0 && $idx <= 8) {
+			if ($idx >= 0 && $idx <= 9) {
 				$this->propFieldHover = $idx;
 			}
 			
@@ -10697,13 +10683,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$baseW = $this->getTextWidth("- Contact: ", 1000);
 			$wContact = $baseW + $this->getTextWidth("https://github.com/Minosuko/FoxyClient/issues", 1000);
 
-			if ($usableY >= 370 && $usableY < 390 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wDonate) {
+			if ($usableY >= 370 && $usableY < 395 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wDonate) {
 				$this->aboutDonateHover = true;
-			} elseif ($usableY >= 395 && $usableY < 415 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wGithub) {
+			} elseif ($usableY >= 395 && $usableY < 420 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wGithub) {
 				$this->aboutGithubHover = true;
-			} elseif ($usableY >= 420 && $usableY < 440 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wWebsite) {
+			} elseif ($usableY >= 420 && $usableY < 445 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wWebsite) {
 				$this->aboutWebsiteHover = true;
-			} elseif ($usableY >= 445 && $usableY < 465 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wContact) {
+			} elseif ($usableY >= 445 && $usableY < 470 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wContact) {
 				$this->aboutContactHover = true;
 			}
 		}
@@ -10742,7 +10728,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				// Reset Settings
 				$this->settings = $this->defaultSettings;
 				$this->saveSettings();
-				$this->colors = $this->settings["theme"] === "dark" ? $this->darkColors : $this->lightColors;
+				$this->applyTheme();
 				$this->loadBackground(); return;
 			} elseif ($cx >= $startX + $btnW + $btnGap && $cx <= $startX + $btnW + $btnGap + $btnW) {
 				// Sign Out
@@ -10812,84 +10798,38 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			// Minecraft Config
 			if ($idx === 0) {
 				// Game Dir
+				$rowStart = $contentTop + $idx * $rowH - $this->propScrollOffset;
 				// Folder Browse
 				$bx = $cw - self::PAD - 80;
 				$bw = 80;
 				if (
 					$cx >= $bx &&
 					$cx <= $bx + $bw &&
-					$cy >=
-						$contentTop + $idx * $rowH - $this->propScrollOffset &&
-					$cy <=
-						$contentTop +
-							$idx * $rowH +
-							40 -
-							$this->propScrollOffset
+					$cy >= $rowStart + 5 &&
+					$cy <= $rowStart + 45
 				) {
 					$bi = $this->shell32->new("BROWSEINFOA");
 					FFI::memset(FFI::addr($bi), 0, FFI::sizeof($bi));
 					$bi->hwndOwner = $this->hwnd;
-
 					$displayBuf = FFI::new("char[260]");
 					$bi->pszDisplayName = FFI::cast("char*", $displayBuf);
-
 					$title = "Select Game Folder";
 					$titleBuf = FFI::new("char[" . (strlen($title) + 1) . "]");
 					FFI::memcpy($titleBuf, $title, strlen($title));
 					$bi->lpszTitle = FFI::cast("char*", $titleBuf);
-
-					$initialPath = $this->getAbsolutePath(
-						$this->settings["game_dir"],
-					);
-					$initialPathBuf = FFI::new(
-						"char[" . (strlen($initialPath) + 1) . "]",
-					);
-					FFI::memcpy(
-						$initialPathBuf,
-						$initialPath,
-						strlen($initialPath),
-					);
-
-					$bi->lpfn = function ($hwnd, $msg, $lp, $data) use (
-						$initialPathBuf,
-					) {
-						try {
-							if ($msg === 1) {
-								// BFFM_INITIALIZED
-								$this->user32->SendMessageA(
-									$hwnd,
-									0x466,
-									1,
-									$initialPathBuf,
-								); // BFFM_SETSELECTIONA
-							}
-						} catch (\Throwable $e) {
-							$this->log(
-								"Error in BrowseFolder callback: " .
-									$e->getMessage(),
-								"ERROR",
-							);
-						}
-						return 0;
-					};
-
-					$bi->ulFlags = 0x01 | 0x00000040 | 0x00000010; // BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX
+					$bi->ulFlags = 0x01 | 0x00000040;
 					$pidl = $this->shell32->SHBrowseForFolderA(FFI::addr($bi));
 					if ($pidl) {
 						$pathBuf = FFI::new("char[260]");
-						if (
-							$this->shell32->SHGetPathFromIDListA(
-								$pidl,
-								$pathBuf,
-							)
-						) {
+						if ($this->shell32->SHGetPathFromIDListA($pidl, $pathBuf)) {
 							$this->settings["game_dir"] = FFI::string($pathBuf);
 							$this->saveSettings();
 						}
 					}
 					return;
 				}
-				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
+				// Text field (210px, excluding browse button area)
+				if ($cx >= $fieldX && $cx <= $fieldX + 210) {
 					$this->propActiveField = "game_dir";
 				}
 			} elseif ($idx === 1) {
@@ -10983,21 +10923,32 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			}
 		} elseif ($this->propSubTab === 1) {
 			// Launcher Config
-			// Dropdown item click interception (Language + Fonts)
-			if ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen) {
+			// Dropdown item click interception (Theme + Language + Fonts)
+			if ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen || $this->propThemeDropdownOpen) {
 				$cw = $this->width - self::SIDEBAR_W;
 				$ddX = $cw - self::PAD - 300;
 				$ddW = 300;
-				
-				$rowIdx = 2; // Default for language
-				if ($this->propFontDropdownOpen === "launcher") $rowIdx = 4;
-				elseif ($this->propFontDropdownOpen === "overlay") $rowIdx = 5;
-				
 				$contentTop = self::HEADER_H + self::TAB_H + 20;
-				$ddY = $contentTop + ($rowIdx + 1) * 60 - (int)$this->propScrollOffset;
-				
-				if ($this->propLangDropdownOpen) {
+
+				if ($this->propThemeDropdownOpen) {
+					$items = ["Auto", "Light", "Dark"];
+					$ddY = $contentTop + (1 * 60) + 44 - (int)$this->propScrollOffset;
+					$ddH = count($items) * 32;
+					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $ddH) {
+						$li = (int) floor(($cy - $ddY) / 32);
+						$vals = ["auto", "light", "dark"];
+						if (isset($vals[$li])) {
+							$this->settings["theme"] = $vals[$li];
+							$this->applyTheme();
+							$this->saveSettings();
+							$this->propThemeDropdownOpen = false;
+							$this->needsRedraw = true;
+						}
+						return;
+					}
+				} elseif ($this->propLangDropdownOpen) {
 					$items = ["English (en)", "Thai (th)", "Russian (ru)", "Japanese (ja)"];
+					$ddY = $contentTop + (2 * 60) + 44 - (int)$this->propScrollOffset;
 					$ddH = count($items) * 32;
 					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $ddH) {
 						$li = (int) floor(($cy - $ddY) / 32);
@@ -11009,44 +10960,38 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 						}
 						return;
 					}
-				}
-
-				if ($this->propFontDropdownOpen !== "") {
+				} elseif ($this->propFontDropdownOpen !== "") {
+					$rowIdx = ($this->propFontDropdownOpen === "launcher") ? 4 : 5;
 					$fonts = $this->availableFonts;
 					$itemH = 32;
+					$ddY = $contentTop + ($rowIdx * 60) + 44 - (int)$this->propScrollOffset;
 					$ddH = count($fonts) * $itemH;
-				}
-				if (
-					$cx >= $ddX &&
-					$cx <= $ddX + $ddW &&
-					$cy >= $ddY &&
-					$cy <= $ddY + $ddH
-				) {
-					$clickedFi = (int) floor(($cy - $ddY) / $itemH);
-					if (isset($fonts[$clickedFi])) {
-						$selectedFont = $fonts[$clickedFi];
-						if ($this->propFontDropdownOpen === "launcher") {
-							$this->settings["font_launcher"] = $selectedFont;
-							$this->saveSettings();
-							$this->fontAtlas = [];
-							$this->initFonts();
-						} else {
-							$this->settings["font_overlay"] = $selectedFont;
-							$this->saveSettings();
-							if ($this->overlayChannel) {
-								try {
-									$this->overlayChannel->send([
-										"font_overlay" => $selectedFont,
-									]);
-								} catch (\Throwable $e) {
+					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $ddH) {
+						$clickedFi = (int) floor(($cy - $ddY) / $itemH);
+						if (isset($fonts[$clickedFi])) {
+							$selectedFont = $fonts[$clickedFi];
+							if ($this->propFontDropdownOpen === "launcher") {
+								$this->settings["font_launcher"] = $selectedFont;
+								$this->saveSettings();
+								$this->fontAtlas = [];
+								$this->initFonts();
+							} else {
+								$this->settings["font_overlay"] = $selectedFont;
+								$this->saveSettings();
+								if ($this->overlayChannel) {
+									try {
+										$this->overlayChannel->send(["font_overlay" => $selectedFont]);
+									} catch (\Throwable $e) {}
 								}
 							}
+							$this->propFontDropdownOpen = "";
+							return;
 						}
-						$this->propFontDropdownOpen = "";
-						return;
 					}
 				}
-				// Click outside dropdown closes it
+				// Click outside dropdown closes all
+				$this->propThemeDropdownOpen = false;
+				$this->propLangDropdownOpen = false;
 				$this->propFontDropdownOpen = "";
 				return;
 			}
@@ -11060,21 +11005,18 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			} elseif ($idx === 1) {
 				// Theme
 				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
-					$this->settings["theme"] =
-						$this->settings["theme"] === "dark" ? "light" : "dark";
-					$this->colors =
-						$this->settings["theme"] === "dark"
-							? $this->darkColors
-							: $this->lightColors;
-					$this->saveSettings();
-					$this->needsRedraw = true;
+					$this->propThemeDropdownOpen = !$this->propThemeDropdownOpen;
+					if ($this->propThemeDropdownOpen) $this->propDropdownAnim = 0.0;
+					$this->propFontDropdownOpen = "";
+					$this->propLangDropdownOpen = false;
 				}
 			} elseif ($idx === 2) {
 				// Language
 				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
 					$this->propLangDropdownOpen = !$this->propLangDropdownOpen;
 					if ($this->propLangDropdownOpen) $this->propDropdownAnim = 0.0;
-					$this->propFontDropdownOpen = ""; // Close fonts
+					$this->propThemeDropdownOpen = false;
+					$this->propFontDropdownOpen = "";
 				}
 			} elseif ($idx === 3) {
 				// Show Modified Versions
@@ -11094,7 +11036,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							: "launcher";
 					if ($this->propFontDropdownOpen !== "") $this->propDropdownAnim = 0.0;
 					$this->propFontDropdownHover = -1;
-					$this->propLangDropdownOpen = false; // Close language
+					$this->propThemeDropdownOpen = false;
+					$this->propLangDropdownOpen = false;
 				}
 			} elseif ($idx === 5) {
 				// Overlay Font
@@ -11104,6 +11047,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							? ""
 							: "overlay";
 					$this->propFontDropdownHover = -1;
+					$this->propThemeDropdownOpen = false;
 				}
 			} elseif ($idx === 6) {
 				// Separate Modpack Folder
@@ -11477,7 +11421,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	private function renderSearchBar($x, $y, $w, $h, &$query, $isFocused, $placeholder = "Search...")
 	{
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
+		$isLight = $this->colors === $this->lightColors;
 		$bgColor = $isFocused ? $this->colors["input_bg_active"] : $this->colors["input_bg"];
 		
 		// 1. Draw Glassmorphic Base
@@ -11524,29 +11468,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function renderSidebar()
 	{
 		$sw = self::SIDEBAR_W;
-		// Sidebar bg
-		$c1 = $this->colors["sidebar_bg1"];
-		$c2 = $this->colors["sidebar_bg2"];
-		if ($this->bgTex) {
-			$c1 = [$c1[0], $c1[1], $c1[2], 0.8];
-			$c2 = [$c2[0], $c2[1], $c2[2], 0.8];
-		}
-		$this->drawGradientRect(
-			0,
-			0,
-			$sw,
-			$this->height - self::TITLEBAR_H,
-			$c1,
-			$c2,
-		);
-		// Divider
-		$this->drawRect(
-			$sw - 1,
-			0,
-			1,
-			$this->height - self::TITLEBAR_H,
-			$this->colors["divider"],
-		);
+		$c = $this->colors["sidebar_bg1"];
+		if ($this->bgTex) $c = [$c[0], $c[1], $c[2], 0.85];
+		$this->drawRect(0, 0, $sw, $this->height - self::TITLEBAR_H, $c);
+		$this->drawRect($sw - 1, 0, 1, $this->height - self::TITLEBAR_H, $this->colors["divider"]);
 
 		$sidebarH = $this->height - self::TITLEBAR_H;
 		$totalH = count($this->sidebarItems) * 55 - 5;
@@ -11554,38 +11479,23 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$y = ($sidebarH - $totalH) / 2;
 
 		$sidebarIcons = [
-			self::PAGE_HOME => mb_chr(0xe88a, "UTF-8"),			// Home
-			self::PAGE_FOXYCLIENT => "",						// Texture used instead
-			self::PAGE_ACCOUNTS => mb_chr(0xe7fd, "UTF-8"),		// Person
-			self::PAGE_MODS => mb_chr(0xe87b, "UTF-8"),			// Explore (Compass)
-			self::PAGE_VERSIONS => mb_chr(0xf135, "UTF-8"),		// List versions
-			self::PAGE_PROPERTIES => mb_chr(0xe8b8, "UTF-8"),	// Settings
+			self::PAGE_HOME => mb_chr(0xe88a, "UTF-8"),
+			self::PAGE_FOXYCLIENT => "",
+			self::PAGE_ACCOUNTS => mb_chr(0xe7fd, "UTF-8"),
+			self::PAGE_MODS => mb_chr(0xe87b, "UTF-8"),
+			self::PAGE_VERSIONS => mb_chr(0xf135, "UTF-8"),
+			self::PAGE_PROPERTIES => mb_chr(0xe8b8, "UTF-8"),
 		];
 
 		$hasActiveTab = false;
 		foreach ($this->sidebarItems as $item) {
-			if ($this->currentPage === $item["id"]) {
-				$hasActiveTab = true;
-				break;
-			}
+			if ($this->currentPage === $item["id"]) { $hasActiveTab = true; break; }
 		}
 
 		if ($hasActiveTab) {
-			// Subtle glow behind the active capsule
-			$this->drawGlow(4, $this->sidebarIndicatorY + 2, $sw - 8, $itemH - 4, 10, $this->colors["primary"], 0.4);
-			// The active capsule
-			$this->drawRoundedRect(
-				4,
-				$this->sidebarIndicatorY + 2,
-				$sw - 8,
-				$itemH - 4,
-				10,
-				$this->colors["sidebar_active"],
-				[$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.8]
-			);
+			$this->drawRoundedRect(4, $this->sidebarIndicatorY + 2, $sw - 8, $itemH - 4, 10, $this->colors["sidebar_active"]);
 		}
 
-		// Hover Highlight (Capsule)
 		if ($this->sidebarHoverAlpha > 0.001) {
 			$hC = $this->colors["sidebar_hover"];
 			$this->drawRoundedRect(4, $this->sidebarHoverY + 2, $sw - 8, $itemH - 4, 10, [
@@ -11641,22 +11551,19 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$item = $this->sidebarItems[$this->sidebarHover];
 		$name = $item["name"];
 		$tw = $this->getTextWidth($name, 1000);
-		
+
 		$sidebarH = $this->height - self::TITLEBAR_H;
 		$totalH = count($this->sidebarItems) * 55 - 5;
 		$startY = ($sidebarH - $totalH) / 2;
 		$hoverY = $startY + $this->sidebarHover * ($itemH + 5) + ($itemH / 2);
-		
+
 		$tx = $sw + 10;
-		$ty = $hoverY - 12 + self::TITLEBAR_H; // Global Y offset
-		
+		$ty = $hoverY - 12 + self::TITLEBAR_H;
 		$animX = $tx + (1.0 - $this->sidebarHoverAlpha) * 10;
-		
+
 		$bg = $this->colors["dropdown_bg"];
-		$tc = $this->colors["text"];
-		$this->drawGlow($animX, $ty, $tw + 20, 24, 10, [0, 0, 0, 0.3 * $this->sidebarHoverAlpha]);
-		$this->drawRoundedRect($animX, $ty, $tw + 20, 24, 6, [$bg[0], $bg[1], $bg[2], ($bg[3] ?? 1.0) * $this->sidebarHoverAlpha], [$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.3 * $this->sidebarHoverAlpha]);
-		$this->renderText($name, $animX + 10, $ty + 17, [$tc[0], $tc[1], $tc[2], $this->sidebarHoverAlpha], 1000);
+		$this->drawRoundedRect($animX, $ty, $tw + 20, 24, 6, [$bg[0], $bg[1], $bg[2], ($bg[3] ?? 1.0) * $this->sidebarHoverAlpha]);
+		$this->renderText($name, $animX + 10, $ty + 17, [$this->colors["text"][0], $this->colors["text"][1], $this->colors["text"][2], $this->sidebarHoverAlpha], 1000);
 	}
 
 	// ─── HOME PAGE ENGINE ───
@@ -11960,7 +11867,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->homeAccDropdownOpen = false;
 			$this->homeVerDropdownOpen = false;
 		} else {
-			// Modpack checkbox click — only for Fabric versions
+			// Modpack checkbox click - only for Fabric versions
 			$isFabricVersion =
 				stripos($this->selectedVersion, "fabric") !== false;
 			if ($isFabricVersion) {
@@ -12059,7 +11966,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		) {
 			$this->homeHoverIdx = 4;
 		} else {
-			// Modpack checkbox hover — only for Fabric versions
+			// Modpack checkbox hover - only for Fabric versions
 			$isFabricVersion =
 				stripos($this->selectedVersion, "fabric") !== false;
 			if ($isFabricVersion) {
@@ -12186,7 +12093,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$this->drawDropdownSelector($vx, $vy, $vw, $vh, $dispVer, $this->homeVerDropdownOpen, $isVerHover, $iconTex);
 
-		// Modpack Toggle — only show for Fabric versions
+		// Modpack Toggle - only show for Fabric versions
 		$isFabricVersion = stripos($this->selectedVersion, "fabric") !== false;
 		if ($isFabricVersion) {
 			$cbX = ($cw - 250) / 2;
@@ -13433,54 +13340,34 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	private function drawStyledButton($x, $y, $w, $h, $label, $isHover, $style = "primary", $fontSize = 1000)
 	{
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
-
 		switch ($style) {
 			case "danger":
-				$c1 = $isHover ? [0.85, 0.2, 0.15] : [0.7, 0.15, 0.1];
-				$c2 = $isHover ? [0.75, 0.1, 0.08] : [0.6, 0.08, 0.05];
-				$textColor = [1, 1, 1];
+				$bg = $isHover ? [0.94, 0.33, 0.31] : [0.80, 0.25, 0.25];
+				$tc = [1, 1, 1];
 				break;
 			case "secondary":
-				$c1 = $isHover
-					? ($isLight ? [0.82, 0.84, 0.88] : [0.25, 0.25, 0.28])
-					: ($isLight ? [0.88, 0.9, 0.93] : [0.20, 0.20, 0.22]);
-				$c2 = $isHover
-					? ($isLight ? [0.78, 0.8, 0.84] : [0.22, 0.22, 0.25])
-					: ($isLight ? [0.84, 0.86, 0.89] : [0.18, 0.18, 0.20]);
-				$textColor = $this->colors["text"];
+				$bg = $isHover ? $this->colors["button_hover"] : $this->colors["button"];
+				$tc = $this->colors["text"];
 				break;
 			case "success":
-				$c1 = $isHover ? [0.15, 0.75, 0.4] : [0.1, 0.6, 0.3];
-				$c2 = $isHover ? [0.08, 0.65, 0.25] : [0.05, 0.55, 0.2];
-				$textColor = [1, 1, 1];
+				$bg = $isHover ? [0.25, 0.80, 0.48] : [0.20, 0.65, 0.40];
+				$tc = [1, 1, 1];
 				break;
-			default: // primary
+			default:
 				$p = $this->colors["primary"];
-				$pd = $this->colors["primary_dim"];
-				$c1 = $isHover ? [$p[0]*1.1, $p[1]*1.1, $p[2]*1.1] : $p;
-				$c2 = $isHover ? $p : $pd;
-				$textColor = [1, 1, 1]; // Keep white for contrast on blue
+				$bg = $isHover ? [$p[0]*1.1, $p[1]*1.1, $p[2]*1.1] : $p;
+				$tc = [1, 1, 1];
 				break;
 		}
 
-		// Draw smooth rounded pill button
-		$radius = min(8, $h / 2); // Rounded rectangle like Lunar Client
-		
-		// Fill
-		$this->drawRoundedGradientRect($x, $y, $w, $h, $radius, $c1, $c2);
+		$radius = min(8, $h / 2);
+		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bg);
 
-		// Subtle overlay outline if hovered
-		if ($isHover) {
-			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1.0, 1.0, 1.0, 0.05]);
-		}
-
-		// Text (centered with modern spacing)
 		$spacing = ($fontSize === 2000) ? 1.5 : 0.8;
 		$textW = $this->getTextWidth($label, $fontSize, $spacing);
 		$textX = $x + ($w - $textW) / 2;
 		$textY = $y + $h / 2 + 6;
-		$this->renderText($label, $textX, $textY, $textColor, $fontSize, $spacing);
+		$this->renderText($label, $textX, $textY, $tc, $fontSize, $spacing);
 	}
 
 	/**
@@ -13508,26 +13395,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	private function drawCard($x, $y, $w, $h, $isHover = false, $isActive = false)
 	{
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
 		$radius = 8;
-
-		// Card background
-		$bgColor = $isActive
-			? ($isLight ? [0.92, 0.94, 1.0, 0.8] : [0.12, 0.16, 0.22, 0.8])
-			: ($isHover ? $this->colors["card_hover"] : $this->colors["card"]);
-			
+		$bgColor = $isActive ? $this->colors["acc_active"] : ($isHover ? $this->colors["card_hover"] : $this->colors["card"]);
 		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bgColor);
-
-		// Responsive border highlight
-		if ($isHover || $isActive) {
-			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1, 1, 1, 0.06]);
-		} else {
-			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1, 1, 1, 0.03]);
-		}
-
-		// Active accent bar (left edge pill indicator)
+		$this->drawRoundedRect($x, $y, $w, $h, $radius, $this->colors["divider"]);
 		if ($isActive) {
-			// Center an accent bar on the left
 			$this->drawRoundedRect($x + 2, $y + $h/2 - 12, 4, 24, 2, $this->colors["primary"]);
 		}
 	}
@@ -13603,7 +13475,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	private function drawDropdownSelector($x, $y, $w, $h, $label, $isOpen = false, $isHover = false, $iconTex = 0)
 	{
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
+		$isLight = $this->colors === $this->lightColors;
 		$radius = 6;
 		
 		// Background transition
@@ -14309,18 +14181,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$barX = $cw - 12;
 		$barW = 6;
 
-		// High-Fidelity Glassy Track
-		$this->drawRoundedRect($barX, $y, $barW, $h, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
-
-		// Premium Primary Capsule Thumb
+		$this->drawRoundedRect($barX, $y, $barW, $h, 3, $this->colors["divider"]);
 		$filtered = $this->getFilteredVersions();
 		$contentH = count($filtered) * 40;
 		$thumbH = max(32, ($h / max(1, $contentH)) * $h);
 		$thumbY = $y + ($this->vScrollOffset / $maxScroll) * ($h - $thumbH);
-
 		$pc = $this->colors["primary"];
 		$this->drawRoundedRect($barX, $thumbY, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
-		$this->drawGlow($barX, $thumbY, $barW, $thumbH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
 	}
 
 	private function loadVersions()
@@ -14510,17 +14377,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$barW = 6;
 			$barX = $cw - 12;
 			
-			// Glassy Track
-			$this->drawRoundedRect($barX, $listTop, $barW, $listH, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
-			
-			// Primary Capsule Thumb
+			$this->drawRoundedRect($barX, $listTop, $barW, $listH, 3, $this->colors["divider"]);
 			$thumbH = max(30, ($listH / $contentH) * $listH);
 			$scrollRatio = $this->accScrollOffset / max(1, $contentH - $listH);
 			$thumbY = $listTop + ($listH - $thumbH) * $scrollRatio;
-			
 			$pc = $this->colors["primary"];
 			$this->drawRoundedRect($barX, $thumbY, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
-			$this->drawGlow($barX, $thumbY, $barW, $thumbH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
 		}
 
 		// Upload status message
@@ -14621,25 +14483,27 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$gl->glDisable(0x0c11);
 
 		// Render Multi-Dropdown Overlay (Outside Scissor to prevent clipping)
-		if ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen) {
+		if ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen || $this->propThemeDropdownOpen) {
 			$cw = $this->width - self::SIDEBAR_W;
 			$ddW = 300;
 			$ddX = $cw - self::PAD - $ddW;
-			
-			$rowIdx = 2; // Language
-			if ($this->propFontDropdownOpen === "launcher") $rowIdx = 4;
-			elseif ($this->propFontDropdownOpen === "overlay") $rowIdx = 5;
-			
 			$contentTop = self::HEADER_H + self::TAB_H + 20;
-			$ddY = $contentTop + ($rowIdx * 60) + 44 - (int)$this->propScrollOffset;
 
-			if ($this->propLangDropdownOpen) {
+			if ($this->propThemeDropdownOpen) {
+				$items = ["Auto", "Light", "Dark"];
+				$cur = ucfirst($this->settings["theme"] ?? "auto");
+				$ddY = $contentTop + (1 * 60) + 44 - (int)$this->propScrollOffset;
+				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $items, $cur, $this->propFontDropdownHover, $this->propDropdownAnim);
+			} elseif ($this->propLangDropdownOpen) {
 				$items = ["English (en)", "Thai (th)", "Russian (ru)", "Japanese (ja)"];
 				$cur = $this->settings["language"] ?? "English (en)";
+				$ddY = $contentTop + (2 * 60) + 44 - (int)$this->propScrollOffset;
 				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $items, $cur, $this->propFontDropdownHover, $this->propDropdownAnim);
 			} elseif ($this->propFontDropdownOpen !== "") {
+				$rowIdx = ($this->propFontDropdownOpen === "launcher") ? 4 : 5;
 				$fonts = $this->availableFonts;
 				$cur = ($this->propFontDropdownOpen === "launcher") ? ($this->settings["font_launcher"] ?? "Open Sans") : ($this->settings["font_overlay"] ?? "Consolas");
+				$ddY = $contentTop + ($rowIdx * 60) + 44 - (int)$this->propScrollOffset;
 				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $fonts, $cur, $this->propFontDropdownHover, $this->propDropdownAnim);
 			}
 		}
@@ -14652,16 +14516,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$barW = 6;
 			$barX = $cw - 12;
 
-			// Glassy Track
-			$this->drawRoundedRect($barX, $contentTop, $barW, $clipH, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
-
-			// Primary Capsule Thumb
+			$this->drawRoundedRect($barX, $contentTop, $barW, $clipH, 3, $this->colors["divider"]);
 			$thumbH = max(32, $clipH * ($clipH / ($maxScroll + $clipH)));
 			$pos = ($clipH - $thumbH) * ($this->propScrollOffset / $maxScroll);
-			
 			$pc = $this->colors["primary"];
 			$this->drawRoundedRect($barX, $contentTop + $pos, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
-			$this->drawGlow($barX, $contentTop + $pos, $barW, $thumbH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
 		}
 	}
 
@@ -14895,11 +14754,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			};
 		};
 
-		$y = $this->renderPropRow(4, $y, "Game Folder", "Open the main .minecraft directory in Explorer", $folderBtnRenderer("OPEN GAME FOLDER"));
-		$y = $this->renderPropRow(5, $y, "Mods Folder", "Open the mods/ directory in Explorer", $folderBtnRenderer("OPEN MODS FOLDER"));
-		$y = $this->renderPropRow(6, $y, "Texture Packs", "Open the resourcepacks/ directory in Explorer", $folderBtnRenderer("OPEN RESOURCEPACKS"));
-		$y = $this->renderPropRow(7, $y, "Shader Packs", "Open the shaderpacks/ directory in Explorer", $folderBtnRenderer("OPEN SHADERPACKS"));
-		$y = $this->renderPropRow(8, $y, "Clear Log", "Delete the Minecraft log file", function ($x, $cy, $w, $h) {
+		$y = $this->renderPropRow(5, $y, "Game Folder", "Open the main .minecraft directory in Explorer", $folderBtnRenderer("OPEN GAME FOLDER"));
+		$y = $this->renderPropRow(6, $y, "Mods Folder", "Open the mods/ directory in Explorer", $folderBtnRenderer("OPEN MODS FOLDER"));
+		$y = $this->renderPropRow(7, $y, "Texture Packs", "Open the resourcepacks/ directory in Explorer", $folderBtnRenderer("OPEN RESOURCEPACKS"));
+		$y = $this->renderPropRow(8, $y, "Shader Packs", "Open the shaderpacks/ directory in Explorer", $folderBtnRenderer("OPEN SHADERPACKS"));
+		$y = $this->renderPropRow(9, $y, "Clear Log", "Delete the Minecraft log file", function ($x, $cy, $w, $h) {
 			$bx = $x + $w - 140;
 			$bw = 140;
 			$isHover = $this->mouseX >= $bx + self::SIDEBAR_W && $this->mouseX <= $bx + self::SIDEBAR_W + $bw &&
@@ -14930,21 +14789,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			1,
 			$y,
 			"Theme",
-			"App UI Theme (Dark / Light)",
+			"App UI Theme (Auto / Light / Dark)",
 			function ($x, $cy, $w, $h) {
-				$isDark = $this->settings["theme"] === "dark";
 				$isHover = $this->propFieldHover === 1;
-				$this->drawToggleSwitch($x + $w - 44, $cy + 9, $isDark, $isHover, "prop:theme");
-				
-				$text = $isDark ? "DARK THEME" : "LIGHT THEME";
-				$color = $this->colors["text_dim"];
-				$this->renderText(
-					$text,
-					$x + $w - 150,
-					$cy + 26,
-					$color,
-					1000,
-				);
+				$theme = $this->settings["theme"] ?? "auto";
+				$label = strtoupper($theme);
+				$this->drawDropdownSelector($x, $cy, $w, $h, $label, $this->propThemeDropdownOpen, $isHover);
 			},
 		);
 
@@ -15066,7 +14916,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$ddH
 		);
 
-		$isLight = ($this->settings["theme"] ?? "dark") === "light";
+		$isLight = $this->colors === $this->lightColors;
 		foreach ($items as $i => $item) {
 			$iy = $y + $i * $itemH;
 			$isActive = $item === $curVal;
@@ -15927,23 +15777,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function renderScrollbar($y, $h)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		
-		if ($this->maxScroll > 0) {
-			$progress = $this->scrollOffset / $this->maxScroll;
-			$scrollH = max(30, ($h / ($h + $this->maxScroll)) * $h);
-			$scrollY = $y + $progress * ($h - $scrollH);
-			
-			$barX = $cw - 10;
-			$barW = 6;
-			
-			// High-Fidelity Glassy Track
-			$this->drawRoundedRect($barX, $y, $barW, $h, 3, [1, 1, 1, 0.03], [1, 1, 1, 0.05]);
-			
-			// Premium Primary Capsule Thumb
-			$pc = $this->colors["primary"];
-			$this->drawRoundedRect($barX, $scrollY, $barW, $scrollH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
-			$this->drawGlow($barX, $scrollY, $barW, $scrollH, 8, [$pc[0], $pc[1], $pc[2], 0.15]);
-		}
+		if ($this->maxScroll <= 0) return;
+
+		$progress = $this->scrollOffset / $this->maxScroll;
+		$scrollH = max(30, ($h / ($h + $this->maxScroll)) * $h);
+		$scrollY = $y + $progress * ($h - $scrollH);
+		$barX = $cw - 10;
+		$barW = 6;
+
+		$this->drawRoundedRect($barX, $y, $barW, $h, 3, $this->colors["divider"]);
+		$pc = $this->colors["primary"];
+		$this->drawRoundedRect($barX, $scrollY, $barW, $scrollH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
 	}
 
 	private function drawModCard($mod, $y, $isHover)
@@ -16025,7 +15869,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$sColor =
 				$statusColors[$mod["status"]] ?? $this->colors["text_dim"];
 			$statusText = strtoupper($mod["status"]);
-			$stLen = strlen($statusText) * 7 + 16;
+			$stLen = (int)ceil($this->getTextWidth($statusText, 3000)) + 24;
 			$stX = $cw - self::PAD - $stLen - 8; // Relative to content width
 
 			// Badge background (Capsule)
@@ -16160,67 +16004,47 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->currentPage === self::PAGE_MODS &&
 			$this->modrinthTotalHits > 20
 		) {
-			$pgY = $usableH - $effectiveFooterH - 50;
-			$pgW = 200;
-			$pgX = ($cw - $pgW) / 2;
-			
-			// Glassy Pagination Bar Background
-			$this->drawRoundedRect($pgX - 20, $pgY - 6, $pgW + 40, 42, 12, [$this->colors["overlay_bg"][0], $this->colors["overlay_bg"][1], $this->colors["overlay_bg"][2], 0.95], [1, 1, 1, 0.1]);
+			[$pgY, $pgX, $totalPages, $curPage, $pages, $navW, $pageW, $btnGap, $totalW] = $this->getPaginationData($cw);
 
-			$totalPages = ceil($this->modrinthTotalHits / 20);
-			$displayPage =
-				$this->modPageDebounceTimer > 0
-					? $this->modPageTarget
-					: $this->modrinthPage;
-			$curPage = $displayPage + 1;
-
-			$alpha = $this->modrinthAnim;
+			// Background pill bar
+			$this->drawRoundedRect($pgX - 10, $pgY - 4, $totalW + 20, 38, 12, [$this->colors["overlay_bg"][0], $this->colors["overlay_bg"][1], $this->colors["overlay_bg"][2], 0.95], [1, 1, 1, 0.1]);
 
 			// Prev Button
-			$prevHover =
-				$this->mouseX >= self::SIDEBAR_W + $pgX &&
-				$this->mouseX <= self::SIDEBAR_W + $pgX + 60 &&
-				$this->mouseY >= self::TITLEBAR_H + $pgY &&
-				$this->mouseY <= self::TITLEBAR_H + $pgY + 30;
-			$prevCol =
-				$displayPage > 0
-					? ($prevHover
-						? $this->colors["primary"]
-						: $this->colors["card_hover"])
-					: $this->colors["tab_bg"];
-			// Prev Button (Glassy Capsule)
-			// Prev Button (Glassy Capsule)
-			$this->drawRoundedRect($pgX, $pgY, 60, 30, 6, $prevCol);
-			$this->renderIcon(0xe5c4, $pgX + 18, $pgY + 19, $this->colors["text"], 24);
+			$hasPrev = $curPage > 1;
+			$prevCol = $hasPrev ? ($this->pgPrevHover ? $this->colors["primary"] : $this->colors["card_hover"]) : $this->colors["tab_bg"];
+			$this->drawRoundedRect($pgX, $pgY, $navW, 30, 6, $prevCol);
+			$pc = $hasPrev ? $this->colors["text"] : $this->colors["text_dim"];
+			$this->renderIcon(0xe5c4, $pgX + 4, $pgY + 19, $pc, 24);
 
-			// Page Info
-			$pgText = "Page $curPage / $totalPages";
-			$tw = $this->getTextWidth($pgText, 1000);
-			$this->renderText(
-				$pgText,
-				$pgX + 60 + ($pgW - 120 - $tw) / 2,
-				$pgY + 20,
-				$this->colors["text"],
-				3000,
-				0.5
-			);
+			// Page number buttons
+			$bx = $pgX + $navW + $btnGap;
+			foreach ($pages as $p) {
+				if ($p === -1) {
+					// Ellipsis
+					$this->renderText("...", $bx + 8, $pgY + 20, $this->colors["text_dim"], 3000);
+					$bx += $pageW + $btnGap;
+				} else {
+					$isActive = $p === $curPage;
+					$isHover = $this->pgPageHover === $p;
+					if ($isActive) {
+						$this->drawRoundedRect($bx, $pgY + 1, $pageW, 28, 8, $this->colors["primary"]);
+						$this->renderText((string)$p, $bx + 8, $pgY + 20, [1, 1, 1], 3000);
+					} else {
+						$bg = $isHover ? $this->colors["pill_active"] : $this->colors["pill_bg"];
+						$tc = $isHover ? $this->colors["text"] : $this->colors["text_dim"];
+						$this->drawRoundedRect($bx, $pgY + 1, $pageW, 28, 8, $bg);
+						$this->renderText((string)$p, $bx + 8, $pgY + 20, $tc, 3000);
+					}
+					$bx += $pageW + $btnGap;
+				}
+			}
 
 			// Next Button
-			$nextX = $pgX + $pgW - 60;
-			$nextHover =
-				$this->mouseX >= self::SIDEBAR_W + $nextX &&
-				$this->mouseX <= self::SIDEBAR_W + $nextX + 60 &&
-				$this->mouseY >= self::TITLEBAR_H + $pgY &&
-				$this->mouseY <= self::TITLEBAR_H + $pgY + 30;
-			$nextCol =
-				$curPage < $totalPages
-					? ($nextHover
-						? $this->colors["primary"]
-						: $this->colors["card_hover"])
-					: $this->colors["tab_bg"];
-			// Next Button (Glassy Capsule)
-			$this->drawRoundedRect($nextX, $pgY, 60, 30, 6, $nextCol);
-			$this->renderIcon(0xe5c8, $nextX + 18, $pgY + 19, $this->colors["text"], 24);
+			$hasNext = $curPage < $totalPages;
+			$nextCol = $hasNext ? ($this->pgNextHover ? $this->colors["primary"] : $this->colors["card_hover"]) : $this->colors["tab_bg"];
+			$this->drawRoundedRect($bx, $pgY, $navW, 30, 6, $nextCol);
+			$nc = $hasNext ? $this->colors["text"] : $this->colors["text_dim"];
+			$this->renderIcon(0xe5c8, $bx + 4, $pgY + 19, $nc, 24);
 		}
 
 		$this->renderScrollbar($y, $listH);
@@ -16745,19 +16569,19 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Only 1.x versions below
 		if ($major !== 1) return 21;
 
-		// 1.0 – 1.11.2 -> Java 8
+		// 1.0 - 1.11.2 -> Java 8
 		if ($minor < 12 || ($minor === 11 && $patch <= 2)) return 8;
 
-		// 1.12 – 1.16.5 -> Java 11
+		// 1.12 - 1.16.5 -> Java 11
 		if ($minor <= 16 && ($minor < 16 || $patch <= 5)) return 11;
 
-		// 1.17 – 1.17.1 -> Java 16
+		// 1.17 - 1.17.1 -> Java 16
 		if ($minor === 17 && $patch <= 1) return 16;
 
-		// 1.18 – 1.20.4 -> Java 17
+		// 1.18 - 1.20.4 -> Java 17
 		if ($minor <= 20 && ($minor < 20 || $patch <= 4)) return 17;
 
-		// 1.20.5 – 1.21.11 -> Java 21
+		// 1.20.5 - 1.21.11 -> Java 21
 		if ($minor <= 21 && ($minor < 21 || $patch <= 11)) return 21;
 
 		// Beyond 1.21.11 -> Java 21 (stable default)
@@ -18043,12 +17867,6 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 	private function drawGlow($x, $y, $w, $h, $radius, $color, $intensity = 1.0)
 	{
-		$r = $color[0]; $g = $color[1]; $b = $color[2];
-		for ($i = 1; $i <= 4; $i++) {
-			$p = $i * 1.5;
-			$a = (0.15 / $i) * $intensity * $this->globalAlpha;
-			$this->drawRoundedRect($x - $p, $y - $p, $w + $p * 2, $h + $p * 2, $radius + $p, [$r, $g, $b, $a], [$r, $g, $b, 0]);
-		}
 	}
 
 	private function drawRoundedGradientRect($x, $y, $w, $h, $radius, $color1, $color2)
@@ -18698,6 +18516,36 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			);
 		}
 	}
+	private function getPaginationData($cw)
+	{
+		$usableH = $this->height - self::TITLEBAR_H;
+		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
+		$pgY = $usableH - $footerH - 50;
+		$totalPages = (int) ceil($this->modrinthTotalHits / 20);
+		$cur = $this->modrinthPage + 1;
+
+		// Determine visible page range
+		$pages = [];
+		if ($totalPages <= 7) {
+			for ($i = 1; $i <= $totalPages; $i++) $pages[] = $i;
+		} else {
+			$pages[] = 1;
+			$start = max(2, $cur - 2);
+			$end = min($totalPages - 1, $cur + 2);
+			if ($start > 2) $pages[] = -1; // left ellipsis
+			for ($i = $start; $i <= $end; $i++) $pages[] = $i;
+			if ($end < $totalPages - 1) $pages[] = -1; // right ellipsis
+			$pages[] = $totalPages;
+		}
+
+		$btnGap = 4;
+		$navW = 32; // prev/next width
+		$pageW = 30; // page number width
+		$totalW = $navW * 2 + count($pages) * ($pageW + $btnGap) + $btnGap;
+		$pgX = ($cw - $totalW) / 2;
+		return [$pgY, $pgX, $totalPages, $cur, $pages, $navW, $pageW, $btnGap, $totalW];
+	}
+
 	private function hasActiveBackgroundTasks()
 	{
 		return $this->isSearchingModrinth ||
@@ -18707,6 +18555,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->vManifestChannel !== null ||
 			$this->assetChannel !== null ||
 			$this->compatChannel !== null ||
+			$this->modChannel !== null ||
 			$this->gameProcess !== null ||
 			$this->isLoadingFonts ||
 			$this->isUpdatingCacert ||
@@ -18719,6 +18568,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			!empty($this->pendingFutures) ||
 			$this->assetFuture !== null ||
 			$this->modrinthFuture !== null ||
+			$this->modFuture !== null ||
 			!empty($this->modDownloadFutures) ||
 			$this->modpackInstallFuture !== null ||
 			$this->iconDownloadFuture !== null ||
@@ -18801,6 +18651,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				return;
 			}
 			if (!$isPrefetch) {
+				try { $this->modrinthChannel->close(); } catch (\Throwable $e) {}
 				$this->modrinthChannel = null;
 				$this->isSearchingModrinth = false;
 				$this->isPrefetching = false;
@@ -19807,7 +19658,7 @@ class FoxyVersionJob
 						"size" => $a["size"] ?? 0,
 					];
 				} elseif (isset($lib["name"])) {
-					// Forge artifacts often lack "path" — derive from Maven coordinate
+					// Forge artifacts often lack "path" - derive from Maven coordinate
 					$parts = explode(":", $lib["name"]);
 					if (count($parts) >= 3) {
 						$group = str_replace(".", DIRECTORY_SEPARATOR, $parts[0]);
