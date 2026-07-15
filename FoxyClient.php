@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.3";
+	public const VERSION = "1.4.4";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -5422,7 +5422,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// 2. Build Full Command Array (Safe for Windows)
 		$cmdArray = [$javaExec];
-		$cmdArray[] = "-Xms" . round($this->settings["ram_mb"] / 2) . "M";
+		$cmdArray[] = "-Xms" . round($this->settings["ram_mb"] / 3) . "M";
 		$cmdArray[] = "-Xmx" . $this->settings["ram_mb"] . "M";
 
 		$versionDir =
@@ -8552,7 +8552,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$isNewConsole = false;
 		
 		if (!$hwndConsole) {
-			// Allocate a fresh console window if none exists
+			// Process may have a headless console (e.g. launched with
+			// CreateNoWindow). Detach first so AllocConsole can
+			// create a visible window.
+			$this->kernel32->FreeConsole();
 			$this->kernel32->AllocConsole();
 			$hwndConsole = $this->kernel32->GetConsoleWindow();
 			$isNewConsole = true;
@@ -10889,17 +10892,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$this->propActiveField = "ram_mb";
 					$this->needsRedraw = true;
 				}
-			} elseif ($idx >= 4 && $idx <= 7) {
+			} elseif ($idx >= 5 && $idx <= 8) {
 				// Open folder buttons
 				$bx = $fieldX + 100;
 				$bw = 200;
 				if ($cx >= $bx && $cx <= $bx + $bw) {
 					$gameDir = $this->getAbsolutePath($this->settings["game_dir"]);
 					$subDirs = [
-						4 => '',
-						5 => 'mods',
-						6 => 'resourcepacks',
-						7 => 'shaderpacks',
+						5 => '',
+						6 => 'mods',
+						7 => 'resourcepacks',
+						8 => 'shaderpacks',
 					];
 					$target = $gameDir;
 					if (!empty($subDirs[$idx])) {
