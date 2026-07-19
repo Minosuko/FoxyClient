@@ -4,6 +4,8 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -28,6 +30,7 @@ internal class FoxyClient
     private const string UPDATE_URL = "https://github.com/Minosuko/FoxyClient/releases/latest/download/FoxyClient_OTA.zip";
     private const int MAX_RETRIES = 3;
     private const int RETRY_DELAY_MS = 2000;
+    private const string ROOT_CA_SHA256 = "33648022e7114c17c1255ff460660eb185667793b42850ff7e032f7d39f1b2c1";
 
     // PEM Public Key
     private const string PUBLIC_KEY_PEM = @"-----BEGIN PUBLIC KEY-----
@@ -50,6 +53,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
     private static readonly string ScriptPath = Path.Combine(AppDir, "FoxyClient.php");
     private static readonly string SignPath = Path.Combine(AppDir, "FoxyClient.sign");
     private static readonly string LogPath = Path.Combine(AppDir, "FoxyClient", "logs", "updater.log");
+    private static readonly string RootCertificatePath = Path.Combine(AppDir, "FoxyClient", "data", "certificate", "root-ca.crt");
 
     [STAThread]
     static void Main(string[] args)
@@ -60,6 +64,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         bool isUpdate = args.Contains("--update");
         bool isUninstall = args.Contains("--uninstall");
         bool isUnsigned = args.Contains("--unsigned");
+        bool isInstallRootCa = args.Contains("--install-root-ca");
 
         var handle = GetConsoleWindow();
         ShowWindow(handle, 0); // Hide console window
@@ -71,6 +76,15 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
             RunUninstallMode();
             return;
         }
+
+        if (isInstallRootCa)
+        {
+            Environment.ExitCode = InstallRootCertificate() ? 0 : 1;
+            return;
+        }
+
+        if (!EnsureRootCertificateInstalled())
+            return;
 
         if (isUpdate)
         {
@@ -100,6 +114,199 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
 
         LaunchClient();
     }
+
+    #region Root CA Installation
+
+    private static bool EnsureRootCertificateInstalled()
+    {
+        try
+        {
+            using (var bundledRoot = LoadBundledRootCertificate())
+            {
+                if (IsRootCertificateInstalled())
+                {
+                    Log("FoxySec root CA is already installed in LocalMachine\\Root.");
+                    return true;
+                }
+            }
+
+            Log("FoxySec root CA is missing from LocalMachine\\Root.");
+
+            if (!IsAdministrator())
+            {
+                Log("Requesting administrator elevation to install the FoxySec root CA.");
+                if (!RequestElevatedRootInstall())
+                {
+                    ShowRootCertificateError(
+                        "FoxyClient needs permission to install its trusted root certificate.\n\n" +
+                        "The certificate was not installed, so FoxyClient will not start.");
+                    return false;
+                }
+            }
+            else if (!InstallRootCertificate())
+            {
+                ShowRootCertificateError(
+                    "FoxyClient could not install its trusted root certificate.\n\n" +
+                    "FoxyClient will not start until the certificate is available in " +
+                    "Local Computer\\Trusted Root Certification Authorities.");
+                return false;
+            }
+
+            if (!IsRootCertificateInstalled())
+            {
+                Log("Root CA installation completed without a matching certificate in LocalMachine\\Root.");
+                ShowRootCertificateError(
+                    "FoxyClient could not verify that its trusted root certificate was installed.\n\n" +
+                    "FoxyClient will not start.");
+                return false;
+            }
+
+            Log("FoxySec root CA is installed in LocalMachine\\Root.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("Root CA setup failed: " + ex.ToString());
+            ShowRootCertificateError(
+                "FoxyClient could not prepare its trusted root certificate.\n\n" + ex.Message);
+            return false;
+        }
+    }
+
+    private static X509Certificate2 LoadBundledRootCertificate()
+    {
+        if (!File.Exists(RootCertificatePath))
+            throw new FileNotFoundException("Bundled root certificate was not found.", RootCertificatePath);
+
+        var certificate = new X509Certificate2(RootCertificatePath);
+        if (!string.Equals(GetCertificateSha256(certificate), ROOT_CA_SHA256, StringComparison.OrdinalIgnoreCase))
+        {
+            certificate.Dispose();
+            throw new CryptographicException("The bundled root certificate fingerprint is not recognized.");
+        }
+
+        if (!string.Equals(certificate.Subject, certificate.Issuer, StringComparison.OrdinalIgnoreCase))
+        {
+            certificate.Dispose();
+            throw new CryptographicException("The bundled certificate is not self-signed.");
+        }
+
+        return certificate;
+    }
+
+    private static bool IsRootCertificateInstalled()
+    {
+        using (var store = new X509Store(StoreName.Root, StoreLocation.LocalMachine))
+        {
+            store.Open(OpenFlags.ReadOnly);
+            return IsRootCertificateInstalled(store);
+        }
+    }
+
+    private static bool IsRootCertificateInstalled(X509Store store)
+    {
+        foreach (X509Certificate2 certificate in store.Certificates)
+        {
+            if (string.Equals(GetCertificateSha256(certificate), ROOT_CA_SHA256, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool InstallRootCertificate()
+    {
+        try
+        {
+            using (var certificate = LoadBundledRootCertificate())
+            using (var store = new X509Store(StoreName.Root, StoreLocation.LocalMachine))
+            {
+                store.Open(OpenFlags.ReadWrite);
+                if (!IsRootCertificateInstalled(store))
+                {
+                    store.Add(certificate);
+                    Log("Installed FoxySec root CA in LocalMachine\\Root.");
+                }
+                else
+                {
+                    Log("FoxySec root CA was already installed while opening LocalMachine\\Root.");
+                }
+
+                return IsRootCertificateInstalled(store);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("Root CA installation failed: " + ex.ToString());
+            return false;
+        }
+    }
+
+    private static bool RequestElevatedRootInstall()
+    {
+        Process process = null;
+        try
+        {
+            process = Process.Start(new ProcessStartInfo
+            {
+                FileName = Assembly.GetEntryAssembly().Location,
+                Arguments = "--install-root-ca",
+                WorkingDirectory = AppDir,
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+
+            if (process == null)
+                return false;
+
+            process.WaitForExit();
+            return process.ExitCode == 0;
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            Log("Administrator elevation was cancelled or unavailable: " + ex.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log("Could not request administrator elevation: " + ex.ToString());
+            return false;
+        }
+        finally
+        {
+            if (process != null)
+                process.Dispose();
+        }
+    }
+
+    private static bool IsAdministrator()
+    {
+        using (var identity = WindowsIdentity.GetCurrent())
+        {
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+    }
+
+    private static string GetCertificateSha256(X509Certificate2 certificate)
+    {
+        using (var sha256 = SHA256.Create())
+        {
+            byte[] hash = sha256.ComputeHash(certificate.RawData);
+            var result = new StringBuilder(hash.Length * 2);
+            foreach (byte value in hash)
+                result.Append(value.ToString("x2"));
+            return result.ToString();
+        }
+    }
+
+    private static void ShowRootCertificateError(string message)
+    {
+        MessageBox(IntPtr.Zero, message, "FoxyClient Certificate Error", 0x10);
+    }
+
+    #endregion
 
     #region Update Mode
 
@@ -269,6 +476,22 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
             }
 
             Log("Post-update integrity check passed.");
+
+            // Write version to registry
+            try
+            {
+                string version = ExtractVersionFromScript(ScriptPath);
+                if (!string.IsNullOrEmpty(version))
+                {
+                    Microsoft.Win32.Registry.SetValue(@"HKEY_CURRENT_USER\Software\FoxyClient", "Version", version);
+                    Log("Registry version set to: " + version);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Registry write warning: " + ex.Message);
+            }
+
             setStatus("Update complete!", 100);
             await Task.Delay(800);
             return true;
@@ -640,6 +863,27 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
                 "Failed to launch FoxyClient:\n\n" + ex.Message,
                 "FoxyClient Launch Error", 0x10);
         }
+    }
+
+    private static string ExtractVersionFromScript(string scriptPath)
+    {
+        try
+        {
+            string[] lines = File.ReadAllLines(scriptPath);
+            foreach (string line in lines)
+            {
+                if (line.Contains("const VERSION") && line.Contains("="))
+                {
+                    int start = line.IndexOf("\"");
+                    if (start < 0) continue;
+                    int end = line.IndexOf("\"", start + 1);
+                    if (end > start)
+                        return line.Substring(start + 1, end - start - 1);
+                }
+            }
+        }
+        catch { }
+        return null;
     }
 
     private static string FormatBytes(long bytes)

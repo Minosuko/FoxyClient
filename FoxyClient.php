@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.4";
+	public const VERSION = "1.4.5";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -750,6 +750,9 @@ class FoxyClient {
 		
 		$this->log("FoxyClient " . self::VERSION . " Starting...");
 		$this->log("Environment: PHP " . PHP_VERSION . " on " . PHP_OS);
+		try {
+			exec('reg add "HKCU\Software\FoxyClient" /v Version /t REG_SZ /d "' . self::VERSION . '" /f 2>nul');
+		} catch (\Throwable $e) {}
 		$this->log("Working Directory: " . getcwd());
 
 		$this->pollEvents = new \parallel\Events();
