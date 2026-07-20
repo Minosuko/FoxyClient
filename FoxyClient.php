@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.5";
+	public const VERSION = "1.4.6";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -220,7 +220,7 @@ class FoxyClient {
 		"adventure", "cursed", "decoration", "economy", "equipment", "food",
 		"game-mechanics", "library", "magic", "management", "minigame", "mobs",
 		"optimization", "social", "storage", "technology", "transportation",
-		"utility", "world-generation"
+		"utility", "world-gen"
 	];
 	private $modsCategoryLabels = [
 		"adventure" => "Adventure", "cursed" => "Cursed", "decoration" => "Decoration",
@@ -230,7 +230,7 @@ class FoxyClient {
 		"mobs" => "Mobs", "optimization" => "Optimization", "social" => "Social",
 		"storage" => "Storage", "technology" => "Technology",
 		"transportation" => "Transportation", "utility" => "Utility",
-		"world-generation" => "World Generation"
+		"world-gen" => "World Generation"
 	];
 	private $modsLoaderList = [
 		"fabric", "forge", "neoforge", "quilt", "liteloader", "rift"
@@ -349,6 +349,8 @@ class FoxyClient {
 	private $modpackInstallFuture = null;
 	private $isInstallingModpack = false;
 	
+	// Installed Mods Map (slug => {name, version, enabled})
+	private $installedModsMap = [];
 
 	// Icon cache
 	private $modIconCache = []; // project_id => gl_texture_id
@@ -3551,7 +3553,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			if ($pillRect) {
 				$ddX = $pillRect[0];
 				$ddY = $pillRect[1] + $pillRect[3] + 4;
-				$ddW = $key === "env" ? 150 : 220;
+				$ddW = 220;
+				if ($key === "env") $ddW = 180;
+				elseif ($key === "version") $ddW = 160;
+				elseif (in_array($key, ["category", "modpack_category", "res_category", "res_feature"])) $ddW = 240;
 				
 				$items = [];
 				if ($key === "category") {
@@ -3571,8 +3576,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				}
 
 				if (!empty($items)) {
-					$itemH = 30;
-					$maxVisible = min(10, count($items));
+					$itemH = 34;
+					$maxVisible = min(12, count($items));
 					$fullH = $maxVisible * $itemH;
 
 					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $fullH) {
@@ -5117,7 +5122,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$javaMode = $this->settings["java_mode"] ?? "auto";
 		if ($javaMode === "auto") {
 			$javaVerSetting = $this->settings["java_version"] ?? "auto";
-			$needJavaVer = $javaVerSetting !== "auto" ? (int)$javaVerSetting : $this->resolveMcJavaVersion($version);
+			$needJavaVer = $javaVerSetting !== "auto" ? (int)$javaVerSetting : ($vData["javaVersion"]["majorVersion"] ?? $this->resolveMcJavaVersion($version));
 			$java = $this->resolveAutoJavaPath($needJavaVer);
 			if (!$java) {
 				$this->isDownloadingAssets = true;
@@ -10443,7 +10448,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			if ($pillRect) {
 				$ddX = $pillRect[0];
 				$ddY = $pillRect[1] + $pillRect[3] + 4;
-				$ddW = $key === "env" ? 150 : 220;
+				$ddW = 220;
+				if ($key === "env") $ddW = 180;
+				elseif ($key === "version") $ddW = 160;
+				elseif (in_array($key, ["category", "modpack_category", "res_category", "res_feature"])) $ddW = 240;
 				
 				$itemsCount = 0;
 				if ($key === "category") {
@@ -10466,8 +10474,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				}
 
 				if ($itemsCount > 0) {
-					$itemH = 30;
-					$maxVisible = min(10, $itemsCount);
+					$itemH = 34;
+					$maxVisible = min(12, $itemsCount);
 					$fullH = $maxVisible * $itemH;
 
 					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $fullH) {
@@ -14077,6 +14085,60 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->isScanningLocalMods = false;
 	}
 
+	private function getInstalledModInfo($slug, $projectType)
+	{
+		$slugLower = strtolower($slug);
+		if (array_key_exists($slugLower, $this->installedModsMap)) {
+			return $this->installedModsMap[$slugLower];
+		}
+
+		$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
+
+		$dirName = "mods";
+		$extensions = ["jar", "jar.disabled"];
+		if ($projectType === "shader") { $dirName = "shaderpacks"; $extensions = ["zip", "zip.disabled"]; }
+		elseif ($projectType === "resourcepack") { $dirName = "resourcepacks"; $extensions = ["zip", "zip.disabled"]; }
+
+		$dir = $gameDir . DIRECTORY_SEPARATOR . $dirName;
+		if (!is_dir($dir)) {
+			$this->installedModsMap[$slugLower] = null;
+			return null;
+		}
+
+		$files = scandir($dir);
+		if (!$files) {
+			$this->installedModsMap[$slugLower] = null;
+			return null;
+		}
+
+		foreach ($files as $file) {
+			if ($file === "." || $file === "..") continue;
+			$fileLower = strtolower($file);
+			$matched = false;
+			foreach ($extensions as $ext) {
+				if (str_ends_with($fileLower, "." . $ext)) { $matched = true; break; }
+			}
+			if (!$matched) continue;
+
+			$baseName = preg_replace('/\.(jar|zip|disabled)$/', '', $fileLower);
+			$baseName = rtrim($baseName, '.');
+
+			if (str_starts_with($baseName, $slugLower . '-') || $baseName === $slugLower) {
+				$meta = $this->extractModMetadata($dir . DIRECTORY_SEPARATOR . $file);
+				$info = [
+					"name" => $meta["name"] ?? $file,
+					"version" => $meta["version"] ?? "Unknown",
+					"enabled" => !str_ends_with($fileLower, ".disabled"),
+				];
+				$this->installedModsMap[$slugLower] = $info;
+				return $info;
+			}
+		}
+
+		$this->installedModsMap[$slugLower] = null;
+		return null;
+	}
+
 	private function extractModMetadata($path)
 	{
 		$filename = basename($path);
@@ -16562,8 +16624,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 	private function resolveMcJavaVersion($mcVersion)
 	{
-		// Extract clean MC version (strip loader suffixes like -fabric, -forge, etc.)
-		if (!preg_match('/^(\d+\.\d+(?:\.\d+)?)/', $mcVersion, $m)) return 21;
+		// Extract clean MC version (strip loader prefixes like "Fabric ", "Forge ", etc.)
+		if (!preg_match('/^(\d+\.\d+(?:\.\d+)?)/', $mcVersion, $m)) {
+			if (!preg_match('/(\d+\.\d+(?:\.\d+)?)$/', $mcVersion, $m)) return 21;
+		}
 		$parts = explode(".", $m[1]);
 		$major = (int)($parts[0] ?? 0);
 		$minor = (int)($parts[1] ?? 0);
@@ -19124,14 +19188,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$type = $hit["project_type"] ?? "mod";
 		$isInstalled = false;
-		if ($type === "mod") $isInstalled = isset($this->installedMods[$slug]);
-		elseif ($type === "modpack") $isInstalled = isset($this->installedModpacks[$slug]);
-		elseif ($type === "shader") {
-			$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
-			$isInstalled = is_dir($gameDir . "/shaderpacks/" . $slug) || file_exists($gameDir . "/shaderpacks/" . $slug . ".zip") || file_exists($gameDir . "/shaderpacks/" . $slug . ".zip.disabled");
-		} elseif ($type === "resourcepack") {
-			$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
-			$isInstalled = is_dir($gameDir . "/resourcepacks/" . $slug) || file_exists($gameDir . "/resourcepacks/" . $slug . ".zip") || file_exists($gameDir . "/resourcepacks/" . $slug . ".zip.disabled");
+		$installedVersion = null;
+		if ($type === "mod" || $type === "shader" || $type === "resourcepack") {
+			$info = $this->getInstalledModInfo($slug, $type);
+			if ($info) {
+				$isInstalled = true;
+				$installedVersion = $info["version"];
+			}
+		} elseif ($type === "modpack") {
+			$isInstalled = isset($this->installedModpacks[$slug]);
+			if ($isInstalled) $installedVersion = $this->installedModpacks[$slug]["version"] ?? null;
 		}
 
 		$iconSize = 64;
@@ -19219,6 +19285,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$statusColor = $this->colors["status_done"];
 			$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 10, [$statusColor[0], $statusColor[1], $statusColor[2], 0.1 * $alpha], [1, 1, 1, 0.05 * $alpha]);
 			$this->renderText("INSTALLED", $btnX + ($btnW - $this->getTextWidth("INSTALLED", 3000, 0.4))/2, $btnY2 + 20, [$statusColor[0], $statusColor[1], $statusColor[2], $alpha], 3000, 0.4);
+			// Installed version below badge
+			if ($installedVersion) {
+				$verText = $installedVersion;
+				$this->renderText($verText, $btnX + ($btnW - $this->getTextWidth($verText, 3000, 0.35))/2, $btnY2 + 44, [$td[0], $td[1], $td[2], $alpha * 0.7], 3000, 0.35);
+			}
 		} else {
 			// High-Fidelity Interaction Button (Isolated Hover)
 			$isActionHover = $this->mouseX >= self::SIDEBAR_W + $btnX && $this->mouseX <= self::SIDEBAR_W + $btnX + $btnW && $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= self::TITLEBAR_H + $btnY2 + $btnH;
