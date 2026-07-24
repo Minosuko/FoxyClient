@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.7";
+	public const VERSION = "1.4.8";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -20325,20 +20325,40 @@ class FoxyJreDownloadJob
 		}
 
 		if (!$assetUrl) {
-			// Last resort: try a known working JRE download
-			$knownJre = "https://github.com/adoptium/temurin{$javaVer}-binaries/releases/download/jdk-{$javaVer}.0.6+7/OpenJDK{$javaVer}U-jre_x64_windows_hotspot_{$javaVer}.0.6_7.zip";
-			$curl = curl_init($knownJre);
-			curl_setopt($curl, CURLOPT_NOBODY, true);
+			// Last resort: iterate through recent GitHub releases to find a JRE asset
+			$listUrl = "https://api.github.com/repos/adoptium/temurin{$javaVer}-binaries/releases?per_page=10";
+			$curl = curl_init($listUrl);
+			curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
 			curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
-			curl_setopt($curl, CURLOPT_TIMEOUT, 10);
+			curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/1.0");
+			curl_setopt($curl, CURLOPT_HTTPHEADER, ["Accept: application/json"]);
+			curl_setopt($curl, CURLOPT_TIMEOUT, 15);
 			if (file_exists($cacert)) curl_setopt($curl, CURLOPT_CAINFO, $cacert);
-			curl_exec($curl);
-			$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+			$listRes = curl_exec($curl);
+			$listCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
 			curl_close($curl);
-			if ($code === 200) {
-				$assetUrl = $knownJre;
-				$assetName = basename($knownJre);
-				$tagName = "jdk-{$javaVer}.0.6+7";
+
+			if ($listCode === 200 && $listRes) {
+				$releases = json_decode($listRes, true);
+				if (is_array($releases)) {
+					foreach ($releases as $release) {
+						$tagName = $release["tag_name"] ?? null;
+						if (!$tagName) continue;
+						foreach ($release["assets"] ?? [] as $asset) {
+							$name = $asset["name"] ?? "";
+							if (
+								stripos($name, "jre") !== false &&
+								stripos($name, "windows") !== false &&
+								stripos($name, "x64") !== false &&
+								substr($name, -4) === ".zip"
+							) {
+								$assetUrl = $asset["browser_download_url"] ?? null;
+								$assetName = $name;
+								break 2;
+							}
+						}
+					}
+				}
 			}
 		}
 
