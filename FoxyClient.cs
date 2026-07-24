@@ -30,7 +30,7 @@ internal class FoxyClient
     private const string UPDATE_URL = "https://github.com/Minosuko/FoxyClient/releases/latest/download/FoxyClient_OTA.zip";
     private const int MAX_RETRIES = 3;
     private const int RETRY_DELAY_MS = 2000;
-    private const string ROOT_CA_SHA256 = "33648022e7114c17c1255ff460660eb185667793b42850ff7e032f7d39f1b2c1";
+    private const string ROOT_CA_SHA256 = "c2e1c6ed5e5c3fba219619c6b93d8e0fea36172c31d2463403b80901d5678021";
 
     // PEM Public Key
     private const string PUBLIC_KEY_PEM = @"-----BEGIN PUBLIC KEY-----

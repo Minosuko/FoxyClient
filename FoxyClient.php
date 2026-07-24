@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.6";
+	public const VERSION = "1.4.7";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -420,6 +420,7 @@ class FoxyClient {
 	private $foxyUpdateProcess = null;
 	private $foxyUpdateFuture = null;
 	private $shouldAutoLaunchAfterDownload = false;
+	private $pendingModpackInstallPath = null;
 
 	private $caUpdateProcess = null;
 	private $uiUpdateProcess = null;
@@ -3715,6 +3716,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			} elseif ($this->modpackSubTab === 7) {
 				// installed modpacks Tab (Index 7)
 				$gridY = $y + 10 - $this->scrollOffset;
+				if ($this->isInstallingModpack || $this->modpackInstallProgress !== "") {
+					$gridY += 46;
+				}
 				foreach ($this->installedModpacks as $slug => $pack) {
 					$packH = 72;
 					if ($cy >= $gridY && $cy <= $gridY + $packH) {
@@ -4522,10 +4526,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 		$pack = $this->installedModpacks[$slug];
 
-		// Ensure we have correct version selected for metadata loading (including loader)
 		if ($pack["mc_version"]) {
 			$loader = strtolower($pack["loader"] ?? "");
 			$found = false;
+
+			// Search remote manifest versions first
 			foreach ($this->versions as $v) {
 				if (isset($v["id"])) {
 					$vId = $v["id"];
@@ -4536,6 +4541,37 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					}
 				}
 			}
+
+			// Fallback: scan local versions directory
+			if (!$found) {
+				$versionsDir = $this->getAbsolutePath($this->settings["game_dir"]) . DIRECTORY_SEPARATOR . "versions";
+				if (is_dir($versionsDir)) {
+					foreach (scandir($versionsDir) as $vDir) {
+						if ($vDir === "." || $vDir === "..") continue;
+						if (strpos($vDir, $pack["mc_version"]) !== false && stripos($vDir, $loader) !== false) {
+							$this->selectedVersion = $vDir;
+							$found = true;
+							break;
+						}
+					}
+				}
+			}
+
+			// Fallback: use the user's currently selected version if it matches loader
+			if (!$found && !empty($this->selectedVersion)) {
+				if (stripos($this->selectedVersion, $loader) !== false) {
+					$found = true;
+				}
+			}
+
+			// Fallback: use config version if it matches loader
+			if (!$found && !empty($this->config["minecraft_version"])) {
+				if (stripos($this->config["minecraft_version"], $loader) !== false) {
+					$this->selectedVersion = $this->config["minecraft_version"];
+					$found = true;
+				}
+			}
+
 			if (!$found) {
 				$this->selectedVersion = $pack["mc_version"];
 			}
@@ -4544,6 +4580,20 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$installPath =
 			$pack["install_path"] ??
 			$this->getAbsolutePath($this->settings["game_dir"]);
+
+		// Check if version is installed locally; if not, download and auto-launch
+		$baseDir = $this->getAbsolutePath($this->settings["game_dir"]);
+		$versionJson = $baseDir . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $this->selectedVersion . DIRECTORY_SEPARATOR . $this->selectedVersion . ".json";
+		if (!file_exists($versionJson)) {
+			$this->pendingModpackInstallPath = $installPath;
+			$this->isInstallingModpack = true;
+			$this->modpackInstallProgress = "DOWNLOADING VERSION {$this->selectedVersion}...";
+			$this->log("Downloading version {$this->selectedVersion} for modpack {$pack["name"]}...");
+			$this->triggerVersionDownload($this->selectedVersion, true);
+			return;
+		}
+
+		$this->pendingModpackInstallPath = null;
 		$this->launchGame($installPath);
 	}
 
@@ -5128,6 +5178,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->isDownloadingAssets = true;
 				$this->assetProgress = 0.0;
 				$this->assetMessage = "DOWNLOADING JAVA JRE...";
+				$this->modpackInstallProgress = $this->assetMessage;
 				$this->shouldAutoLaunchAfterDownload = true;
 				$this->isLaunching = false;
 
@@ -5894,6 +5945,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		
 		// We launch directly, keeping handles open to read stdout/stderr.
 		// To prevent UI freezes, we launch using a parallel thread.
+		$this->isInstallingModpack = false;
 		$this->gameChannel = new \parallel\Channel(\parallel\Channel::Infinite);
 		$this->gameProcess = new \parallel\Runtime();
 		$this->gameProcess->run(function(\parallel\Channel $ch, string $cmd, string $dir) {
@@ -6873,6 +6925,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 									substr($data["name"], 0, 20) .
 									"...";
 							}
+							// Sync to modpack overlay when downloading for a modpack
+							if ($this->pendingModpackInstallPath !== null || $this->isInstallingModpack) {
+								$this->modpackInstallProgress = $this->assetMessage;
+							}
 						} elseif (
 							$isAsset &&
 							isset($data["done"]) &&
@@ -6889,7 +6945,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 							if ($this->shouldAutoLaunchAfterDownload) {
 								$this->shouldAutoLaunchAfterDownload = false;
-								$this->launchGame();
+								$override = $this->pendingModpackInstallPath;
+								$this->pendingModpackInstallPath = null;
+								$this->launchGame($override);
 							}
 						}
 					} elseif (
@@ -6906,6 +6964,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 								"ERROR: " . ($data["message"] ?? "Unknown");
 							$this->shouldAutoLaunchAfterDownload = false;
 							$this->isDownloadingAssets = false;
+							$this->isInstallingModpack = false;
+							$this->modpackInstallProgress = $this->assetMessage;
 							// $this->assetProcess = null;
 							$this->assetChannel = null;
 						} elseif ($isManifest) {
@@ -6997,7 +7057,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			// --- NEW: Handle auto-launch after mod sync ---
 			if ($this->shouldAutoLaunchAfterDownload) {
 				$this->shouldAutoLaunchAfterDownload = false;
-				$this->launchGame();
+				$override = $this->pendingModpackInstallPath;
+				$this->pendingModpackInstallPath = null;
+				$this->launchGame($override);
 			}
 		}
 
@@ -10503,12 +10565,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			}
 		}
 
-		$y = self::HEADER_H + self::TAB_H;
+		$y = self::HEADER_H + 54;
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$h = $this->height - self::TITLEBAR_H - $footerH - $y;
 
-		if ($this->modpackSubTab === 2) {
-			// Installed tab hover
+		if ($this->modpackSubTab === 7) {
+			// Installed modpacks hover
 			$this->modpackUninstallHover = -1;
 			$itemY = $y + 10 - $this->scrollOffset;
 			if ($this->isInstallingModpack || $this->modpackInstallProgress !== "") {
@@ -16245,7 +16307,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		$usableH = $this->height - self::TITLEBAR_H;
-		$yBase = self::HEADER_H + self::TAB_H;
+		$yBase = self::HEADER_H + 54;
 		$showFooter = $this->getFooterVisibility();
 		$effectiveFooterH = $showFooter ? self::FOOTER_H : 0;
 		$h = $usableH - $effectiveFooterH - $yBase;
@@ -16660,8 +16722,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 	private function resolveAutoJavaPath($javaVer)
 	{
-		$base = realpath(self::DATA_DIR . "/jre/jre-$javaVer/bin/javaw.exe");
-		if ($base) return $base;
+		$paths = [
+			self::DATA_DIR . "/jre/jre-$javaVer/bin/javaw.exe",
+			self::DATA_DIR . "/jre/jdk-$javaVer/bin/javaw.exe",
+		];
+		foreach ($paths as $p) {
+			$base = realpath($p);
+			if ($base) return $base;
+		}
 		return null;
 	}
 
@@ -20187,59 +20255,104 @@ class FoxyJreDownloadJob
 
 		$ch->send(json_encode(["type" => "progress", "pct" => 0, "msg" => "Fetching latest JRE info..."]));
 
-		// Fetch latest release from GitHub API
-		$apiUrl = "https://api.github.com/repos/adoptium/temurin{$javaVer}-binaries/releases/latest";
-		$curl = curl_init($apiUrl);
+		// Try Adoptium API first (more reliable), fall back to GitHub API
+		$assetUrl = null;
+		$assetName = null;
+		$isJdk = false;
+
+		$adoptApiUrl = "https://api.adoptium.net/v3/assets/latest/{$javaVer}/hotspot?architecture=x64&image_type=jre&os=windows&vendor=eclipse";
+		$curl = curl_init($adoptApiUrl);
 		curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
 		curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
 		curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/1.0");
-		curl_setopt($curl, CURLOPT_HTTPHEADER, ["Accept: application/json"]);
+		curl_setopt($curl, CURLOPT_TIMEOUT, 15);
 		if (file_exists($cacert)) curl_setopt($curl, CURLOPT_CAINFO, $cacert);
-		$apiRes = curl_exec($curl);
-		$apiCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+		$adoptRes = curl_exec($curl);
+		$adoptCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
 		curl_close($curl);
 
-		if ($apiCode !== 200 || !$apiRes) {
-			$ch->send(json_encode(["type" => "error", "message" => "Failed to fetch latest JRE info (HTTP $apiCode)"]));
-			$ch->close();
-			return;
-		}
-
-		$release = json_decode($apiRes, true);
-		$tagName = $release["tag_name"] ?? null;
-		if (!$tagName) {
-			$ch->send(json_encode(["type" => "error", "message" => "Invalid release data from GitHub"]));
-			$ch->close();
-			return;
-		}
-
-		// Find Windows x64 JRE zip asset
-		$assetUrl = null;
-		$assetName = null;
-		foreach ($release["assets"] ?? [] as $asset) {
-			$name = $asset["name"] ?? "";
-			if (
-				stripos($name, "jre") !== false &&
-				stripos($name, "windows") !== false &&
-				stripos($name, "x64") !== false &&
-				substr($name, -4) === ".zip"
-			) {
-				$assetUrl = $asset["browser_download_url"] ?? null;
-				$assetName = $name;
-				break;
+		if ($adoptCode === 200 && $adoptRes) {
+			$assets = json_decode($adoptRes, true);
+			if (is_array($assets) && count($assets) > 0) {
+				$binary = $assets[0]["binary"] ?? [];
+				$pkg = $binary["package"] ?? [];
+				$assetUrl = $pkg["link"] ?? null;
+				$assetName = $pkg["name"] ?? "jre-windows-x64.zip";
+				$tagName = $binary["release_name"] ?? "jdk-{$javaVer}";
 			}
 		}
 
 		if (!$assetUrl) {
-			$ch->send(json_encode(["type" => "error", "message" => "No Windows x64 JRE asset found in latest release"]));
+			// Fallback: Fetch latest release from GitHub API
+			$apiUrl = "https://api.github.com/repos/adoptium/temurin{$javaVer}-binaries/releases/latest";
+			$curl = curl_init($apiUrl);
+			curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+			curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+			curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/1.0");
+			curl_setopt($curl, CURLOPT_HTTPHEADER, ["Accept: application/json"]);
+			curl_setopt($curl, CURLOPT_TIMEOUT, 15);
+			if (file_exists($cacert)) curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+			$apiRes = curl_exec($curl);
+			$apiCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+			curl_close($curl);
+
+			if ($apiCode === 200 && $apiRes) {
+				$release = json_decode($apiRes, true);
+				$tagName = $release["tag_name"] ?? null;
+				if ($tagName) {
+					foreach ($release["assets"] ?? [] as $asset) {
+						$name = $asset["name"] ?? "";
+						if (
+							stripos($name, "windows") !== false &&
+							stripos($name, "x64") !== false &&
+							substr($name, -4) === ".zip"
+						) {
+							if (stripos($name, "jre") !== false) {
+								$assetUrl = $asset["browser_download_url"] ?? null;
+								$assetName = $name;
+								$isJdk = false;
+								break;
+							}
+							if (stripos($name, "jdk") !== false && !$assetUrl) {
+								$assetUrl = $asset["browser_download_url"] ?? null;
+								$assetName = $name;
+								$isJdk = true;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if (!$assetUrl) {
+			// Last resort: try a known working JRE download
+			$knownJre = "https://github.com/adoptium/temurin{$javaVer}-binaries/releases/download/jdk-{$javaVer}.0.6+7/OpenJDK{$javaVer}U-jre_x64_windows_hotspot_{$javaVer}.0.6_7.zip";
+			$curl = curl_init($knownJre);
+			curl_setopt($curl, CURLOPT_NOBODY, true);
+			curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+			curl_setopt($curl, CURLOPT_TIMEOUT, 10);
+			if (file_exists($cacert)) curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+			curl_exec($curl);
+			$code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+			curl_close($curl);
+			if ($code === 200) {
+				$assetUrl = $knownJre;
+				$assetName = basename($knownJre);
+				$tagName = "jdk-{$javaVer}.0.6+7";
+			}
+		}
+
+		if (!$assetUrl) {
+			$ch->send(json_encode(["type" => "error", "message" => "Failed to find JRE for Java {$javaVer}. Please install Java manually."]));
 			$ch->close();
 			return;
 		}
 
-		$stripPrefix = $tagName . "-jre";
+		$dlTarget = $dataDir . "/jre/jre-$javaVer";
 		$zipPath = $cacheDir . "/" . $assetName;
 		$zipDir = dirname($zipPath);
 		if (!is_dir($zipDir)) @mkdir($zipDir, 0777, true);
+		if (!is_dir(dirname($dlTarget))) @mkdir(dirname($dlTarget), 0777, true);
 
 		// Download
 		$ch->send(json_encode(["type" => "progress", "pct" => 1, "msg" => "Downloading Java JRE..."]));
@@ -20272,19 +20385,44 @@ class FoxyJreDownloadJob
 		$ch->send(json_encode(["type" => "progress", "pct" => 92, "msg" => "Extracting JRE..."]));
 		$zip = new \ZipArchive();
 		if ($zip->open($zipPath) === true) {
-			for ($i = 0; $i < $zip->numFiles; $i++) {
+			// Auto-detect the root directory prefix from the zip
+			$stripPrefix = null;
+			for ($i = 0; $i < min(50, $zip->numFiles); $i++) {
 				$name = $zip->getNameIndex($i);
-				if (strpos($name, "$stripPrefix/") === 0) {
-					$newName = substr($name, strlen($stripPrefix) + 1);
-					if ($newName === "") continue;
-					$dest = $targetDir . "/" . $newName;
-					if (substr($name, -1) === "/") { @mkdir($dest, 0777, true); }
-					else { @mkdir(dirname($dest), 0777, true); copy("zip://$zipPath#$name", $dest); }
+				if (substr($name, -1) === "/" && ($pos = strpos($name, "/")) !== false) {
+					$stripPrefix = substr($name, 0, $pos);
+					break;
+				}
+			}
+			if (!$stripPrefix && $zip->numFiles > 0) {
+				$name = $zip->getNameIndex(0);
+				if (($pos = strpos($name, "/")) !== false) {
+					$stripPrefix = substr($name, 0, $pos);
+				}
+			}
+			if ($stripPrefix) {
+				for ($i = 0; $i < $zip->numFiles; $i++) {
+					$name = $zip->getNameIndex($i);
+					if (strpos($name, "$stripPrefix/") === 0) {
+						$newName = substr($name, strlen($stripPrefix) + 1);
+						if ($newName === "") continue;
+						$dest = $dlTarget . "/" . $newName;
+						if (substr($name, -1) === "/") { @mkdir($dest, 0777, true); }
+						else { @mkdir(dirname($dest), 0777, true); copy("zip://$zipPath#$name", $dest); }
+					}
 				}
 			}
 			$zip->close();
 		}
 		@unlink($zipPath);
+
+		// Verify extraction produced the expected binary
+		$checkPath = $dlTarget . "/bin/javaw.exe";
+		if (!file_exists($checkPath)) {
+			$ch->send(json_encode(["type" => "error", "message" => "JRE extract failed: javaw.exe not found at $checkPath"]));
+			$ch->close();
+			return;
+		}
 
 		$ch->send(json_encode(["type" => "progress", "msg" => "JRE ready!"]));
 		$ch->send(json_encode(["type" => "progress", "done" => true]));
