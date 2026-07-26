@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.8";
+	public const VERSION = "1.4.9";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -307,6 +307,16 @@ class FoxyClient {
 	private $lastKnownActiveIdx = []; // level_base => idx
 	private $lastModrinthMCVer = null; // MC version associated with cache
 	private $lastModrinthLoader = null; // Loader associated with cache
+	private $lastModrinthShaderCat = null;
+	private $lastModrinthShaderFeat = null;
+	private $lastModrinthShaderPerf = null;
+	private $lastModrinthShaderLoad = null;
+	private $lastModrinthModpackCat = null;
+	private $lastModrinthModpackEnv = null;
+	private $lastModrinthModpackLoad = null;
+	private $lastModrinthResCat = null;
+	private $lastModrinthResFeat = null;
+	private $lastModrinthResRes = null;
 	private $modSearchDebounceTimer = 0; // Timestamp when debounce finishes
 	private $modSearchFocus = false;
 	private $isSearchingModrinth = false;
@@ -3555,9 +3565,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$ddX = $pillRect[0];
 				$ddY = $pillRect[1] + $pillRect[3] + 4;
 				$ddW = 220;
-				if ($key === "env") $ddW = 180;
+				if ($key === "env" || $key === "modpack_env") $ddW = 200;
+				elseif ($key === "loader" || $key === "modpack_loader") $ddW = 180;
+				elseif ($key === "res_resolution") $ddW = 200;
 				elseif ($key === "version") $ddW = 160;
-				elseif (in_array($key, ["category", "modpack_category", "res_category", "res_feature"])) $ddW = 240;
+				elseif (in_array($key, ["category", "modpack_category", "res_category", "res_feature", "shader_category", "shader_feature", "shader_perf", "shader_loader"])) $ddW = 240;
 				
 				$items = [];
 				if ($key === "category") {
@@ -3574,6 +3586,36 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					if (empty($releaseVersions)) $releaseVersions = [$this->config["minecraft_version"]];
 					usort($releaseVersions, fn($a, $b) => version_compare($b, $a));
 					foreach ($releaseVersions as $ver) $items[] = [$ver, $ver];
+				} elseif ($key === "modpack_category") {
+					$cats = ["adventure","challenging","combat","kitchen-sink","lightweight","magic","multiplayer","optimization","quests","technology"];
+					$items[] = ["", "All Categories"];
+					foreach ($cats as $c) $items[] = [$c, ucwords(str_replace("-", " ", $c))];
+				} elseif ($key === "modpack_env") {
+					$items = [["", "All"], ["client", "Client"], ["server", "Server"]];
+				} elseif ($key === "modpack_loader") {
+					$items = [["", "All Loaders"], ["fabric","Fabric"], ["forge","Forge"], ["neoforge","NeoForge"], ["quilt","Quilt"]];
+				} elseif ($key === "res_category") {
+					$cats = ["combat","cursed","decoration","modded","realistic","simplistic","themed","tweaks","utility","vanilla-like"];
+					$items[] = ["", "All Categories"];
+					foreach ($cats as $c) $items[] = [$c, ucwords(str_replace("-", " ", $c))];
+				} elseif ($key === "res_feature") {
+					$fts = ["audio","blocks","core-shaders","entities","environment","equipment","fonts","gui","items","locale","models"];
+					$items[] = ["", "All Features"];
+					foreach ($fts as $f) $items[] = [$f, ucwords(str_replace("-", " ", $f))];
+				} elseif ($key === "res_resolution") {
+					$items = [["", "All Resolutions"], ["8x","8x or lower"], ["16x","16x"], ["32x","32x"], ["48x","48x"], ["64x","64x"], ["128x","128x"], ["256x","256x"], ["512x","512x or higher"]];
+				} elseif ($key === "shader_category") {
+					$cats = ["cartoon","cursed","fantasy","realistic","semi-realistic","vanilla-like"];
+					$items[] = ["", "All Categories"];
+					foreach ($cats as $c) $items[] = [$c, ucwords(str_replace("-", " ", $c))];
+				} elseif ($key === "shader_feature") {
+					$fts = ["atmosphere","bloom","colored-lighting","foliage","path-tracing","pbr","reflections","shadows"];
+					$items[] = ["", "All Features"];
+					foreach ($fts as $f) $items[] = [$f, ucwords(str_replace("-", " ", $f))];
+				} elseif ($key === "shader_perf") {
+					$items = [["", "Performance impact"], ["potato","Potato"], ["low","Low"], ["medium","Medium"], ["high","High"], ["screenshot","Screenshot"]];
+				} elseif ($key === "shader_loader") {
+					$items = [["", "All Loaders"], ["iris","Iris"], ["optifine","OptiFine"], ["vanilla","Vanilla Shader"]];
 				}
 
 				if (!empty($items)) {
@@ -18753,7 +18795,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			serialize($versions) !== serialize($this->lastModrinthMCVer) ||
 			serialize($loaders) !== serialize($this->lastModrinthLoader) ||
 			serialize($this->modsFilterCategories) !== serialize($this->lastModrinthCategory) ||
-			serialize($this->modsFilterEnvs) !== serialize($this->lastModrinthEnv);
+			serialize($this->modsFilterEnvs) !== serialize($this->lastModrinthEnv) ||
+			serialize($this->shaderFilterCategories) !== serialize($this->lastModrinthShaderCat) ||
+			serialize($this->shaderFilterFeatures) !== serialize($this->lastModrinthShaderFeat) ||
+			serialize($this->shaderFilterPerformance) !== serialize($this->lastModrinthShaderPerf) ||
+			serialize($this->shaderFilterLoaders) !== serialize($this->lastModrinthShaderLoad) ||
+			serialize($this->modpackFilterCategories) !== serialize($this->lastModrinthModpackCat) ||
+			serialize($this->modpackFilterEnvs) !== serialize($this->lastModrinthModpackEnv) ||
+			serialize($this->modpackFilterLoaders) !== serialize($this->lastModrinthModpackLoad) ||
+			serialize($this->resFilterCategories) !== serialize($this->lastModrinthResCat) ||
+			serialize($this->resFilterFeatures) !== serialize($this->lastModrinthResFeat) ||
+			serialize($this->resFilterResolutions) !== serialize($this->lastModrinthResRes);
 
 		if ($contextChanged) {
 			$this->log("Search context changed. Clearing cache.");
@@ -18766,6 +18818,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->lastModrinthLoader = $loaders;
 			$this->lastModrinthCategory = $this->modsFilterCategories;
 			$this->lastModrinthEnv = $this->modsFilterEnvs;
+			$this->lastModrinthShaderCat = $this->shaderFilterCategories;
+			$this->lastModrinthShaderFeat = $this->shaderFilterFeatures;
+			$this->lastModrinthShaderPerf = $this->shaderFilterPerformance;
+			$this->lastModrinthShaderLoad = $this->shaderFilterLoaders;
+			$this->lastModrinthModpackCat = $this->modpackFilterCategories;
+			$this->lastModrinthModpackEnv = $this->modpackFilterEnvs;
+			$this->lastModrinthModpackLoad = $this->modpackFilterLoaders;
+			$this->lastModrinthResCat = $this->resFilterCategories;
+			$this->lastModrinthResFeat = $this->resFilterFeatures;
+			$this->lastModrinthResRes = $this->resFilterResolutions;
 			$this->modSearchQuery = $query;
 		}
 
