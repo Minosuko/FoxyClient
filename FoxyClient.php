@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.9";
+	public const VERSION = "1.4.10";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -14187,6 +14187,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$this->localMods = $results;
 		$this->isScanningLocalMods = false;
+		$this->needsRedraw = true;
 	}
 
 	private function getInstalledModInfo($slug, $projectType)
@@ -14337,7 +14338,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if (file_exists($path)) {
 			if (@rename($path, $newPath)) {
 				$this->log("Toggled mod: " . basename($path) . " -> " . basename($newPath));
-				$this->scanLocalMods(); // Refresh list
+				$this->scanLocalContent();
+				$this->needsRedraw = true;
 			} else {
 				$this->log("Failed to toggle mod: " . basename($path), "ERROR");
 			}
