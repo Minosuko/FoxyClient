@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.10";
+	public const VERSION = "1.4.11";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -1446,6 +1446,7 @@ class FoxyClient {
 			$types .
 				"
 			HWND CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpWindowName, DWORD dwStyle, int X, int Y, int nWidth, int nHeight, HWND hWndParent, HMENU hMenu, HINSTANCE hInstance, LPVOID lpParam);
+			int GetSystemMetrics(int nIndex);
 			int MessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType);
 			HDC GetDC(HWND hWnd);
 			int ReleaseDC(HWND hWnd, HDC hDC);
@@ -2064,7 +2065,9 @@ class FoxyClient {
 
 		// 2. Create Real Window with MSAA
 		$dwStyle = 0x96000000;
-		$this->hwnd = $this->user32->CreateWindowExA(0, $className, "Foxy Client", $dwStyle, 100, 100, $this->width, $this->height, null, null, $inst, null);
+		$winX = max(0, (int)(($this->user32->GetSystemMetrics(0) - $this->width) / 2));
+		$winY = max(0, (int)(($this->user32->GetSystemMetrics(1) - $this->height) / 2));
+		$this->hwnd = $this->user32->CreateWindowExA(0, $className, "Foxy Client", $dwStyle, $winX, $winY, $this->width, $this->height, null, null, $inst, null);
 		$this->hdc = $this->user32->GetDC($this->hwnd);
 
 		$pixelFormat = 0;
@@ -11028,7 +11031,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					}
 					pclose(popen('explorer "' . str_replace('/', '\\', $target) . '"', 'r'));
 				}
-			} elseif ($idx === 8) {
+			} elseif ($idx === 9) {
 				// Clear Minecraft Log
 				$bx = $fieldX + $fieldW - 140;
 				$bw = 140;
