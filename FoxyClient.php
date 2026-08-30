@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.12";
+	public const VERSION = "1.4.13";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -5500,20 +5500,22 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		// Find and add version jars (Ensuring both loader and vanilla are present if needed)
-		// Detect NeoForge: skip the loader version jar since NeoForge's production client provider
-		// discovers the correct client jar at runtime, and the version jar causes module conflicts.
-		$isNeoForge = false;
+		// Detect Forge/NeoForge: skip the loader version jar since Forge/NeoForge's production
+		// client provider discovers the correct client jar at runtime, and the version jar causes
+		// module conflicts (e.g. Forge._1._20._1 vs minecraft, NeoForge._1._21._1 vs minecraft).
+		$isForgeLoader = false;
 		if (isset($vData["libraries"])) {
 			foreach ($vData["libraries"] as $lib) {
-				if (strpos($lib["name"] ?? "", "net.neoforged") === 0) {
-					$isNeoForge = true;
+				$name = $lib["name"] ?? "";
+				if (strpos($name, "net.neoforged") === 0 || strpos($name, "net.minecraftforge") === 0) {
+					$isForgeLoader = true;
 					break;
 				}
 			}
 		}
 
 		$versionJars = [];
-		if (!$isNeoForge) {
+		if (!$isForgeLoader) {
 			$versionJars[] =
 				$baseDir .
 				DIRECTORY_SEPARATOR .
@@ -20910,9 +20912,3 @@ class DiscordRPC
 		}
 	}
 }
-
-
-
-
-
-
