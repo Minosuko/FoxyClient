@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.11";
+	public const VERSION = "1.4.12";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -5368,10 +5368,15 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							$allowed = ($rule["action"] ?? "allow") === "allow";
 						}
 					}
-					if (!$allowed) {
-						continue;
-					}
+				if (!$allowed) {
+					continue;
 				}
+			}
+
+			// NeoForge/Fabric: skip downloadOnly libraries (discovered at runtime by the loader)
+			if (!empty($lib["downloadOnly"])) {
+				continue;
+			}
 
 				$path = null;
 				if (isset($lib["downloads"]["artifact"]["path"])) {
@@ -5410,11 +5415,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							".jar";
 					}
 				}
-				if ($path) {
-					if (file_exists($path)) {
-						$cp[] = realpath($path);
+			if ($path) {
+				if (file_exists($path)) {
+					$abs = realpath($path);
+					if ($abs && !in_array($abs, $cp)) {
+						$cp[] = $abs;
 					}
 				}
+			}
 
 				// --- NEW: Native Library Processing ---
 				$nativePath = null;
@@ -5454,11 +5462,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					}
 				}
 				
-				if ($nativePath && file_exists($nativePath)) {
-					// LWJGL 3.3+ extracts from classpath automatically
-					$cp[] = realpath($nativePath);
-					$nativesToExtract[] = realpath($nativePath);
+			if ($nativePath && file_exists($nativePath)) {
+				// LWJGL 3.3+ extracts from classpath automatically
+				$abs = realpath($nativePath);
+				if ($abs && !in_array($abs, $cp)) {
+					$cp[] = $abs;
 				}
+				$nativesToExtract[] = realpath($nativePath);
+			}
 			}
 			
 			// Extract all detected natives to the version's natives folder
@@ -5489,16 +5500,30 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		// Find and add version jars (Ensuring both loader and vanilla are present if needed)
+		// Detect NeoForge: skip the loader version jar since NeoForge's production client provider
+		// discovers the correct client jar at runtime, and the version jar causes module conflicts.
+		$isNeoForge = false;
+		if (isset($vData["libraries"])) {
+			foreach ($vData["libraries"] as $lib) {
+				if (strpos($lib["name"] ?? "", "net.neoforged") === 0) {
+					$isNeoForge = true;
+					break;
+				}
+			}
+		}
+
 		$versionJars = [];
-		$versionJars[] =
-			$baseDir .
-			DIRECTORY_SEPARATOR .
-			"versions" .
-			DIRECTORY_SEPARATOR .
-			$version .
-			DIRECTORY_SEPARATOR .
-			$version .
-			".jar";
+		if (!$isNeoForge) {
+			$versionJars[] =
+				$baseDir .
+				DIRECTORY_SEPARATOR .
+				"versions" .
+				DIRECTORY_SEPARATOR .
+				$version .
+				DIRECTORY_SEPARATOR .
+				$version .
+				".jar";
+		}
 
 		if (isset($vData["inheritsFrom"])) {
 			$parent = $vData["inheritsFrom"];
@@ -5520,6 +5545,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$cp[] = $abs;
 				}
 			}
+		}
+
+		// Filter out vanilla client-*-srg.jar when neoforge-*-client.jar is present
+		// NeoForge client jar replaces the vanilla SRG jar; having both causes module ResolutionException
+		$hasNeoForgeClient = false;
+		foreach ($cp as $entry) {
+			if (preg_match('/neoforge-[\d.]+-client\.jar$/i', $entry)) {
+				$hasNeoForgeClient = true;
+				break;
+			}
+		}
+		if ($hasNeoForgeClient) {
+			$cp = array_values(array_filter($cp, function($entry) {
+				return !preg_match('/client-[\d.\-]+-srg\.jar$/i', $entry);
+			}));
 		}
 
 		$cpString = implode(";", $cp);
