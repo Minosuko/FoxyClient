@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.13";
+	public const VERSION = "1.4.14";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -1228,7 +1228,7 @@ class FoxyClient {
 			}
 		} catch (\Throwable $e) {
 			$this->log("Failed to detect system RAM: " . $e->getMessage(), "ERROR");
-			$this->systemRamMB = 32768; // Default fallback
+			$this->systemRamMB = 8192; // Default fallback
 		}
 	}
 
