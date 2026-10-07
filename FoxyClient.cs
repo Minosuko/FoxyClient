@@ -61,6 +61,22 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         // Force TLS 1.2 for GitHub downloads (critical for .NET 4.0/4.5)
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
 
+        // Version probes print and exit: no console hiding, no cert checks, no launch.
+        if (args.Contains("--version"))
+        {
+            Console.WriteLine("FoxyClient Launcher v1.13");
+            return;
+        }
+        if (args.Contains("--php-version"))
+        {
+            Environment.ExitCode = PrintPhpVersion();
+            return;
+        }
+        if (args.Contains("--script-version"))
+        {
+            Environment.ExitCode = PrintScriptVersion();
+            return;
+        }
         bool isUpdate = args.Contains("--update");
         bool isUninstall = args.Contains("--uninstall");
         bool isUnsigned = args.Contains("--unsigned");
@@ -111,6 +127,9 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
 
         if (isUnsigned)
             Log("Skipping integrity verification (--unsigned flag).");
+
+        // Keep the recorded version in sync with the script that is about to run
+        WriteRegistryVersion();
 
         LaunchClient();
     }
@@ -477,20 +496,8 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
 
             Log("Post-update integrity check passed.");
 
-            // Write version to registry
-            try
-            {
-                string version = ExtractVersionFromScript(ScriptPath);
-                if (!string.IsNullOrEmpty(version))
-                {
-                    Microsoft.Win32.Registry.SetValue(@"HKEY_CURRENT_USER\Software\FoxyClient", "Version", version);
-                    Log("Registry version set to: " + version);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("Registry write warning: " + ex.Message);
-            }
+            // Write version to registry on every update
+            WriteRegistryVersion();
 
             setStatus("Update complete!", 100);
             await Task.Delay(800);
@@ -884,6 +891,123 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
         }
         catch { }
         return null;
+    }
+
+    /// <summary>
+    /// Prints the PHP runtime version (--php-version). Prefers the bundled
+    /// php.exe, falls back to a php.exe found on PATH.
+    /// Returns the process exit code (0 = found, 1 = not found).
+    /// </summary>
+    private static int PrintPhpVersion()
+    {
+        string version = RunPhpVersionQuery(PhpPath);
+        if (version != null)
+        {
+            Console.WriteLine("PHP " + version);
+            return 0;
+        }
+
+        version = RunPhpVersionQuery("php");
+        if (version != null)
+        {
+            Console.WriteLine("PHP " + version + " (system)");
+            return 0;
+        }
+
+        Console.WriteLine("PHP runtime not found (expected at: " + PhpPath + ")");
+        return 1;
+    }
+
+    /// <summary>
+    /// Runs "php -r echo PHP_VERSION;" with a hidden window and returns the
+    /// trimmed version, or null when the binary is missing or fails.
+    /// </summary>
+    private static string RunPhpVersionQuery(string phpExe)
+    {
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = phpExe;
+            psi.Arguments = "-r \"echo PHP_VERSION;\"";
+            psi.UseShellExecute = false;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.CreateNoWindow = true;
+            psi.WorkingDirectory = AppDir;
+
+            using (Process process = Process.Start(psi))
+            {
+                if (process == null) return null;
+                string output = process.StandardOutput.ReadToEnd().Trim();
+                process.WaitForExit(10000);
+                if (process.ExitCode != 0 || output.Length == 0)
+                {
+                    Log("PHP version query for '" + phpExe + "' returned exit code " + process.ExitCode + ".");
+                    return null;
+                }
+                return output;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("PHP version query failed for '" + phpExe + "': " + ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Prints the FoxyClient.php version (--script-version).
+    /// Returns the process exit code (0 = found, 1 = not found).
+    /// </summary>
+    private static int PrintScriptVersion()
+    {
+        if (!File.Exists(ScriptPath))
+        {
+            Console.WriteLine("FoxyClient.php not found: " + ScriptPath);
+            return 1;
+        }
+
+        string version = ExtractVersionFromScript(ScriptPath);
+        if (version == null)
+        {
+            Console.WriteLine("No VERSION constant found in: " + ScriptPath);
+            return 1;
+        }
+
+        Console.WriteLine("FoxyClient.php " + version);
+        return 0;
+    }
+
+    /// <summary>
+    /// Stores the FoxyClient.php version at HKCU\Software\FoxyClient\Version so
+    /// the installed version is recorded after every update and on every launch.
+    /// </summary>
+    private static bool WriteRegistryVersion()
+    {
+        try
+        {
+            if (!File.Exists(ScriptPath))
+            {
+                Log("Registry version not written: script missing at " + ScriptPath);
+                return false;
+            }
+
+            string version = ExtractVersionFromScript(ScriptPath);
+            if (string.IsNullOrEmpty(version))
+            {
+                Log("Registry version not written: no VERSION constant in script.");
+                return false;
+            }
+
+            Microsoft.Win32.Registry.SetValue(@"HKEY_CURRENT_USER\Software\FoxyClient", "Version", version);
+            Log("Registry version set to: " + version);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("Registry version write warning: " + ex.Message);
+            return false;
+        }
     }
 
     private static string FormatBytes(long bytes)

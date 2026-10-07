@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.14";
+	public const VERSION = "1.4.15";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -89,6 +89,9 @@ class FoxyClient {
 	private const LOG_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "logs";
 	private const LATEST_LOG = self::LOG_DIR . DIRECTORY_SEPARATOR . "latest.log";
 	private const ICON_CACHE_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "cache" . DIRECTORY_SEPARATOR . "icons";
+	private const FONTS_DIR = self::DATA_DIR . DIRECTORY_SEPARATOR . "fonts";
+	// Pseudo entry appended to every font dropdown: opens the "install font" file dialog
+	private const FONT_INSTALL_ITEM = "+ Install font...";
 
 	private const ELY_ENDPOINT = "ely.by";
 	private const FOXY_ENDPOINT = "foxyclient.qzz.io";
@@ -102,6 +105,10 @@ class FoxyClient {
 	private $localServerSslPid = 0;
 	private $uploadSkinMessage = "";
 	private $uploadSkinMessageTimer = 0;
+	private $fontNotice = "";
+	private $fontNoticeTimer = 0;
+	// Family diff applied once the font rebuild that follows an install finishes
+	private $pendingInstallFont = null; // ['before' => string[], 'key' => 'font_launcher'|'font_overlay']
 
 	// Login system state
 	private $loginType = self::ACC_OFFLINE; // current sub-mode of login
@@ -517,6 +524,12 @@ class FoxyClient {
 	private $crashCause = "";
 	private $crashSolution = "";
 	private $crashCloseHover = false;
+	private $crashSource = "";          // human readable origin of the analysis (file name)
+	private $crashFiles = [];           // absolute paths of logs/reports found for this crash
+	private $crashScroll = 0;           // scroll offset of the crash modal body
+	private $crashBtnHover = "";        // '' | 'close' | 'open' | 'folder'
+	private $lastGameDir = "";          // instance dir used by the last launch
+	private $gameStartTime = 0;         // unix time of the last launch (new crash report marker)
 	private $gameLogBuffer = [];
 	private $argfileToDelete = "";
 
@@ -583,7 +596,7 @@ class FoxyClient {
 		"enable_modpack" => false,
 		"separate_modpack_folder" => false,
 		"font_launcher" => "Nunito",
-		"font_overlay" => "Consolas",
+		"font_overlay" => "Nunito",
 	];
 
 	private $settings = [
@@ -605,11 +618,22 @@ class FoxyClient {
 		"enable_modpack" => false,
 		"separate_modpack_folder" => false,
 		"font_launcher" => "Nunito",
-		"font_overlay" => "Consolas",
+		"font_overlay" => "Nunito",
 	];
 
-	// Available fonts for selection (populated dynamically from FoxyClient/fonts/*.ttf)
+	// Available fonts for selection (populated dynamically from FoxyClient/fonts/*.ttf
+	// plus every font family installed on this PC - auto detected at startup)
 	private $availableFonts = ["Nunito", "Open Sans"];
+	private $bundledFonts = [];     // selectable families found in FoxyClient/fonts
+	private $overlayFonts = [];     // fonts offered for the in-game overlay (DATA_DIR/fonts too)
+	private $fontCollection = null;   // GDI+ private collection holding the bundled fonts
+	private $iconFontFace = null;     // family name of the bundled icon font
+	private $addedFontFiles = [];     // FR_PRIVATE font files registered by the last init
+	private $fontsReady = false;    // true once the very first atlas build finished
+	private $atlasStaging = null;   // when an array, atlases are built here before swapping
+	private $fontGen = 0;           // bumped on every atlas swap (invalidates width cache)
+	private $textWidthCache = [];   // getTextWidth cache (cleared when atlases are swapped)
+	private $propFontScroll = 0;    // pixel scroll offset of the font dropdown list
 
 	// Home Page system
 	private $homeAccDropdownOpen = false;
@@ -1069,7 +1093,7 @@ class FoxyClient {
 			$this->showConsole();
 		}
 
-		$this->isLoadingFonts = true; $this->fontGenerator = $this->initFontsAsync(); // Load version cache first
+		$this->initFonts(); // Async atlas build (shows progress on the splash screen)
 		$cacheFile = self::CACHE_DIR . DIRECTORY_SEPARATOR . "versions_cache.json";
 		if (file_exists($cacheFile)) {
 			$cacheData = json_decode(file_get_contents($cacheFile), true);
@@ -1743,6 +1767,11 @@ class FoxyClient {
 						$wHigh = ($wparam >> 16) & 0xffff;
 						$delta = $wHigh > 0x7fff ? $wHigh - 0x10000 : $wHigh;
 
+						if ($this->crashModalOpen) {
+							$this->crashScroll = max(0.0, min($this->getCrashScrollMax(), $this->crashScroll - $delta / 3));
+							return 0;
+						}
+
 						if ($this->currentPage === self::PAGE_MODS) {
 							if ($this->modsFilterDropdown !== "") {
 								$this->modsFilterScrollTarget -= $delta / 3;
@@ -1766,9 +1795,16 @@ class FoxyClient {
 							if ($this->vScrollTarget > $maxScroll) {
 								$this->vScrollTarget = $maxScroll;
 							}
-						} elseif (
-							$this->currentPage === self::PAGE_PROPERTIES
-						) {
+					} elseif (
+						$this->currentPage === self::PAGE_PROPERTIES
+					) {
+						if ($this->propFontDropdownOpen !== "" && $this->propSubTab === 1) {
+							// Scroll the font list instead of the panel behind it
+							$fontItems = $this->getFontDropdownItems();
+							[, , , $fItemH, $fMaxVisible] = $this->getFontDropdownGeometry();
+							$fMax = max(0, count($fontItems) * $fItemH - $fMaxVisible * $fItemH);
+							$this->propFontScroll = max(0, min($fMax, $this->propFontScroll - $delta / 3));
+						} else {
 							$this->propScrollTarget -= $delta / 3;
 							if ($this->propScrollTarget < 0) {
 								$this->propScrollTarget = 0;
@@ -1776,7 +1812,8 @@ class FoxyClient {
 							if ($this->propScrollTarget > 200) {
 								$this->propScrollTarget = 200;
 							}
-						} elseif (
+						}
+					} elseif (
 							$this->currentPage === self::PAGE_FOXYCLIENT
 						) {
 							switch($this->foxySubTab) {
@@ -2129,11 +2166,26 @@ class FoxyClient {
 	{
 		$gp = $this->gdiplus;
 		$gdi = $this->gdi32;
-		$this->availableFonts = []; // Zero out defaults to ensure 100% accurate registry matching
-		
+		$this->availableFonts = []; // Zero out defaults so the rebuilt lists come from DATA_DIR/fonts
+		$this->bundledFonts = [];
+		$this->overlayFonts = [];
+		$this->iconFontFace = null;
+		$this->atlasStaging = []; // Build into a staging area, swap in atomically when finished
+
 		yield "Loading font definitions...";
 
-		// 1. Create Private Font Collection
+		// 1. Release the previous private collection / FR_PRIVATE resources (a font
+		//    change rebuilds everything, and GDI+ handles would otherwise pile up)
+		foreach ($this->addedFontFiles as $prev) {
+			$gdi->RemoveFontResourceExA($prev, 0x10, null);
+		}
+		$this->addedFontFiles = [];
+		if ($this->fontCollection !== null) {
+			$gp->GdipDeletePrivateFontCollection(FFI::addr($this->fontCollection));
+			$this->fontCollection = null;
+		}
+
+		// 2. Create Private Font Collection
 		$this->fontCollection = $gp->new("void*");
 		$gp->GdipNewPrivateFontCollection(FFI::addr($this->fontCollection));
 		
@@ -2144,62 +2196,101 @@ class FoxyClient {
 			return $ptr;
 		};
 
-		// 2. Load Launcher Fonts
+		// 3. Load Launcher Fonts (only DATA_DIR/fonts is ever used as a text font)
 		$fontDir = self::DATA_DIR . "/fonts";
 		if (is_dir($fontDir)) {
-			foreach (glob("$fontDir/*.ttf") as $ttf) {
+			$fontFiles = array_merge(
+				glob("$fontDir/*.ttf") ?: [],
+				glob("$fontDir/*.otf") ?: [],
+				glob("$fontDir/*.ttc") ?: []
+			);
+			foreach ($fontFiles as $ttf) {
 				$gp->GdipPrivateAddFontFile($this->fontCollection, $toWide($ttf));
-				$gdi->AddFontResourceExA($ttf, 0x10, null); // Keep for potential GDI fallbacks
+				if ($gdi->AddFontResourceExA($ttf, 0x10, null) > 0) { // Also register GDI-side for the overlay thread
+					$this->addedFontFiles[] = $ttf;
+				}
 			}
 		}
 
-		// 3. Load Icon Font
+		// 4. Families available right now = exactly the fonts shipped in DATA_DIR/fonts
+		$this->bundledFonts = $this->collectFontFamilies($this->fontCollection);
+		$this->log("Initialized Private Font Collection: " . count($this->bundledFonts) . " bundled families discovered.");
+
+		// 5. Load the icon font last: whatever family it adds must never become selectable
 		$iconPath = self::DATA_DIR . "/data/icon_font.ttf";
 		if (file_exists($iconPath)) {
 			$gp->GdipPrivateAddFontFile($this->fontCollection, $toWide($iconPath));
-			$gdi->AddFontResourceExA($iconPath, 0x10, null);
-		}
-
-		// 4. Discover Families in Collection
-		$count = $gp->new("int");
-		$gp->GdipGetFontCollectionFamilyCount($this->fontCollection, FFI::addr($count));
-		$this->log("Initialized Private Font Collection: {$count->cdata} families discovered.");
-		
-		if ($count->cdata > 0) {
-			$fams = $gp->new("void*[{$count->cdata}]");
-			$foundCount = $gp->new("int");
-			$gp->GdipGetFontCollectionFamilyList($this->fontCollection, $count->cdata, $fams, FFI::addr($foundCount));
-			
-			for ($i = 0; $i < $foundCount->cdata; $i++) {
-				$name = $gp->new("wchar_t[64]");
-				$gp->GdipGetFamilyName($fams[$i], $name, 1033);
-				
-				// Safely reconstruct the family name from UTF-16 wchar_t array
-				$u8Name = "";
-				for ($j = 0; $j < 64 && $name[$j] != 0; $j++) {
-					$u8Name .= mb_chr($name[$j], "UTF-8");
-				}
-				$u8Name = trim($u8Name);
-				
-				$this->log("DEBUG: Found font family in registry: [$u8Name]");
-				
+			if ($gdi->AddFontResourceExA($iconPath, 0x10, null) > 0) {
+				$this->addedFontFiles[] = $iconPath;
+			}
+			$uiFamilies = $this->bundledFonts;
+			$iconFamilies = [];
+			foreach ($this->collectFontFamilies($this->fontCollection) as $u8Name) {
+				if (!in_array($u8Name, $uiFamilies, true)) $iconFamilies[] = $u8Name;
+			}
+			foreach ($iconFamilies as $u8Name) {
 				if (str_contains($u8Name, "Material") || str_contains($u8Name, "Symbols")) {
 					$this->iconFontFace = $u8Name;
-				} else {
-					if (!in_array($u8Name, $this->availableFonts)) {
-						$this->availableFonts[] = $u8Name;
-					}
-					// If this is our intended primary font, ensure it's selected
-					if ($u8Name === "Nunito") {
-						$this->log("Confirmed 'Nunito' is available for high-fidelity rendering.");
-					}
 				}
+			}
+			if ($this->iconFontFace === null && count($iconFamilies) > 0) {
+				$this->iconFontFace = $iconFamilies[0];
 			}
 		}
 
-		if (empty($this->availableFonts)) {
-			$this->log("No custom fonts successfully loaded. Using system defaults.", "WARN");
+		foreach ($this->bundledFonts as $u8Name) {
+			$this->log("DEBUG: Found bundled font family: [$u8Name]");
 		}
+
+		// 6. Selectable list: DATA_DIR/fonts only (icon font excluded, no system fonts)
+		yield "Preparing font list...";
+		$bundledUi = [];
+		foreach ($this->bundledFonts as $f) {
+			if ($f === ($this->iconFontFace ?? "")) continue; // icons are not a selectable text font
+			$bundledUi[] = $f;
+		}
+		sort($bundledUi, SORT_NATURAL | SORT_FLAG_CASE);
+		if (count($bundledUi) === 0) {
+			$bundledUi = ["Nunito"];
+		}
+		$this->availableFonts = $bundledUi;
+		$this->overlayFonts = $bundledUi;
+		$this->log("Selectable fonts: " . implode(", ", $bundledUi));
+
+		// 6b. A font just installed through the dropdown: apply the family it added
+		if ($this->pendingInstallFont !== null) {
+			$pend = $this->pendingInstallFont;
+			$this->pendingInstallFont = null;
+			$newFamilies = [];
+			foreach ($this->bundledFonts as $fam) {
+				if (!in_array($fam, $pend["before"], true)) $newFamilies[] = $fam;
+			}
+			if (!empty($newFamilies)) {
+				$newFam = $newFamilies[0];
+				$pendKey = $pend["key"];
+				$this->settings[$pendKey] = $newFam;
+				$this->saveSettings();
+				if ($pendKey === "font_overlay" && $this->overlayChannel) {
+					try {
+						$this->overlayChannel->send(["font_overlay" => $newFam]);
+					} catch (\Throwable $e) {}
+				}
+				$target = ($pendKey === "font_overlay") ? "overlay" : "launcher";
+				$this->showFontNotice("Installed font '$newFam' - now used by the $target");
+				$this->log("Applied newly installed font '$newFam' to '$pendKey'");
+			} else {
+				$this->showFontNotice("Font file installed - that family was already available");
+				$this->log("Font install added no new family (duplicate family name?)", "WARN");
+			}
+		}
+
+		// 7. Auto-detect / repair the configured font names
+		$changed = $this->detectFontSetting("font_launcher", $this->availableFonts, "Nunito");
+		$changed = $this->detectFontSetting("font_overlay", $this->overlayFonts, "Nunito") || $changed;
+		if ($changed) {
+			$this->saveSettings();
+		}
+		$this->log("Launcher font: '" . ($this->settings["font_launcher"] ?? "?") . "', Overlay font: '" . ($this->settings["font_overlay"] ?? "?") . "'");
 
 		// 4-Tier Typography System (Big/Premium Profile)
 		yield "Building Body Font (22px)...";
@@ -2237,6 +2328,137 @@ class FoxyClient {
 		yield from $this->buildFontAtlas(4000, 24, 400, $iconSet);
 		
 		yield "Done";
+
+		// Runs on the final next(): swap the staged atlases in so the UI never
+		// renders a single frame without text (and free the previous textures).
+		$this->commitFontAtlases();
+	}
+
+	/**
+	 * Read every family name out of a GDI+ font collection (private or installed).
+	 * @return string[]
+	 */
+	private function collectFontFamilies($collection)
+	{
+		$gp = $this->gdiplus;
+		$names = [];
+		if ($collection === null) return $names;
+
+		$count = $gp->new("int");
+		if ($gp->GdipGetFontCollectionFamilyCount($collection, FFI::addr($count)) !== 0) return $names;
+		if ($count->cdata <= 0) return $names;
+
+		$fams = $gp->new("void*[{$count->cdata}]");
+		$foundCount = $gp->new("int");
+		if ($gp->GdipGetFontCollectionFamilyList($collection, $count->cdata, $fams, FFI::addr($foundCount)) !== 0) return $names;
+
+		for ($i = 0; $i < $foundCount->cdata; $i++) {
+			$name = $gp->new("wchar_t[128]");
+			// 1033 = en-US; fall back to the neutral language for non-english families
+			if ($gp->GdipGetFamilyName($fams[$i], $name, 1033) !== 0) {
+				$gp->GdipGetFamilyName($fams[$i], $name, 0);
+			}
+
+			// Safely reconstruct the family name from the UTF-16 wchar_t array
+			$u8Name = "";
+			for ($j = 0; $j < 128 && $name[$j] != 0; $j++) {
+				$u8Name .= mb_chr($name[$j], "UTF-8");
+			}
+			$u8Name = trim($u8Name);
+			if ($u8Name === "" || $u8Name[0] === "@") continue; // skip vertical/duplicate faces
+			$names[] = $u8Name;
+		}
+		return $names;
+	}
+
+	/**
+	 * Find the real family name matching $name inside $candidates.
+	 * Order: exact -> case insensitive -> normalized (spaces/punctuation ignored) -> prefix.
+	 * @return string|null
+	 */
+	private function matchFontFamily($name, array $candidates)
+	{
+		$name = trim((string) $name);
+		if ($name === "" || empty($candidates)) return null;
+
+		foreach ($candidates as $c) {
+			if (strcasecmp($c, $name) === 0) return $c;
+		}
+
+		$norm = function ($s) {
+			return preg_replace('/[^a-z0-9]/', '', mb_strtolower($s));
+		};
+		$wanted = $norm($name);
+		if ($wanted !== "") {
+			foreach ($candidates as $c) {
+				if ($norm($c) === $wanted) return $c;
+			}
+			foreach ($candidates as $c) {
+				if (stripos($c, $name) !== false) return $c;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Auto-detect the configured font: if the saved name does not exist on this
+	 * machine anymore, resolve it against the detected families and repair the
+	 * setting. Returns true when the setting was rewritten.
+	 */
+	private function detectFontSetting($key, array $candidates, $fallback)
+	{
+		$current = (string) ($this->settings[$key] ?? $fallback);
+		$match = $this->matchFontFamily($current, $candidates);
+		if ($match === null) $match = $this->matchFontFamily($fallback, $candidates);
+		if ($match === null) $match = $candidates[0] ?? $fallback;
+
+		if ($match !== $current) {
+			$this->log("Auto-detected font for '$key': '$current' -> '$match'");
+			$this->settings[$key] = $match;
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * (Re)build every font atlas. Safe to call at any time: the previous atlases
+	 * keep rendering until the new ones are complete.
+	 */
+	private function initFonts()
+	{
+		if ($this->isLoadingFonts && $this->fontGenerator && $this->fontGenerator->valid()) {
+			return; // already building
+		}
+		$this->isLoadingFonts = true;
+		$this->fontLoadingMessage = "Preparing fonts...";
+		$this->fontGenerator = $this->initFontsAsync();
+		$this->needsRedraw = true;
+	}
+
+	/**
+	 * Swap freshly built atlases into the live set, free the old GL textures and
+	 * invalidate the cached glyph widths.
+	 */
+	private function commitFontAtlases()
+	{
+		if ($this->atlasStaging === null) return;
+		$old = $this->fontAtlas;
+		$this->fontAtlas = $this->atlasStaging;
+		$this->atlasStaging = null;
+
+		if (!empty($old) && $this->opengl32) {
+			foreach ($old as $a) {
+				if (!empty($a["texId"])) {
+					$id = $this->opengl32->new("UINT[1]");
+					$id[0] = $a["texId"];
+					$this->opengl32->glDeleteTextures(1, $id);
+				}
+			}
+		}
+
+		$this->textWidthCache = [];
+		$this->fontGen++;
+		$this->fontsReady = true;
 	}
 
 	/**
@@ -2262,14 +2484,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$fontFace = $this->settings["font_launcher"] ?? "Nunito";
 
-		if ($fontFace === "Nunito") {
-			foreach ($this->availableFonts as $f) {
-				if (stripos($f, "Nunito") !== false) {
-					$this->log("Fuzzy matched default font 'Nunito' to registry family: '$f'");
-					$fontFace = $f;
-					break;
-				}
-			}
+		// Auto-detect: resolve the configured name against the bundled families
+		// so a renamed/removed font still renders correctly (DATA_DIR/fonts only).
+		$resolved = $this->matchFontFamily($fontFace, $this->availableFonts);
+		if ($resolved !== null && $resolved !== $fontFace) {
+			$this->log("Fuzzy matched font '$fontFace' to detected family: '$resolved'");
+			$fontFace = $resolved;
 		}
 
 		if ($listBase >= 4000) {
@@ -2291,6 +2511,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		FFI::memcpy($widePtr, $wideFace, strlen($wideFace));
 
 		$family = $gp->new("void*");
+		// 1) bundled (private) collection only, 2) generic sans-serif fallback
 		$res = $gp->GdipCreateFontFamilyFromName($widePtr, $this->fontCollection, FFI::addr($family));
 		if ($res !== 0) {
 			$this->log("Warning: Font '$fontFace' not found (Error: $res).", "WARN");
@@ -2521,7 +2742,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		unset($rowDst);
 		unset($src);
 
-		$this->fontAtlas[$listBase] = [
+		$entry = [
 			"texId"			=> $texId,
 			"glyphs"		=> $finalGlyphs,
 			"height"		=> $glyphH,
@@ -2532,6 +2753,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			"atlasW"		=> $outW,
 			"atlasH"		=> $outH,
 		];
+
+		if ($this->atlasStaging !== null) {
+			$this->atlasStaging[$listBase] = $entry;
+		} else {
+			$this->fontAtlas[$listBase] = $entry;
+		}
 
 		$this->log("Atlas ready: {$outW}x{$outH} texture, " . count($finalGlyphs) . " glyphs, glyphH=" . round($glyphH, 1) . "px, spaceW=" . round($spaceW, 1) . "px");
 	}
@@ -2620,7 +2847,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	private function getTextWidth($text, $listBase = 1000, $spacing = 0)
 	{
-		static $cache = [];
+		$cache = &$this->textWidthCache;
 		$cacheKey = $text . "|" . $listBase . "|" . $spacing;
 		if (isset($cache[$cacheKey])) return $cache[$cacheKey];
 
@@ -2649,6 +2876,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			if (!isset($atlas["glyphs"][$ch])) continue;
 			$totalW += ($atlas["glyphs"][$ch]["advX"] * $drawScale) + (float)$spacing;
 		}
+		if (count($cache) > 4000) $cache = [];
 		$cache[$cacheKey] = $totalW;
 		return $totalW;
 	}
@@ -2760,7 +2988,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		if ($this->crashModalOpen) {
-			if ($this->crashCloseHover) {
+			$hover = $this->crashBtnHover;
+			if ($hover === "open" && count($this->crashFiles) > 0) {
+				$this->shell32->ShellExecuteA(null, "open", $this->crashFiles[0], null, null, 1);
+			} elseif ($hover === "folder" && count($this->crashFiles) > 0) {
+				$this->shell32->ShellExecuteA(null, "explore", dirname($this->crashFiles[0]), null, null, 1);
+			} elseif ($hover === "close") {
 				$this->crashModalOpen = false;
 				$this->needsRedraw = true;
 			}
@@ -6097,6 +6330,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->isLaunching = false;
 		$this->assetMessage = "GAME RUNNING"; 
 		$this->gameStartTime = microtime(true);
+		$this->lastGameDir = $instanceDir;
 		$this->updateDiscordPresence();
 	}
 
@@ -6308,9 +6542,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							
 							// Auto-unhide launcher
 							$this->user32->ShowWindow($this->hwnd, 5); // SW_SHOW
-							
-							if ($data["code"] !== 0) {
-								$this->detectCrashBug($this->gameLogBuffer);
+
+							// Crash if the exit code is bad, or if the game wrote a fresh
+							// crash report even though it reported success.
+							$newReport = $this->findNewestFile(
+								$this->lastGameDir . DIRECTORY_SEPARATOR . "crash-reports",
+								'/^crash-.*\.txt$/i',
+								(float) $this->gameStartTime
+							);
+							if ($data["code"] !== 0 || $newReport !== null) {
+								$this->detectCrashBug($this->gameLogBuffer, (int) $data["code"]);
 							}
 							
 							// Fallback to delete argfile if game exits before logging anything
@@ -7237,7 +7478,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			"overlay_ram" => (bool) $this->settings["overlay_ram"],
 			"overlay_vram" => (bool) $this->settings["overlay_vram"],
 			"font_overlay" =>
-				(string) ($this->settings["font_overlay"] ?? "Consolas"),
+				(string) ($this->settings["font_overlay"] ?? "Nunito"),
 		];
 
 		$logPath = __DIR__ . DIRECTORY_SEPARATOR . self::LATEST_LOG;
@@ -7476,7 +7717,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$magentaBrush = null;
 				$darkBrush = null;
 				try {
-					$overlayFontName = $settings["font_overlay"] ?? "Consolas";
+					$overlayFontName = $settings["font_overlay"] ?? "Nunito";
 					$oFont = $g32->CreateFontA(
 						18,
 						0,
@@ -7894,14 +8135,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 								}
 								if (is_array($ev->value)) {
 									$oldFontOverlay =
-										$settings["font_overlay"] ?? "Consolas";
+										$settings["font_overlay"] ?? "Nunito";
 									$settings = array_merge(
 										$settings,
 										$ev->value,
 									);
 									// Recreate overlay font if font_overlay changed
 									$newFontOverlay =
-										$settings["font_overlay"] ?? "Consolas";
+										$settings["font_overlay"] ?? "Nunito";
 									if ($newFontOverlay !== $oldFontOverlay) {
 										if ($oFont) {
 											$g32->DeleteObject($oFont);
@@ -9748,6 +9989,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Upload message auto-dismiss
 		if ($this->uploadSkinMessageTimer > 0) $this->uploadSkinMessageTimer--;
+		if ($this->fontNoticeTimer > 0) $this->fontNoticeTimer--;
 
 		// Dropdown toggles
 		$dropdownPairs = [
@@ -9791,7 +10033,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Window launch animation
 		$elapsed = $now - $this->appLaunchTime;
-		if ($elapsed < 5.0 || $this->isLoadingFonts) {
+		if ($elapsed < 5.0 || !$this->fontsReady) {
 			$this->windowAnim = min(1.0, $elapsed / 5.0) * 0.4;
 		} elseif ($this->windowAnim < 1.0) {
 			$this->windowAnim += (1.0 - $this->windowAnim) * 0.08;
@@ -10002,14 +10244,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		if ($this->crashModalOpen) {
-			$mw = 500;
-			$mh = 300;
-			$mx = ($this->width - $mw) / 2;
-			$my = ($this->height - $mh) / 2;
-			$bx = $mx + $mw / 2 - 60;
-			$by = $my + $mh - 50;
-			$bw = 120;
-			$this->crashCloseHover = ($x >= $bx && $x <= $bx + $bw && $y >= $by && $y <= $by + 30);
+			$this->crashBtnHover = "";
+			foreach ($this->getCrashButtons() as $id => $b) {
+				if ($x >= $b[0] && $x <= $b[0] + $b[2] && $y >= $b[1] && $y <= $b[1] + $b[3]) {
+					$this->crashBtnHover = $id;
+					break;
+				}
+			}
+			$this->crashCloseHover = ($this->crashBtnHover === "close");
 			$this->needsRedraw = true;
 			return;
 		}
@@ -10799,26 +11041,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Font dropdown hover
 		$this->propFontDropdownHover = -1;
 		if ($this->propFontDropdownOpen !== "" && $this->propSubTab === 1) {
-			$cw = $this->width - self::SIDEBAR_W;
-			$ddX = $cw - self::PAD - 300;
-			$ddW = 300;
-			$rowIdx = $this->propFontDropdownOpen === "launcher" ? 4 : 5;
-			$ddY =
-				$contentTop +
-				($rowIdx + 1) * 60 -
-				(int) $this->propScrollOffset;
-			$fonts = $this->availableFonts;
-			$itemH = 32;
-			$ddH = count($fonts) * $itemH;
+			$fonts = $this->getFontDropdownItems();
+			[$ddX, $ddY, $ddW, $itemH, $maxVisible] = $this->getFontDropdownGeometry();
+			$ddH = min(count($fonts) * $itemH, $maxVisible * $itemH);
 			if (
 				$cx >= $ddX &&
 				$cx <= $ddX + $ddW &&
 				$cy >= $ddY &&
 				$cy <= $ddY + $ddH
 			) {
-				$this->propFontDropdownHover = (int) floor(
-					($cy - $ddY) / $itemH,
-				);
+				$idx = (int) floor(($cy - $ddY + $this->propFontScroll) / $itemH);
+				$this->propFontDropdownHover = ($idx >= 0 && $idx < count($fonts)) ? $idx : -1;
 			}
 		}
 
@@ -11124,20 +11357,24 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 						return;
 					}
 				} elseif ($this->propFontDropdownOpen !== "") {
-					$rowIdx = ($this->propFontDropdownOpen === "launcher") ? 4 : 5;
-					$fonts = $this->availableFonts;
-					$itemH = 32;
-					$ddY = $contentTop + ($rowIdx * 60) + 44 - (int)$this->propScrollOffset;
-					$ddH = count($fonts) * $itemH;
+					$fonts = $this->getFontDropdownItems();
+					[$ddX, $ddY, $ddW, $itemH, $maxVisible] = $this->getFontDropdownGeometry();
+					$this->clampFontDropdownScroll($fonts);
+					$ddH = min(count($fonts) * $itemH, $maxVisible * $itemH);
 					if ($cx >= $ddX && $cx <= $ddX + $ddW && $cy >= $ddY && $cy <= $ddY + $ddH) {
-						$clickedFi = (int) floor(($cy - $ddY) / $itemH);
-						if (isset($fonts[$clickedFi])) {
-							$selectedFont = $fonts[$clickedFi];
-							if ($this->propFontDropdownOpen === "launcher") {
-								$this->settings["font_launcher"] = $selectedFont;
-								$this->saveSettings();
-								$this->fontAtlas = [];
-								$this->initFonts();
+						$clickedFi = (int) floor(($cy - $ddY + $this->propFontScroll) / $itemH);
+					if (isset($fonts[$clickedFi])) {
+						$selectedFont = $fonts[$clickedFi];
+						if ($selectedFont === self::FONT_INSTALL_ITEM) {
+							$this->installFontViaDialog();
+							return;
+						}
+						if ($this->propFontDropdownOpen === "launcher") {
+								if (($this->settings["font_launcher"] ?? "") !== $selectedFont) {
+									$this->settings["font_launcher"] = $selectedFont;
+									$this->saveSettings();
+									$this->initFonts(); // async rebuild of the atlases (staged swap)
+								}
 							} else {
 								$this->settings["font_overlay"] = $selectedFont;
 								$this->saveSettings();
@@ -11148,6 +11385,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 								}
 							}
 							$this->propFontDropdownOpen = "";
+							$this->propFontScroll = 0;
+							$this->needsRedraw = true;
 							return;
 						}
 					}
@@ -11193,24 +11432,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			} elseif ($idx === 4) {
 				// Launcher Font
 				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
-					$this->propFontDropdownOpen =
-						$this->propFontDropdownOpen === "launcher"
-							? ""
-							: "launcher";
-					if ($this->propFontDropdownOpen !== "") $this->propDropdownAnim = 0.0;
-					$this->propFontDropdownHover = -1;
-					$this->propThemeDropdownOpen = false;
-					$this->propLangDropdownOpen = false;
+					$this->openFontDropdown("launcher");
 				}
 			} elseif ($idx === 5) {
 				// Overlay Font
 				if ($cx >= $fieldX && $cx <= $fieldX + $fieldW) {
-					$this->propFontDropdownOpen =
-						$this->propFontDropdownOpen === "overlay"
-							? ""
-							: "overlay";
-					$this->propFontDropdownHover = -1;
-					$this->propThemeDropdownOpen = false;
+					$this->openFontDropdown("overlay");
 				}
 			} elseif ($idx === 6) {
 				// Separate Modpack Folder
@@ -11400,7 +11627,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			); // fill
 		}
 
-		if ($this->isLoadingFonts) {
+		if ($this->isLoadingFonts && !$this->fontsReady) {
+			// Font loader status (kept visible after the splash bar fades out)
+			$this->globalAlpha = 1.0;
+			$msg = (string) $this->fontLoadingMessage;
+			$msgW = $this->getTextWidth($msg, 1000);
+			if ($msgW <= 0) $msgW = strlen($msg) * 11; // atlas 1000 does not exist yet
+			$this->renderText($msg, max(10.0, ($this->width - $msgW) / 2), $this->height / 2 + 96, [1, 1, 1, 0.75], 1000);
 			return; // Do not proceed to render text or UI while fonts are loading
 		}
 
@@ -11485,6 +11718,30 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->globalAlpha = $titleEased;
 			$this->renderTitleBar();
 			$gl->glPopMatrix();
+
+			// Font rebuild indicator (font changer swaps atlases in the background)
+			if ($this->isLoadingFonts && $this->fontsReady) {
+				$label = "Applying font... " . $this->fontLoadingMessage;
+				$lw = $this->getTextWidth($label, 3000);
+				$pw = $lw + 40;
+				$px = $this->width - $pw - 24;
+				$py = $this->height - 74;
+				$this->drawRoundedRect($px, $py, $pw, 32, 8, [0.08, 0.08, 0.08, 0.9], [1, 1, 1, 0.08]);
+				$this->renderText($label, $px + 20, $py + 21, $this->colors["text"], 3000);
+			}
+
+			// Transient font notice (font installed / rejected, applied family)
+			if ($this->fontNoticeTimer > 0 && $this->fontNotice !== "") {
+				$ac = min(1.0, $this->fontNoticeTimer / 40.0);
+				$label = $this->fontNotice;
+				$lw = $this->getTextWidth($label, 3000);
+				$pw = $lw + 40;
+				$px = $this->width - $pw - 24;
+				$py = ($this->isLoadingFonts && $this->fontsReady) ? $this->height - 114 : $this->height - 74;
+				$this->drawRoundedRect($px, $py, $pw, 32, 8, [0.08, 0.08, 0.08, 0.9 * $ac], [1, 1, 1, 0.08]);
+				$tc = $this->colors["text"];
+				$this->renderText($label, $px + 20, $py + 21, [$tc[0], $tc[1], $tc[2], $ac], 3000);
+			}
 
 			// Modals
 			$this->globalAlpha = $revWA > 0.9 ? 1.0 : 0.0;
@@ -14719,11 +14976,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$ddY = $contentTop + (2 * 60) + 44 - (int)$this->propScrollOffset;
 				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $items, $cur, $this->propFontDropdownHover, $this->propDropdownAnim);
 			} elseif ($this->propFontDropdownOpen !== "") {
-				$rowIdx = ($this->propFontDropdownOpen === "launcher") ? 4 : 5;
-				$fonts = $this->availableFonts;
-				$cur = ($this->propFontDropdownOpen === "launcher") ? ($this->settings["font_launcher"] ?? "Open Sans") : ($this->settings["font_overlay"] ?? "Consolas");
-				$ddY = $contentTop + ($rowIdx * 60) + 44 - (int)$this->propScrollOffset;
-				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $fonts, $cur, $this->propFontDropdownHover, $this->propDropdownAnim);
+				$fonts = $this->getFontDropdownItems();
+				$cur = ($this->propFontDropdownOpen === "launcher") ? ($this->settings["font_launcher"] ?? "Nunito") : ($this->settings["font_overlay"] ?? "Nunito");
+				[$ddX, $ddY, $ddW, , $maxVisible] = $this->getFontDropdownGeometry();
+				$this->clampFontDropdownScroll($fonts);
+				$this->renderPropertiesDropdownList($ddX, $ddY, $ddW, $fonts, $cur, $this->propFontDropdownHover, $this->propDropdownAnim, $this->propFontScroll, $maxVisible);
 			}
 		}
 
@@ -15050,7 +15307,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			function ($x, $cy, $w, $h) {
 				$isOpen = $this->propFontDropdownOpen === "launcher";
 				$isHover = $this->propFieldHover === 4;
-				$font = $this->settings["font_launcher"] ?? "Open Sans";
+				$font = $this->settings["font_launcher"] ?? "Nunito";
 				$this->drawDropdownSelector($x, $cy, $w, $h, $font, $isOpen, $isHover);
 			},
 		);
@@ -15063,7 +15320,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			function ($x, $cy, $w, $h) {
 				$isOpen = $this->propFontDropdownOpen === "overlay";
 				$isHover = $this->propFieldHover === 5;
-				$font = $this->settings["font_overlay"] ?? "Consolas";
+				$font = $this->settings["font_overlay"] ?? "Nunito";
 				$this->drawDropdownSelector($x, $cy, $w, $h, $font, $isOpen, $isHover);
 			},
 		);
@@ -15115,12 +15372,182 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 	}
 
-	private function renderPropertiesDropdownList($x, $y, $w, $items, $curVal, $hoverIdx, $alpha)
+	/**
+	 * Items shown by the currently open font dropdown ('launcher' or 'overlay').
+	 * The last entry is always the pseudo item that opens the install-font dialog.
+	 * @return string[]
+	 */
+	private function getFontDropdownItems()
+	{
+		if ($this->propFontDropdownOpen === "overlay") $items = $this->overlayFonts;
+		elseif ($this->propFontDropdownOpen === "launcher") $items = $this->availableFonts;
+		else $items = [];
+		$items[] = self::FONT_INSTALL_ITEM;
+		return $items;
+	}
+
+	/**
+	 * Geometry shared by render / hover / hit-testing so they can never disagree.
+	 * @return array [ddX, ddY, ddW, itemH, maxVisible]
+	 */
+	private function getFontDropdownGeometry()
+	{
+		$cw = $this->width - self::SIDEBAR_W;
+		$ddW = 300;
+		$ddX = $cw - self::PAD - $ddW;
+		$contentTop = self::HEADER_H + self::TAB_H + 20;
+		$rowIdx = ($this->propFontDropdownOpen === "launcher") ? 4 : 5;
+		$ddY = $contentTop + ($rowIdx * 60) + 44 - (int) $this->propScrollOffset;
+		$itemH = 32;
+		$space = ($this->height - self::TITLEBAR_H - 12) - $ddY;
+		$maxVisible = max(4, min(12, (int) floor($space / $itemH)));
+		return [$ddX, $ddY, $ddW, $itemH, $maxVisible];
+	}
+
+	private function clampFontDropdownScroll($items)
+	{
+		[, , , $itemH, $maxVisible] = $this->getFontDropdownGeometry();
+		$max = max(0, count($items) * $itemH - $maxVisible * $itemH);
+		$this->propFontScroll = max(0, min($max, $this->propFontScroll));
+	}
+
+	/**
+	 * Toggle one of the font dropdowns and scroll the current selection into view.
+	 */
+	private function openFontDropdown($which)
+	{
+		$this->propFontDropdownOpen = ($this->propFontDropdownOpen === $which) ? "" : $which;
+		$this->propDropdownAnim = 0.0;
+		$this->propFontDropdownHover = -1;
+		$this->propThemeDropdownOpen = false;
+		$this->propLangDropdownOpen = false;
+		$this->propFontScroll = 0;
+		$this->needsRedraw = true;
+		if ($this->propFontDropdownOpen === "") return;
+
+		$key = ($which === "overlay") ? "font_overlay" : "font_launcher";
+		$items = $this->getFontDropdownItems();
+		$cur = (string) ($this->settings[$key] ?? "");
+		$idx = array_search($cur, $items, true);
+		if ($idx === false) {
+			foreach ($items as $i => $f) {
+				if (strcasecmp($f, $cur) === 0) { $idx = $i; break; }
+			}
+		}
+		if ($idx !== false) {
+			[, , , $itemH, $maxVisible] = $this->getFontDropdownGeometry();
+			$this->propFontScroll = max(0, ((int) $idx - (int) floor($maxVisible / 2)) * $itemH);
+			$this->clampFontDropdownScroll($items);
+		}
+	}
+
+	/**
+	 * Transient bottom-right notice (same slot as the font rebuild indicator).
+	 */
+	private function showFontNotice($msg, $frames = 360)
+	{
+		$this->fontNotice = $msg;
+		$this->fontNoticeTimer = $frames;
+		$this->needsRedraw = true;
+	}
+
+	/**
+	 * True when the file starts with a TrueType/OpenType/collection sfnt header
+	 * and carries a font extension GDI+ can actually load.
+	 */
+	private function isValidFontFile($path)
+	{
+		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+		if (!in_array($ext, ["ttf", "otf", "ttc"], true)) return false;
+		$fh = @fopen($path, "rb");
+		if (!$fh) return false;
+		$head = fread($fh, 4);
+		fclose($fh);
+		if (!is_string($head) || strlen($head) < 4) return false;
+		return in_array($head, ["\x00\x01\x00\x00", "OTTO", "ttcf", "true", "typ1"], true);
+	}
+
+	/**
+	 * Pick a font file via the Windows open dialog, copy it into DATA_DIR/fonts
+	 * and rebuild the atlases so it shows up (and gets applied) immediately.
+	 */
+	private function installFontViaDialog()
+	{
+		if ($this->isLoadingFonts && $this->fontGenerator && $this->fontGenerator->valid()) {
+			$this->showFontNotice("Still applying a previous font - try again in a moment");
+			return;
+		}
+
+		$ofn = $this->comdlg32->new("OPENFILENAMEA");
+		FFI::memset(FFI::addr($ofn), 0, FFI::sizeof($ofn));
+		$ofn->lStructSize = FFI::sizeof($ofn);
+		$ofn->hwndOwner = $this->hwnd;
+		$filter = "Font files (*.ttf;*.otf;*.ttc)\0*.ttf;*.otf;*.ttc\0All files (*.*)\0*.*\0\0";
+		$filterBuf = FFI::new("char[" . strlen($filter) . "]");
+		FFI::memcpy($filterBuf, $filter, strlen($filter));
+		$ofn->lpstrFilter = FFI::cast("char*", $filterBuf);
+		$fileBuf = FFI::new("char[260]");
+		FFI::memset($fileBuf, 0, 260);
+		$ofn->lpstrFile = FFI::cast("char*", $fileBuf);
+		$ofn->nMaxFile = 260;
+		$ofn->Flags = 0x00000800 | 0x00000008 | 0x00001000; // path must exist | hide read-only | file must exist
+		if (!$this->comdlg32->GetOpenFileNameA(FFI::addr($ofn))) return; // cancelled
+
+		$src = FFI::string($fileBuf);
+		if ($src === "" || !is_file($src)) {
+			$this->showFontNotice("Selected font file could not be read");
+			return;
+		}
+		if (!$this->isValidFontFile($src)) {
+			$this->showFontNotice("Not a valid .ttf / .otf / .ttc font: " . basename($src));
+			return;
+		}
+
+		// Copy into the only folder the launcher scans for text fonts
+		$fontDir = self::FONTS_DIR;
+		if (!is_dir($fontDir) && !@mkdir($fontDir, 0777, true) && !is_dir($fontDir)) {
+			$this->showFontNotice("Could not create font folder: " . self::FONTS_DIR);
+			return;
+		}
+		$name = basename($src);
+		$realSrc = realpath($src);
+		$dest = $fontDir . DIRECTORY_SEPARATOR . $name;
+		$realDest = realpath($dest);
+		if ($realDest !== false && $realSrc !== false && strcasecmp($realSrc, $realDest) === 0) {
+			$dest = $realDest; // already lives in DATA_DIR/fonts
+		} else {
+			$base = pathinfo($name, PATHINFO_FILENAME);
+			$ext = pathinfo($name, PATHINFO_EXTENSION);
+			$n = 1;
+			while (file_exists($dest)) {
+				$dest = $fontDir . DIRECTORY_SEPARATOR . $base . " (" . $n++ . ")." . $ext;
+			}
+			if (!@copy($src, $dest)) {
+				$this->showFontNotice("Could not copy font into " . self::FONTS_DIR);
+				return;
+			}
+			$this->log("Installed font file: $dest");
+		}
+
+		// The dropdown that asked for the file decides which setting gets it
+		$key = ($this->propFontDropdownOpen === "overlay") ? "font_overlay" : "font_launcher";
+		$this->propFontDropdownOpen = "";
+		$this->propFontScroll = 0;
+		$this->needsRedraw = true;
+		$this->pendingInstallFont = ["before" => $this->bundledFonts, "key" => $key];
+		$this->showFontNotice("Installed " . basename($dest) . " - applying font...");
+		$this->initFonts();
+	}
+
+	private function renderPropertiesDropdownList($x, $y, $w, $items, $curVal, $hoverIdx, $alpha, $scroll = 0, $maxVisible = 0)
 	{
 		$itemH = 32;
 		$fullH = count($items) * $itemH;
+		if ($maxVisible > 0) $fullH = min($fullH, $maxVisible * $itemH);
 		$ddH = $fullH * $alpha;
 		$gl = $this->opengl32;
+
+		if ($ddH < 1) return;
 
 		// Panel background (High-Fidelity Glass)
 		$bgColor = $this->colors["dropdown_bg"];
@@ -15136,8 +15563,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		);
 
 		$isLight = $this->colors === $this->lightColors;
-		foreach ($items as $i => $item) {
-			$iy = $y + $i * $itemH;
+		$first = max(0, (int) floor($scroll / $itemH));
+		$last = min(count($items) - 1, $first + (int) ceil($ddH / $itemH) + 1);
+		for ($i = $first; $i <= $last; $i++) {
+			if (!isset($items[$i])) continue;
+			$item = $items[$i];
+			$iy = $y + $i * $itemH - $scroll;
 			$isActive = $item === $curVal;
 			$isHover = $hoverIdx === $i;
 
@@ -15153,7 +15584,23 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			}
 
 			$color = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			if ($item === self::FONT_INSTALL_ITEM && !$isActive) {
+				$pc = $this->colors["primary"];
+				$color = $pc;
+				// separator above the pseudo entry so it reads as an action, not a font
+				$this->drawRect($x + 10, $iy - 1, $w - 20, 1, [$pc[0], $pc[1], $pc[2], 0.35 * $alpha]);
+			}
 			$this->renderText($item, $x + 16, $iy + 22, $color, 1000, $alpha);
+		}
+
+		// Scrollbar when the list does not fit
+		if ($maxVisible > 0 && count($items) * $itemH > $fullH) {
+			$barX = $x + $w - 5;
+			$trackH = max(1.0, $ddH - 8);
+			$thumbH = max(16, ($fullH / (count($items) * $itemH)) * $trackH);
+			$maxScroll = max(1.0, count($items) * $itemH - $fullH);
+			$pos = min(1.0, max(0.0, $scroll / $maxScroll)) * max(0.0, $trackH - $thumbH);
+			$this->drawRoundedRect($barX, $y + 4 + $pos, 3, $thumbH, 2, [0.6, 0.6, 0.6, 0.6 * $alpha]);
 		}
 
 		$gl->glDisable(0x0c11);
@@ -16737,40 +17184,518 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->user32->SendMessageA($this->hwnd, 0xa1, 2, null);
 	}
 
-	private function detectCrashBug($logLines)
+	/**
+	 * Crash analysis for the launcher, modeled on Crash Assistant's log analyser but
+	 * done entirely in PHP: we only read the files Minecraft already wrote
+	 * (logs, crash reports, hs_err dumps) and match known error signatures.
+	 * Nothing is injected into the game itself.
+	 */
+	private function detectCrashBug($logLines, $exitCode = null)
 	{
-		$logText = implode("\n", $logLines);
-		$title = "Minecraft Crashed";
-		$cause = "An unknown error occurred during gameplay.";
-		$solution = "Please check the game logs or FoxyClient debug console for more details.";
+		$gameDir = ($this->lastGameDir !== "")
+			? $this->lastGameDir
+			: $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
+		$since = (float) $this->gameStartTime;
 
-		if (strpos($logText, "jdk.internal.loader.ClassLoaders\$AppClassLoader cannot be cast to class java.net.URLClassLoader") !== false) {
-			$title = "LaunchWrapper Incompatibility";
-			$cause = "Minecraft failed to launch because the game's old LaunchWrapper is incompatible with Java 9 or newer.";
-			$solution = "Please go to Java Settings in FoxyClient and select Java 8, then try again.";
-		} elseif (strpos($logText, "UnsupportedClassVersionError") !== false) {
-			$title = "Outdated Java Version";
-			$cause = "The version of Minecraft or a mod you are trying to run requires a newer version of Java than the one currently selected.";
-			$solution = "Please go to Java Settings and select a newer Java version (e.g., Java 17 or 21).";
-		} elseif (strpos($logText, "OutOfMemoryError") !== false) {
-			$title = "Out of Memory";
-			$cause = "Minecraft ran out of allocated RAM and crashed.";
-			$solution = "Please go to Settings and increase the Allocated Memory slider.";
-		} elseif (strpos($logText, "Pixel format not accelerated") !== false) {
-			$title = "Graphics Driver Error";
-			$cause = "Minecraft could not initialize OpenGL because of a graphics driver issue.";
-			$solution = "Please update your graphics card drivers, or ensure your PC meets the minimum OpenGL requirements.";
-		} elseif (strpos($logText, "UnsatisfiedLinkError") !== false) {
-			$title = "Missing Natives";
-			$cause = "Minecraft crashed because it couldn't load native libraries for your operating system or architecture.";
-			$solution = "Ensure you are running the correct version of Java (64-bit) for your system.";
+		$reportPath = $this->findNewestFile($gameDir . DIRECTORY_SEPARATOR . "crash-reports", '/^crash-.*\.txt$/i', $since);
+		$hsErrPath = $this->findNewestFile($gameDir, '/^hs_err_pid\d+\.log$/i', $since);
+		$latestPath = $gameDir . DIRECTORY_SEPARATOR . "logs" . DIRECTORY_SEPARATOR . "latest.log";
+
+		// Ordered by how specific the source is: a crash report written by the game
+		// itself beats the JVM hs_err dump, which beats latest.log, which beats the
+		// small in-memory buffer we keep of the process output.
+		$sources = [];
+		if ($reportPath !== null) {
+			$sources[] = ["label" => "crash-reports/" . basename($reportPath), "path" => $reportPath, "text" => $this->readFileTail($reportPath, 600000)];
+		}
+		if ($hsErrPath !== null) {
+			$sources[] = ["label" => basename($hsErrPath), "path" => $hsErrPath, "text" => $this->readFileTail($hsErrPath, 400000)];
+		}
+		if (is_file($latestPath)) {
+			$sources[] = ["label" => "logs/latest.log", "path" => $latestPath, "text" => $this->readFileTail($latestPath, 400000)];
+		}
+		$sources[] = ["label" => "game output", "path" => "", "text" => implode("\n", (array) $logLines)];
+
+		$this->crashFiles = [];
+		foreach ($sources as $s) {
+			if ($s["path"] !== "" && !in_array($s["path"], $this->crashFiles, true)) {
+				$this->crashFiles[] = $s["path"];
+			}
+		}
+
+		$title = "Minecraft Crashed";
+		$cause = "An unknown error occurred while the game was running.";
+		$solution = "Check the source file listed above - the full log and stack trace are there.";
+		$this->crashSource = "";
+
+		foreach ($sources as $s) {
+			if (trim($s["text"]) === "") {
+				continue;
+			}
+			$hit = $this->matchCrashRule($s["text"]);
+			if ($hit === null) {
+				continue;
+			}
+			list($rule, $pattern, $m) = $hit;
+			$title = $rule["title"];
+			$cause = $this->expandCrashTemplate($rule["cause"], $m);
+			$solution = $this->expandCrashTemplate($rule["solution"], $m);
+			if (isset($rule["detail"]) && @preg_match($rule["detail"]["pattern"], $s["text"], $dm) === 1) {
+				$cause = rtrim($this->expandCrashTemplate($rule["detail"]["tpl"], $dm)) . "\n" . $cause;
+			}
+			if (isset($rule["build"]) && is_callable($rule["build"])) {
+				$built = call_user_func($rule["build"], $m);
+				$cause = $built["cause"] ?? $cause;
+				$solution = $built["solution"] ?? $solution;
+			}
+			$this->crashSource = $s["label"];
+			break;
+		}
+
+		// No signature matched: summarize whatever the game wrote (description +
+		// exception + "Caused by:" chain), exactly like Crash Assistant does.
+		if ($this->crashSource === "") {
+			foreach ($sources as $s) {
+				if (trim($s["text"]) === "") {
+					continue;
+				}
+				list($cause, $solution) = $this->summarizeCrashText($s["text"]);
+				$this->crashSource = $s["label"];
+				break;
+			}
+		}
+
+		if ($this->crashSource === "") {
+			$codeTxt = ($exitCode !== null) ? " (exit code {$exitCode})" : "";
+			$title = "Minecraft Crashed";
+			$cause = "The game process ended{$codeTxt} without writing any log output at all.";
+			$solution = "This usually means Java failed to start: check the selected Java version in Java Settings, make sure the runtime actually exists, and look at the launcher log for the generated command line.";
+			$this->crashSource = "no output";
+		} elseif ($exitCode !== null && $exitCode !== 0) {
+			$this->crashSource .= " - exit code {$exitCode}";
 		}
 
 		$this->crashTitle = $title;
 		$this->crashCause = $cause;
 		$this->crashSolution = $solution;
+		$this->crashScroll = 0;
 		$this->crashModalOpen = true;
 		$this->needsRedraw = true;
+	}
+
+	private function matchCrashRule($text)
+	{
+		foreach ($this->getCrashRules() as $rule) {
+			foreach ($rule["patterns"] as $pat) {
+				$m = [];
+				if (@preg_match($pat, $text, $m) === 1) {
+					return [$rule, $pat, $m];
+				}
+			}
+		}
+		return null;
+	}
+
+	private function expandCrashTemplate($tpl, array $m)
+	{
+		return preg_replace_callback(
+			'/\$(\d+)/',
+			function ($mm) use ($m) {
+				$i = (int) $mm[1];
+				return isset($m[$i]) ? (string) $m[$i] : "";
+			},
+			(string) $tpl
+		);
+	}
+
+	private function summarizeCrashText($text)
+	{
+		$cause = [];
+		$solution = "Open the source file listed above: the first exception line and the \"Caused by:\" chain under it contain the real error. Search that line to find a known fix, and keep an eye on the mods listed in the report.";
+
+		if (preg_match('/^\s*Description:\s*(.+)$/m', $text, $m) && trim($m[1]) !== "") {
+			$cause[] = trim($m[1]);
+		}
+		if (preg_match('/^\s*((?:[\w$]+\.)+[\w$]*(?:Exception|Error|Throwable)(?::\s*[^\n]{0,160})?)\s*$/m', $text, $m)) {
+			$cause[] = trim($m[1]);
+		}
+		if (preg_match_all('/^\s*Caused by:\s*([^\n]+)$/m', $text, $mm)) {
+			foreach (array_slice($mm[1], 0, 3) as $c) {
+				$c = trim($c);
+				if ($c !== "" && !in_array($c, $cause, true)) {
+					$cause[] = $c;
+				}
+			}
+		}
+		if (count($cause) === 0) {
+			$cause[] = "No known error signature and no exception header were found. The process simply ended unexpectedly.";
+		}
+		return [implode("\n", $cause), $solution];
+	}
+
+	private function findNewestFile($dir, $pattern, $since = 0)
+	{
+		if (!is_dir($dir)) {
+			return null;
+		}
+		$entries = @scandir($dir);
+		if (!is_array($entries)) {
+			return null;
+		}
+		$best = null;
+		$bestM = 0;
+		foreach ($entries as $f) {
+			if ($f === "." || $f === "..") {
+				continue;
+			}
+			if (!preg_match($pattern, $f)) {
+				continue;
+			}
+			$p = $dir . DIRECTORY_SEPARATOR . $f;
+			if (!is_file($p)) {
+				continue;
+			}
+			$m = (int) @filemtime($p);
+			if ($since > 0 && $m < ($since - 5)) {
+				continue;
+			}
+			if ($m >= $bestM) {
+				$bestM = $m;
+				$best = $p;
+			}
+		}
+		return $best;
+	}
+
+	private function readFileTail($path, $maxBytes = 400000)
+	{
+		$size = @filesize($path);
+		if ($size === false || $size <= 0) {
+			return "";
+		}
+		$fh = @fopen($path, "rb");
+		if (!$fh) {
+			return "";
+		}
+		if ($size > $maxBytes) {
+			@fseek($fh, -$maxBytes, SEEK_END);
+		}
+		$out = stream_get_contents($fh);
+		fclose($fh);
+		return is_string($out) ? $out : "";
+	}
+
+	private function getCrashRules()
+	{
+		$ramMb = (int) ($this->settings["ram_mb"] ?? 0);
+		$rules = [
+			[
+				"title" => "LaunchWrapper Incompatibility",
+				"patterns" => [
+					'~jdk\.internal\.loader\.[\w$]*ClassLoader cannot be cast to class java\.net\.URLClassLoader~',
+					'~cannot be cast to class java\.net\.URLClassLoader~',
+				],
+				"cause" => "Minecraft could not start because this version's LaunchWrapper casts the system class loader to java.net.URLClassLoader, which Java 9 and newer no longer do.",
+				"solution" => "Open Java Settings and select Java 8 for this version (Auto normally picks it for 1.12.2 and older - a manual override may be stuck), then launch again.",
+			],
+			[
+				"title" => "Graphics Driver Crash",
+				"patterns" => [
+					'~Problematic frame:\s*(?:#\s*)?[vC]\s+[^\n]*((?:nvoglv64|nvwgf2umx|aticfx64|atio6axx|amdxc64|amdxx64|ig[0-9]+d64|ig[0-9]+icd64|libGLX_nvidia)[a-zA-Z0-9_.]*)[^\n]*~i',
+					'~(?:Native frames|Java frames|frames \(pc)[^\n]*\n[^\n]*((?:nvoglv64|nvwgf2umx|aticfx64|atio6axx|amdxc64|amdxx64|ig[0-9]+d64|ig[0-9]+icd64)[a-zA-Z0-9_.]*)[^\n]*~i',
+				],
+				"cause" => "Your graphics driver ($1) crashed while Minecraft was rendering. This is a driver/hardware problem, not a mod problem.",
+				"solution" => "Install the latest driver from NVIDIA/AMD/Intel, remove any GPU overclock or tuning utility, and if it keeps happening lower Render Distance or disable shaders.",
+			],
+			[
+				"title" => "System Out of Memory",
+				"patterns" => [
+					'~There is insufficient memory for the Java Runtime Environment to continue~',
+				],
+				"cause" => "Windows refused to give the JVM any more memory, so the process died before Minecraft could handle the error itself.",
+				"solution" => "Close other programs, lower the Allocated Memory slider in Settings, and make sure the Windows page file (virtual memory) is enabled and has free space on the disk.",
+			],
+			[
+				"title" => "Java Virtual Machine Crash",
+				"patterns" => [
+					'~#\s+(?:EXCEPTION_ACCESS_VIOLATION|INTERNAL_ERROR|OUT_OF_MEMORY|STACK_OVERFLOW)~',
+					'~Problematic frame:\s+v\s+jvm\.dll~',
+					'~An error report file with more information is saved as:\s*\n\s*(\S+)~',
+				],
+				"cause" => "The Java Virtual Machine itself crashed. That is usually caused by faulty/overclocked RAM, a broken JVM install, or a native library - not by Minecraft's own code.",
+				"solution" => "Open the hs_err_pid*.log listed as the source: its \"Problematic frame\" says who crashed. Try a lower -Xmx, disable XMP/RAM overclock, and reinstall the JRE from Java Settings.",
+			],
+			[
+				"title" => "Out of Memory",
+				"patterns" => [
+					'~java\.lang\.OutOfMemoryError(?:\s*:\s*([^\n]{0,100}))?~',
+				],
+				"cause" => "Minecraft ran out of heap space (java.lang.OutOfMemoryError$1).",
+				"solution" => "Raise the Allocated Memory slider in Settings (currently {$ramMb} MB). If it is already high, close other programs, free RAM, and check for a mod that keeps loading data (large modpacks want 6-8 GB).",
+			],
+			[
+				"title" => "Outdated Java Version",
+				"patterns" => [
+					'~java\.lang\.UnsupportedClassVersionError:\s*(\S+)\s+has been compiled by a more recent version of the Java Runtime \(class file version (\d+)\.\d+\), this version of the Java Runtime only recognizes class file versions up to (\d+)\.\d+~',
+					'~java\.lang\.UnsupportedClassVersionError~',
+				],
+				"cause" => "",
+				"solution" => "",
+				"build" => function ($m) {
+					$class = isset($m[1]) ? $m[1] : "A game class";
+					$compiled = isset($m[2]) ? (int) $m[2] : 0;
+					$runtime = isset($m[3]) ? (int) $m[3] : 0;
+					$needJava = $compiled > 0 ? $compiled - 44 : 0;
+					$haveJava = $runtime > 0 ? $runtime - 44 : 0;
+					$cause = ($needJava > 0)
+						? "'{$class}' was compiled for Java {$needJava}, but the selected runtime only supports up to Java {$haveJava}."
+						: "Something in this version was compiled for a newer Java than the one currently selected.";
+					$solution = ($needJava > 0)
+						? "Install/select Java {$needJava} or newer in Java Settings for this version. Auto-select normally chooses it, so a manual override is probably stuck on an older runtime."
+						: "Select a newer Java version in Java Settings (1.18+ needs Java 17, 1.20.5+ needs Java 21) and launch again.";
+					return ["cause" => $cause, "solution" => $solution];
+				},
+			],
+			[
+				"title" => "Mod Mixin Error",
+				"patterns" => [
+					'~(?:MixinApplyError|InvalidInjectionException|InjectionError|MixinTransformerError|InvalidMixinError|MixinTargetAlreadyLoadedException)~',
+					'~@Inject annotation on [\w$.]+\s*\([^)]*\)\s*could not find any targets~',
+					'~Mixin \[[^\]]+\] from \S+ failed to apply~',
+					'~(?:could not find any targets matching|Unable to resolve target)~',
+				],
+				"cause" => "A mod's Mixin patch could not be applied to Minecraft's classes, so loading was aborted.",
+				"solution" => "Usually a mod written for a different Minecraft/loader version, or two mods patching the same method. Update or remove the mod named below, and confirm your loader (Fabric/Forge/NeoForge) matches what the mod requires.",
+				"detail" => [
+					"pattern" => '~((?:Mixin \[[^\]]+\][^\n]{0,160})|(?:InvalidInjectionException|MixinApplyError|InjectionError)[^\n]{0,160})~',
+					"tpl" => '$1',
+				],
+			],
+			[
+				"title" => "Missing Class or Dependency",
+				"patterns" => [
+					'~Caused by: java\.lang\.NoClassDefFoundError: ([\w/$]+)~',
+					'~java\.lang\.NoClassDefFoundError: ([\w/$]+)~',
+					'~java\.lang\.ClassNotFoundException: ([\w.$]+)~',
+				],
+				"cause" => "The class $1 could not be found while the game was running.",
+				"solution" => "A required library is missing or is the wrong version. Read the class name: net/minecraft/... points at a coremod, org/... at a library (Fabric API, Architectury), com/... or the mod's own package at a mod you must install.",
+			],
+			[
+				"title" => "Mod Entry Point Failed",
+				"patterns" => [
+					'~Could not execute entrypoint stage \'[^\']*\' due to errors, provided by \'([^\']+)\'~',
+					'~Failed to load entrypoint(?: stage \'[^\']*\')?[^\n]*provided by \'([^\']+)\'~',
+				],
+				"cause" => "The mod '$1' crashed while starting up (its entry point threw an exception).",
+				"solution" => "Look at the exception printed right after this line in the source file. Update '$1' to a build matching your Minecraft version, or remove it if it is optional.",
+			],
+			[
+				"title" => "Missing or Conflicting Mods",
+				"patterns" => [
+					'~Missing or unsupported mandatory dependencies:~',
+					'~Conflicts between mods:~',
+					'~Incompatibilities between mods:~',
+					'~Unsupported installed optional dependencies:~',
+					'~Some of your mods are incompatible with each other~',
+					'~Mod File \S+ needs language provider~',
+				],
+				"cause" => "The mod loader refused to start because a required mod is missing, or two installed mods conflict.",
+				"solution" => "Install the missing mods or remove the conflicting one, then relaunch. The exact list is in the details below.",
+				"detail" => [
+					"pattern" => '~((?:Missing or unsupported mandatory dependencies|Conflicts between mods|Incompatibilities between mods|Unsupported installed optional dependencies)[\s\S]{0,500})~',
+					"tpl" => '$1',
+				],
+			],
+			[
+				"title" => "Duplicate Mods",
+				"patterns" => [
+					'~[Dd]uplicate (?:mod|mods?)\b[^\n]{0,140}~',
+					'~Found duplicate[^\n]{0,140}~',
+					'~mod \S+ is already loaded[^\n]{0,80}~',
+				],
+				"cause" => "The same mod is installed twice (two jars, or two mod folders), so the loader stopped.",
+				"solution" => "Open the mods folder and delete the older/extra copy of the mod named below, then relaunch.",
+				"detail" => [
+					"pattern" => '~((?:[Dd]uplicate mod[^\n]{0,160}|Found duplicate[^\n]{0,160}))~',
+					"tpl" => '$1',
+				],
+			],
+			[
+				"title" => "Mod Version or Feature Order Problem",
+				"patterns" => [
+					'~FeatureOrderCycleException~',
+					'~Detected feature order cycle[^\n]{0,160}~',
+					'~feature order cycle~i',
+				],
+				"cause" => "Mods request world-generation features in a contradictory order, which the loader cannot resolve.",
+				"solution" => "Usually one mod (or an optional submod of it) is outdated or doesn't belong in this pack. Update or remove the worldgen/datapack mods and try again.",
+			],
+			[
+				"title" => "Corrupt or Invalid File",
+				"patterns" => [
+					'~java\.util\.zip\.ZipException~',
+					'~invalid CEN header~',
+					'~Not a valid zip file~',
+					'~error in opening zip file~',
+					'~has been identified as (?:corrupt|invalid)~i',
+				],
+				"cause" => "A jar file (mod, library, or Minecraft itself) is corrupt or truncated, so it could not be read.",
+				"solution" => "Delete the file named in the source log and let the launcher download it again: for a mod, remove the jar and reinstall it; for Minecraft, use Verify/Repair; then check the disk for errors.",
+			],
+			[
+				"title" => "Disk Full",
+				"patterns" => [
+					'~There is not enough space on the disk~',
+					'~no space left on device~i',
+				],
+				"cause" => "The drive holding the game (or the temp folder) ran out of free space while writing files.",
+				"solution" => "Free up disk space (or expand the Windows page file) and relaunch. Logs, mods and saves are all written continuously, so a nearly-full drive will crash the game repeatedly.",
+			],
+			[
+				"title" => "File Locked by Another Program",
+				"patterns" => [
+					'~The process cannot access the file because it is being used by another process~',
+				],
+				"cause" => "A file the game needed was locked by another program (often a second game instance, an antivirus, or the launcher itself).",
+				"solution" => "Close other Minecraft/launcher instances and any program holding the file, add an antivirus exclusion for the game folder, then try again.",
+			],
+			[
+				"title" => "Invalid Resource Name",
+				"patterns" => [
+					'~ResourceLocationException: Non \[a-z0-9/._-\] character in path of location: ([^\n]{1,140})~',
+				],
+				"cause" => "A mod or resource pack tried to register '$1', which contains a character Minecraft does not allow (only a-z 0-9 / . _ -).",
+				"solution" => "Usually a file name with spaces or capitals, or a badly built resource pack. Rename/remove that pack or file, or update the mod that produced the path.",
+			],
+			[
+				"title" => "Too Many Block IDs",
+				"patterns" => [
+					'~Invalid id 4096 - maximum id range exceeded~',
+					'~maximum id range exceeded~',
+				],
+				"cause" => "More than 4096 block IDs are registered - a sign of block-id exhaustion from an old (1.12.2 era) modpack.",
+				"solution" => "Remove some content-adding mods, or update to versions that register fewer blocks. There is no setting that raises this limit.",
+			],
+			[
+				"title" => "Missing Renderer Bridge (Indium)",
+				"patterns" => [
+					'~No fabric renderer found~i',
+					'~MissingClassException[^\n]*indium~i',
+					'~net\.fabricmc\.renderer[^\n]*indium~i',
+				],
+				"cause" => "Sodium is installed without Indium, so mods that use Fabric's rendering API have no renderer to talk to.",
+				"solution" => "Install the Indium version that matches your Sodium version (or remove Sodium).",
+			],
+			[
+				"title" => "Missing Mod API Classes",
+				"patterns" => [
+					'~(?:VertexBufferWriter|MemoryIntrinsics)~',
+					'~MissingClassException[^\n]*(?:sodium|oculus|rubidium|embeddium)~i',
+					'~net/caffeinemc/mods/sodium[^\n]*~',
+				],
+				"cause" => "A mod expects Sodium/Oculus/Embeddium classes that are not installed (or are a different version).",
+				"solution" => "Install the matching library version, or update/remove the mod that requires it.",
+			],
+			[
+				"title" => "OptiFine on the Stack",
+				"patterns" => [
+					'~Caused by:[^\n]*optifine~i',
+					'~net\.optifine\.[\w.$]+~',
+				],
+				"cause" => "OptiFine was in the call stack when the game crashed. OptiFine changes rendering deeply and conflicts with many mods/shaders.",
+				"solution" => "Try removing OptiFine (or updating it to the exact Minecraft version). For modern versions, Sodium + Iris (Fabric) or Embeddium + Oculus (Forge) are the stable alternatives.",
+			],
+			[
+				"title" => "OpenGL / GLFW Error",
+				"patterns" => [
+					'~Pixel format not accelerated~',
+					'~Could not initialize GLFW~',
+					'~GLFW error 65542~',
+					'~No available GL version~',
+					'~OpenGL 2\.1 \(or higher\) is required~',
+				],
+				"cause" => "Minecraft could not create a rendering context, so it never reached the main menu.",
+				"solution" => "Update your graphics drivers (a clean install from the manufacturer), and make sure your GPU supports OpenGL 3.2+. On laptops, force the dedicated GPU for javaw.exe instead of the integrated one.",
+			],
+			[
+				"title" => "Missing Natives",
+				"patterns" => [
+					'~java\.lang\.UnsatisfiedLinkError(?:\s*:\s*([^\n]{0,120}))?~',
+				],
+				"cause" => "A native library could not be loaded: $1",
+				"solution" => "You are probably running the wrong Java architecture (64-bit Java on a 64-bit OS is required) or the natives failed to extract. Reinstall the JRE from Java Settings and delete the game's natives/ folder so it is recreated.",
+			],
+			[
+				"title" => "Java Module Access Blocked",
+				"patterns" => [
+					'~java\.lang\.reflect\.InaccessibleObjectException~',
+					'~Unable to make [\w.$\s]+ accessible~',
+				],
+				"cause" => "The selected Java blocks reflective access that this Minecraft/Forge version performs - this happens with older Forge on modern Java.",
+				"solution" => "Pick the Java version recommended for this Minecraft version in Java Settings (Java 8 for 1.12.2, Java 17 for 1.18-1.20.4, Java 21 for 1.20.5+), or add the required --add-opens JVM arguments.",
+			],
+			[
+				"title" => "Game Freeze (Watchdog)",
+				"patterns" => [
+					'~Watchdog timeout~i',
+					'~A single server tick has taken[^\n]{0,120}~',
+					'~halted the watchdog~i',
+				],
+				"cause" => "The game froze for too long on one thread and killed itself instead of hanging forever.",
+				"solution" => "Usually a heavy mod, world generation, or a shader/menu overlay. Look at the stack trace in the source file to see which mod was busy, then update it or lower your render settings.",
+			],
+			[
+				"title" => "Stack Overflow",
+				"patterns" => [
+					'~java\.lang\.StackOverflowError~',
+				],
+				"cause" => "A mod (or a mixin) recursed infinitely, exhausting the call stack.",
+				"solution" => "The stack trace in the source file shows which mod keeps calling itself. Update or remove it - this is never a settings problem.",
+			],
+			[
+				"title" => "Mod Version Mismatch",
+				"patterns" => [
+					'~java\.lang\.(?:NoSuchMethodError|NoSuchFieldError|AbstractMethodError|IncompatibleClassChangeError)~',
+				],
+				"cause" => "A mod called something that does not exist in the version of another mod that is installed.",
+				"solution" => "Two mods are on incompatible versions. Update both (or the one named in the first line of the stack trace) so they target the same Minecraft version.",
+			],
+			[
+				"title" => "Broken Native Helper (JNA)",
+				"patterns" => [
+					'~Could not initialize class com\.sun\.jna~',
+					'~java\.lang\.UnsatisfiedLinkError[^\n]*jna~i',
+				],
+				"cause" => "The JNA helper library used by some mods/native code could not initialize.",
+				"solution" => "Delete the game's natives/ folder, make sure you run 64-bit Java, and add an antivirus exclusion for the game folder (security software often blocks JNA).",
+			],
+			[
+				"title" => "Missing Mod Config File",
+				"patterns" => [
+					'~Could not read mixin config~',
+					'~Mixin config \S+ is missing~',
+					'~Invalid mixin config~',
+				],
+				"cause" => "A mod's configuration/mixin file was missing or could not be parsed, so the mod never loaded.",
+				"solution" => "Reinstall the mod named in the log (its jar is probably incomplete), and delete leftover config files from older versions.",
+			],
+			[
+				"title" => "JVM Could Not Start",
+				"patterns" => [
+					'~Error: Could not find or load main class (\S+)~',
+					'~Could not create the Java Virtual Machine~',
+					'~Invalid maximum heap size:~',
+				],
+				"cause" => "Java itself refused the launch command before Minecraft started.",
+				"solution" => "Check the JVM arguments in Settings (a bad -Xmx/-Xms is the usual cause), verify the Java executable path in Java Settings, and check the launcher log for the generated command line.",
+				"detail" => [
+					"pattern" => '~((?:Error: Could not find or load main class \S+)|(?:Invalid maximum heap size:[^\n]{0,80})|(?:Could not create the Java Virtual Machine[^\n]{0,80}))~',
+					"tpl" => '$1',
+				],
+			],
+		];
+		return $rules;
 	}
 
 	private function resolveMcJavaVersion($mcVersion)
@@ -16842,50 +17767,117 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$gl->glVertex2f(0, $this->height);
 		$gl->glEnd();
 
-		$mw = 500;
-		$mh = 300;
-		$mx = ($this->width - $mw) / 2;
-		$my = ($this->height - $mh) / 2 - (1.0 - $this->crashModalAnim) * 50; // slide up
+		list($mw, $mh, $mx, $my) = $this->getCrashModalGeometry();
+		$my -= (1.0 - $this->crashModalAnim) * 50; // slide up
+		$ha = $this->crashModalAnim;
 
 		// Modal Box
-		$this->drawRoundedRect($mx, $my, $mw, $mh, 10, [0.12, 0.12, 0.12, $this->crashModalAnim]);
-		
+		$this->drawRoundedRect($mx, $my, $mw, $mh, 10, [0.12, 0.12, 0.12, $ha]);
+
 		// Modal Header
-		$this->drawRoundedRect($mx, $my, $mw, 50, 10, [0.9, 0.3, 0.3, $this->crashModalAnim]);
-		$gl->glColor4f(0.12, 0.12, 0.12, $this->crashModalAnim);
+		$hh = 62;
+		$this->drawRoundedRect($mx, $my, $mw, $hh, 10, [0.9, 0.3, 0.3, $ha]);
+		$gl->glColor4f(0.12, 0.12, 0.12, $ha);
 		$gl->glBegin(0x0007);
 		$gl->glVertex2f($mx, $my + 40);
 		$gl->glVertex2f($mx + $mw, $my + 40);
-		$gl->glVertex2f($mx + $mw, $my + 50);
-		$gl->glVertex2f($mx, $my + 50);
+		$gl->glVertex2f($mx + $mw, $my + $hh);
+		$gl->glVertex2f($mx, $my + $hh);
 		$gl->glEnd();
 
-		// Title
-		$this->renderText($this->crashTitle, $mx + 20, $my + 34, [1, 1, 1, $this->crashModalAnim], 1500);
-
-		// Cause
-		$this->renderText("Cause:", $mx + 20, $my + 70, $this->colors["text_dim"], 1000);
-		$wrappedCause = explode("\n", wordwrap($this->crashCause, 50, "\n", true));
-		$oy = $my + 90;
-		foreach ($wrappedCause as $line) {
-			$this->renderText($line, $mx + 20, $oy, $this->colors["text"], 1000);
-			$oy += 20;
+		// Title + where the analysis came from
+		$this->renderText($this->crashTitle, $mx + 20, $my + 31, [1, 1, 1, $ha], 1500);
+		if ($this->crashSource !== "") {
+			$this->renderText("Source: " . $this->crashSource, $mx + 20, $my + 56, [1, 1, 1, 0.6 * $ha], 1000);
 		}
 
-		// Solution
-		$this->renderText("Solution:", $mx + 20, $my + 170, $this->colors["text_dim"], 1000);
-		$wrappedSolution = explode("\n", wordwrap($this->crashSolution, 50, "\n", true));
-		$oy = $my + 190;
-		foreach ($wrappedSolution as $line) {
-			$this->renderText($line, $mx + 20, $oy, $this->colors["text"], 1000);
-			$oy += 20;
+		// Body: cause + solution, scrollable when the text is long
+		$bodyTop = $my + 76;
+		$bodyBottom = $my + $mh - 54;
+		$viewH = max(40.0, $bodyBottom - $bodyTop);
+		$lines = $this->getCrashBodyLines();
+
+		$lineH = 19;
+		$totalH = count($lines) * $lineH;
+		$maxScroll = max(0.0, $totalH - $viewH);
+		$this->crashScroll = max(0.0, min($maxScroll, $this->crashScroll));
+
+		$i = 0;
+		foreach ($lines as $line) {
+			$ly = $bodyTop + $i * $lineH - $this->crashScroll;
+			$i++;
+			if ($line === "" || $ly < $bodyTop || $ly > $bodyBottom - $lineH) {
+				continue;
+			}
+			$isLabel = ($line === "CAUSE" || $line === "SOLUTION");
+			$base = $isLabel ? $this->colors["primary"] : $this->colors["text"];
+			$list = $isLabel ? 3000 : 1000;
+			$this->renderText($line, $mx + 22, $ly + 13, [$base[0], $base[1], $base[2], $ha], $list);
 		}
 
-		// Close Button
-		$bx = $mx + $mw / 2 - 60;
-		$by = $my + $mh - 50;
-		$bw = 120;
-		$this->drawStyledButton($bx, $by, $bw, 30, "CLOSE", $this->crashCloseHover);
+		// Scrollbar
+		if ($maxScroll > 1.0) {
+			$sx = $mx + $mw - 14;
+			$this->drawRect($sx, $bodyTop, 3, $viewH, [1, 1, 1, 0.10 * $ha]);
+			$thumbH = max(24.0, $viewH * ($viewH / $totalH));
+			$thumbY = $bodyTop + ($viewH - $thumbH) * ($this->crashScroll / $maxScroll);
+			$this->drawRect($sx, $thumbY, 3, $thumbH, [1, 1, 1, 0.4 * $ha]);
+		}
+
+		// Buttons: OPEN FILE / OPEN FOLDER (only when there are files) / CLOSE
+		foreach ($this->getCrashButtons() as $id => $b) {
+			$label = ($id === "close") ? "CLOSE" : (($id === "open") ? "OPEN FILE" : "OPEN FOLDER");
+			$this->drawStyledButton($b[0], $b[1], $b[2], $b[3], $label, $this->crashBtnHover === $id);
+		}
+	}
+
+	private function getCrashModalGeometry()
+	{
+		$mw = min(620, max(340, $this->width - 40));
+		$mh = min(440, max(300, $this->height - 160));
+		return [$mw, $mh, ($this->width - $mw) / 2, ($this->height - $mh) / 2];
+	}
+
+	private function getCrashButtons()
+	{
+		list($mw, $mh, $mx, $my) = $this->getCrashModalGeometry();
+		$by = $my + $mh - 38;
+		$bh = 30;
+		$btns = [];
+		$x = $mx + $mw - 20 - 110;
+		$btns["close"] = [$x, $by, 110, $bh];
+		if (count($this->crashFiles) > 0) {
+			$x -= 10 + 150;
+			$btns["folder"] = [$x, $by, 150, $bh];
+			$x -= 10 + 140;
+			$btns["open"] = [$x, $by, 140, $bh];
+		}
+		return $btns;
+	}
+
+	private function getCrashBodyLines()
+	{
+		list($mw) = $this->getCrashModalGeometry();
+		$wrapChars = max(30, (int) (($mw - 56) / 8.6));
+		$lines = ["CAUSE"];
+		foreach (explode("\n", wordwrap((string) $this->crashCause, $wrapChars, "\n", true)) as $l) {
+			$lines[] = $l;
+		}
+		$lines[] = "";
+		$lines[] = "SOLUTION";
+		foreach (explode("\n", wordwrap((string) $this->crashSolution, $wrapChars, "\n", true)) as $l) {
+			$lines[] = $l;
+		}
+		return $lines;
+	}
+
+	private function getCrashScrollMax()
+	{
+		list($mw, $mh, $mx, $my) = $this->getCrashModalGeometry();
+		$bodyTop = $my + 76;
+		$bodyBottom = $my + $mh - 54;
+		$viewH = max(40.0, $bodyBottom - $bodyTop);
+		return max(0.0, count($this->getCrashBodyLines()) * 19 - $viewH);
 	}
 
 	private function renderModInfoModal()
