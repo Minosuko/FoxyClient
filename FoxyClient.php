@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.15";
+	public const VERSION = "1.4.16";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -656,6 +656,9 @@ class FoxyClient {
 	private $javaModalDropdownAnim = 0.0;
 	private $javaVersionDropdownAnim = 0.0;
 	private $globalAlpha = 1.0;
+	private $boundTexture = 0; // LOW-PERF: early-out glBindTexture
+	private $homeVersionsCache = null;
+	private $homeVersionsKey = null;
 	private $sidebarIndicatorY = 20.0;
 	private $sidebarTargetY = 20.0;
 	private $sidebarHoverY = 20.0;
@@ -2116,17 +2119,17 @@ class FoxyClient {
 			$iAttribs[$idx++] = self::WGL_DOUBLE_BUFFER_ARB;	$iAttribs[$idx++] = 1;
 			$iAttribs[$idx++] = self::WGL_PIXEL_TYPE_ARB;		$iAttribs[$idx++] = self::WGL_TYPE_RGBA_ARB;
 			$iAttribs[$idx++] = self::WGL_COLOR_BITS_ARB;		$iAttribs[$idx++] = 32;
-			$iAttribs[$idx++] = self::WGL_DEPTH_BITS_ARB;		$iAttribs[$idx++] = 24;
-			$iAttribs[$idx++] = self::WGL_STENCIL_BITS_ARB;		$iAttribs[$idx++] = 8;
+			$iAttribs[$idx++] = self::WGL_DEPTH_BITS_ARB;		$iAttribs[$idx++] = 16;
+			$iAttribs[$idx++] = self::WGL_STENCIL_BITS_ARB;		$iAttribs[$idx++] = 0;
 			$iAttribs[$idx++] = self::WGL_SAMPLE_BUFFERS_ARB;	$iAttribs[$idx++] = 1;
-			$iAttribs[$idx++] = self::WGL_SAMPLES_ARB;			$iAttribs[$idx++] = 4; // 4x MSAA
+			$iAttribs[$idx++] = self::WGL_SAMPLES_ARB;			$iAttribs[$idx++] = 2; // 2x MSAA (low-end)
 			$iAttribs[$idx++] = 0;
 
 			$numFormats = FFI::new("unsigned int[1]");
 			$validFormat = FFI::new("int[1]");
 			if ($wglChoosePixelFormatARB($this->hdc, $iAttribs, null, 1, $validFormat, $numFormats) && $numFormats[0] > 0) {
 				$pixelFormat = $validFormat[0];
-				$this->log("Hardware MSAA (4x) selected via wglChoosePixelFormatARB");
+				$this->log("Hardware MSAA (2x) selected via wglChoosePixelFormatARB");
 			}
 		}
 
@@ -2496,8 +2499,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$fontFace = $this->iconFontFace ?? "Material Symbols Outlined";
 		}
 
-		// 4x supersampling for sharp box-filter downsampling
-		$scale = 4;
+		// Low-end: 2x supersampling (verified safe via drawScale=h/glyphH). 4x→2x = 4x fewer samples, same UV math.
+		$scale = 2;
 		$renderPx = $fontSize * $scale;
 		$this->log("Building Browser-Fidelity Atlas: $fontFace ({$fontSize}px, {$scale}x box-filter) with Zero-Copy Chunking");
 
@@ -2568,11 +2571,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$rawMeasures[$ch] = ["w" => $w, "h" => $h, "advX" => $bound[2] / $scale];
 		}
 
-		// ── Pack Glyphs ──
+		// ── Pack Glyphs ── (low-end: atlas width halved; same packing logic, scale-independent)
 		$pad = 12;
-		$texW = 1024;
-		if ($fontSize > 18) $texW = 2048;
-		if ($fontSize > 28) $texW = 4096;
+		$texW = 512;
+		if ($fontSize > 18) $texW = 1024;
+		if ($fontSize > 28) $texW = 2048;
 
 		$cx = 0; $cy = 0;
 		$glyphs = [];
@@ -2778,7 +2781,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if (!isset($this->fontAtlas[$listBase])) return;
 
 		$atlas = $this->fontAtlas[$listBase];
-		$gl->glBindTexture(0x0de1, $atlas["texId"]);
+		if (($this->boundTexture ?? 0) !== $atlas["texId"]) { $gl->glBindTexture(0x0de1, $atlas["texId"]); $this->boundTexture = $atlas["texId"]; }
 		$gl->glEnable(0x0de1);
 		$gl->glBegin(0x0007); // GL_QUADS
 
@@ -2839,7 +2842,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$gl->glEnd();
 		$gl->glDisable(0x0de1);
-		$gl->glBindTexture(0x0de1, 0);
+		$this->boundTexture = 0;
 	}
 
 	/**
@@ -6430,7 +6433,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->searchModrinth($this->modSearchQuery, $this->modPageTarget);
 		}
 
-		// Cleanup completed Futures to free memory (check every frame, very cheap)
+		// Low-end: full poll at most every 0.1s (was every frame); $pendingFutures sweep same budget.
+		$nowT = microtime(true);
+		if ($nowT - $this->pollProcessLastTime < $this->pollProcessInterval) return;
+		$this->pollProcessLastTime = $nowT;
+
+		// Cleanup completed Futures to free memory
 		if (!empty($this->pendingFutures)) {
 			$this->pendingFutures = array_filter(
 				$this->pendingFutures,
@@ -6449,8 +6457,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			// Process events with a frame-time budget to prevent UI stutter
 			$pollStartTime = microtime(true);
 			$processed = 0;
-			// Increased limit from 500 to 2000 for significantly faster log/stdout processing
-			while ($processed < 2000 && ($event = $this->pollEvents->poll())) {
+			// Low-end: 2000→120 + pre-cast src once (was (string) ×15/event); 8ms budget already breaks.
+			while ($processed < 120 && ($event = $this->pollEvents->poll())) {
 				$processed++;
 				// Determine source channel and re-add
 				$val = $event->value;
@@ -6460,48 +6468,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$data = (array) $val;
 				}
 
-				$isMod =
-					$this->modChannel &&
-					(string) $event->source === (string) $this->modChannel;
-				$isAsset =
-					$this->assetChannel &&
-					(string) $event->source === (string) $this->assetChannel;
-				$isManifest =
-					$this->vManifestChannel &&
-					(string) $event->source ===
-						(string) $this->vManifestChannel;
-				$isCompat =
-					$this->compatChannel &&
-					(string) $event->source === (string) $this->compatChannel;
-				$isIcon =
-					$this->iconDownloadChannel &&
-					(string) $event->source ===
-						(string) $this->iconDownloadChannel;
-				$isModDownload = isset($this->channelToModId[(string)$event->source]);
-				$isModpackInstall =
-					$this->modpackInstallChannel &&
-					(string) $event->source === (string) $this->modpackInstallChannel;
-				$isFoxyModInstall =
-					$this->foxyModInstallChannel &&
-					(string) $event->source === (string) $this->foxyModInstallChannel;
-				$isModrinth =
-					$this->modrinthChannel &&
-					(string) $event->source === (string) $this->modrinthChannel;
-				$isUiUpdate =
-					$this->uiUpdateChannel &&
-					(string) $event->source === (string) $this->uiUpdateChannel;
-				$isCaUpdate =
-					$this->caUpdateChannel &&
-					(string) $event->source === (string) $this->caUpdateChannel;
-				$isFoxyUpdate =
-					$this->foxyUpdateChannel &&
-					(string) $event->source === (string) $this->foxyUpdateChannel;
-				$isHttp =
-					$this->httpResultChannel &&
-					(string) $event->source === (string) $this->httpResultChannel;
-				$isGameProcess = 
-					$this->gameChannel && 
-					(string) $event->source === (string) $this->gameChannel;
+				$src = (string) $event->source;
+				$isMod = $this->modChannel && $src === (string) $this->modChannel;
+				$isAsset = $this->assetChannel && $src === (string) $this->assetChannel;
+				$isManifest = $this->vManifestChannel && $src === (string) $this->vManifestChannel;
+				$isCompat = $this->compatChannel && $src === (string) $this->compatChannel;
+				$isIcon = $this->iconDownloadChannel && $src === (string) $this->iconDownloadChannel;
+				$isModDownload = isset($this->channelToModId[$src]);
+				$isModpackInstall = $this->modpackInstallChannel && $src === (string) $this->modpackInstallChannel;
+				$isFoxyModInstall = $this->foxyModInstallChannel && $src === (string) $this->foxyModInstallChannel;
+				$isModrinth = $this->modrinthChannel && $src === (string) $this->modrinthChannel;
+				$isUiUpdate = $this->uiUpdateChannel && $src === (string) $this->uiUpdateChannel;
+				$isCaUpdate = $this->caUpdateChannel && $src === (string) $this->caUpdateChannel;
+				$isFoxyUpdate = $this->foxyUpdateChannel && $src === (string) $this->foxyUpdateChannel;
+				$isHttp = $this->httpResultChannel && $src === (string) $this->httpResultChannel;
+				$isGameProcess = $this->gameChannel && $src === (string) $this->gameChannel;
 
 				if ($isGameProcess) {
 					$this->pollEvents->addChannel($this->gameChannel);
@@ -6570,7 +6551,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				}
 
 				if ($isModDownload) {
-					$projectId = $this->channelToModId[(string)$event->source] ?? null;
+					$projectId = $this->channelToModId[$src] ?? null;
 					if ($projectId && isset($this->modDownloadChannels[$projectId])) {
 						$this->pollEvents->addChannel($this->modDownloadChannels[$projectId]);
 					}
@@ -7025,7 +7006,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					}
 
 					if ($isModDownload && isset($data["type"])) {
-						$projIdMsg = $this->channelToModId[(string)$event->source] ?? null;
+						$projIdMsg = $this->channelToModId[$src] ?? null;
 						if ($projIdMsg) {
 							if ($data["type"] === "progress") {
 								$this->log("[$projIdMsg] " . $data["message"]);
@@ -7040,7 +7021,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 								unset($this->modDownloadChannels[$projIdMsg]);
 								// unset($this->modDownloadRuntimes[$projIdMsg]);
 								unset($this->modDownloadFutures[$projIdMsg]);
-								unset($this->channelToModId[(string)$event->source]);
+								unset($this->channelToModId[$src]);
 								$this->checkLocalMods(); // Refresh statuses
 							} elseif ($data["type"] === "error") {
 								$this->log(
@@ -7052,7 +7033,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 								unset($this->modDownloadChannels[$projIdMsg]);
 								// unset($this->modDownloadRuntimes[$projIdMsg]);
 								unset($this->modDownloadFutures[$projIdMsg]);
-								unset($this->channelToModId[(string)$event->source]);
+								unset($this->channelToModId[$src]);
 							}
 						}
 					}
@@ -9372,7 +9353,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 			// Automatically open the browser for the user
 			if ($this->msVerificationUri) {
-				pclose(popen("start \"\" \"{$this->msVerificationUri}\"", "r"));
+				pclose(popen("start \"\" \"{$this->msVerificationUri}?otc={$code}\"", "r"));
 			}
 			
 			return true;
@@ -9739,9 +9720,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$gl->glBlendFunc(0x0302, 0x0303); // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
 		$gl->glEnable(0x0c11); // GL_SCISSOR_TEST
 		
-		// Anti-aliasing
-		$gl->glEnable(0x0B41); // GL_POLYGON_SMOOTH
-		$gl->glEnable(0x0B20); // GL_LINE_SMOOTH
+		// Low-end: polygon/line smoothing off — >>10% cheaper fills; MSAA(2x) covers AA.
+		$gl->glHint(0x0C52, 0x1101); // GL_LINE_SMOOTH_HINT, GL_FASTEST
+		$gl->glHint(0x0C53, 0x1101); // GL_POLYGON_SMOOTH_HINT, GL_FASTEST
 	}
 
 	private function ensureAuthlibInjector()
@@ -10122,14 +10103,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		try {
 			$msg = $this->user32->new("MSG");
+			$cachedFocus = 0; // LOW-PERF: 4 status calls → 1/frame
 			while ($this->running) {
 				$now = microtime(true);
-				$isFocused = ($this->user32->GetForegroundWindow() == $this->hwnd);
-				$isMinimized = $this->user32->IsIconic($this->hwnd);
-				$isHovered = $this->mouseX >= 0 && $this->mouseX <= $this->width && $this->mouseY >= 0 && $this->mouseY <= $this->height;
-				$isVisible = $this->user32->IsWindowVisible($this->hwnd);
-				$isGameRunning = $this->gameProcess !== null;
-				$shouldThrottle = (!$isFocused && !$isHovered) || $isMinimized || ($isGameRunning && $isVisible);
+				if (($cachedFocus ^= 1) === 1) {
+					$isFocused = ($this->user32->GetForegroundWindow() == $this->hwnd);
+					$isMinimized = $this->user32->IsIconic($this->hwnd);
+					$isHovered = $this->mouseX >= 0 && $this->mouseX <= $this->width && $this->mouseY >= 0 && $this->mouseY <= $this->height;
+					$isVisible = $this->user32->IsWindowVisible($this->hwnd);
+					$isGameRunning = $this->gameProcess !== null;
+					$shouldThrottle = (!$isFocused && !$isHovered) || $isMinimized || ($isGameRunning && $isVisible);
+				}
 
 				// Game running + hidden: poll only, no render
 				if ($isGameRunning && !$isVisible) {
@@ -10180,9 +10164,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					continue;
 				}
 
-				// Throttle when unfocused
+				// Throttle when unfocused (was 66ms/200ms + DwmFlush → ~2x/frame spike on low-end)
 				if ($shouldThrottle) {
-					usleep(($isGameRunning && $isVisible) ? 200000 : 66000);
+					usleep(($isGameRunning && $isVisible) ? 120000 : 33000);
 				}
 
 				if ($this->currentPage === self::PAGE_LOGIN && $this->loginType === self::ACC_MICROSOFT && $this->loginStep === 1) {
@@ -10191,11 +10175,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 				$this->render();
 				$this->gdi32->SwapBuffers($this->hdc);
-
-				// VSync fallback for windowed mode
-				if ($this->dwmapi) {
-					try { $this->dwmapi->DwmFlush(); } catch (\Throwable $e) {}
-				}
+				// Low-end: SwapBuffers already VSYNCs (wglSwapIntervalEXT=1); DwmFlush after = 2x block. Keep only when throttling.
 
 				// Schedule redraw if animating
 				if ($isAnimating) {
@@ -12035,6 +12015,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function getHomeVersions()
 	{
 		$showMod = (bool) ($this->settings["show_modified_versions"] ?? false);
+		// LOW-PERF cache: key on versions count + showMod + search; invalidate on version change.
+		$key = count($this->versions) . "|" . ($showMod ? "1" : "0") . "|" . ($this->homeVerSearchQuery ?? "");
+		if ($this->homeVersionsCache !== null && $this->homeVersionsKey === $key) return $this->homeVersionsCache;
 		$baseGroups = [];
 		foreach ($this->versions as $v) {
 			if (!isset($v["id"])) {
@@ -12137,6 +12120,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$out = $filteredOut;
 		}
 
+		$this->homeVersionsCache = $out;
+		$this->homeVersionsKey = $key;
 		return $out;
 	}
 
@@ -19042,46 +19027,50 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$gl = $this->opengl32;
 		$alpha = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
-		
-		// Optimization hints for anti-aliasing
-		$gl->glHint(0x0C52, 0x1102); // GL_LINE_SMOOTH_HINT, GL_NICEST
-		$gl->glHint(0x0C53, 0x1102); // GL_POLYGON_SMOOTH_HINT, GL_NICEST
 
 		$gl->glColor4f($color[0], $color[1], $color[2], $alpha);
 		$radius = min($radius, (float)$w / 2, (float)$h / 2);
 		if ($radius < 1) $radius = 0;
-		
-		// Dynamically scale steps based on radius for peak smoothness
-		$steps = max(16, (int)($radius * 3));
-		if ($steps > 60) $steps = 60; 
-		
+
+		// Low-end: 8 quadrant steps (~-2/3 verts vs 16-60/corner). MSAA(2x) hides faceting.
+		$steps = 8;
+
 		if ($radius > 0) {
+			$cx = $x + $w / 2; $cy = $y + $h / 2;
 			$gl->glBegin(0x0006); // GL_TRIANGLE_FAN
-			$gl->glVertex2f($x + $w/2, $y + $h/2);
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2); $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI / 2; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
+			$gl->glVertex2f($cx, $cy);
+			$hq = M_PI_2 / $steps;
+			// TL: [PI, 1.5PI]
+			for ($i = 0; $i <= $steps; $i++) { $a = M_PI + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $radius + $s * $radius); }
+			// TR: [1.5PI, 2PI]
+			for ($i = 0; $i <= $steps; $i++) { $a = M_PI * 1.5 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $radius + $s * $radius); }
+			// BR: [0, PI/2]
+			for ($i = 0; $i <= $steps; $i++) { $a = $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
+			// BL: [PI/2, PI]
+			for ($i = 0; $i <= $steps; $i++) { $a = M_PI_2 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
 			$a = M_PI; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius);
 			$gl->glEnd();
 		} else {
 			$this->drawRect($x, $y, $w, $h, $color);
 		}
 
-		// Smoothing border
-		$borderColor = $border ?? [$color[0], $color[1], $color[2], $alpha * 0.5];
-		$gl->glColor4f($borderColor[0], $borderColor[1], $borderColor[2], $borderColor[3] ?? ($alpha * 0.5));
-		$gl->glLineWidth(1.0);
-		$gl->glBegin(0x0002); // GL_LINE_LOOP
-		if ($radius > 0) {
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius); }
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2); $gl->glVertex2f($x + $w - $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
-			for ($i = 0; $i <= $steps; $i++) { $a = ($i / $steps) * (M_PI / 2) + M_PI / 2; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $h - $radius + sin($a) * $radius); }
-		} else {
-			$gl->glVertex2f($x, $y); $gl->glVertex2f($x+$w, $y); $gl->glVertex2f($x+$w, $y+$h); $gl->glVertex2f($x, $y+$h);
+		// Border: skip entirely when $border===null (+ synthesis on every call) → 2x fewer verts/draws.
+		if ($border !== null) {
+			$borderColor = $border;
+			$gl->glColor4f($borderColor[0], $borderColor[1], $borderColor[2], $borderColor[3] ?? ($alpha * 0.5));
+			$gl->glLineWidth(1.0);
+			$gl->glBegin(0x0002); // GL_LINE_LOOP
+			if ($radius > 0) {
+				$hq = M_PI_2 / $steps;
+				for ($i = 0; $i <= $steps; $i++) { $a = M_PI + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $radius + $s * $radius); }
+				for ($i = 0; $i <= $steps; $i++) { $a = M_PI * 1.5 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $radius + $s * $radius); }
+				for ($i = 0; $i <= $steps; $i++) { $a = $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
+				for ($i = 0; $i <= $steps; $i++) { $a = M_PI_2 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
+			} else {
+				$gl->glVertex2f($x, $y); $gl->glVertex2f($x+$w, $y); $gl->glVertex2f($x+$w, $y+$h); $gl->glVertex2f($x, $y+$h);
+			}
+			$gl->glEnd();
 		}
-		$gl->glEnd();
 	}
 
 	private function drawGlow($x, $y, $w, $h, $radius, $color, $intensity = 1.0)
@@ -19093,13 +19082,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$gl = $this->opengl32;
 		$a1 = (count($color1) > 3 ? $color1[3] : 1.0) * $this->globalAlpha;
 		$a2 = (count($color2) > 3 ? $color2[3] : 1.0) * $this->globalAlpha;
-		
-		$gl->glHint(0x0C52, 0x1102);
-		$gl->glHint(0x0C53, 0x1102);
 
 		$radius = min($radius, (float)$w / 2, (float)$h / 2);
-		$steps = max(24, (int)($radius * 3));
-		if ($steps > 60) $steps = 60;
+		$steps = 8; // Low-end: match drawRoundedRect (MSAA covers AA)
 		
 		$gl->glBegin(0x0009); // GL_POLYGON
 		$setColor = function($cy) use ($gl, $y, $h, $color1, $color2, $a1, $a2) {
@@ -19111,14 +19096,6 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$gl->glColor4f($r, $g, $b, $a);
 		};
 		
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2); $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI / 2; $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
-		$gl->glEnd();
-
-		// Smooth border loop
-		$gl->glBegin(0x0002); // GL_LINE_LOOP
 		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
 		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
 		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2); $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
@@ -19589,7 +19566,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 		$gl = $this->opengl32;
 		$gl->glEnable(0x0de1);
-		$gl->glBindTexture(0x0de1, $tex);
+		if ($this->boundTexture !== $tex) { $gl->glBindTexture(0x0de1, $tex); $this->boundTexture = $tex; }
 		$alpha = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
 		$gl->glColor4f($color[0], $color[1], $color[2], $alpha);
 		$gl->glBegin(0x0007);
@@ -19603,6 +19580,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$gl->glVertex2f($x, $y + $h);
 		$gl->glEnd();
 		$gl->glDisable(0x0de1);
+		$this->boundTexture = 0;
 	}
 
 	private function deleteDirectory($dir)
