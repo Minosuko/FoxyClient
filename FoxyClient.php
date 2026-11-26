@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.16";
+	public const VERSION = "1.4.17";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -377,8 +377,16 @@ class FoxyClient {
 	private $modIconLastUse = []; // project_id => timestamp
 	private $iconDownloadProcess = null;
 	private $iconDownloadChannel = null;
-	private $iconCancelChannel = null; // Channel for stopping stale downloads
+	private $iconCancelSync = null; // Shared flag used to abort stale icon batches
 	private $iconDownloadFuture = null; // Reference to prevent "return ignored" fatal error
+	// Dedicated, long-lived runtime for icon downloads. Keeping it alive lets the
+	// worker reuse its curl connection cache, so repeat searches skip the ~0.7s
+	// TLS handshake to the icon CDN. It is also separate from the transient pool,
+	// so icon downloads never queue ahead of searches or mod installs.
+	private $iconRuntime = null;
+	private $iconPrewarmFuture = null;
+	private $iconPrewarmAt = 0.0;
+	private $iconBatchId = 0; // Monotonic token identifying the active icon batch
 	private $httpResultChannel = null;
 	private $httpQueueChannel = null;
 	private $httpWorkerProcesses = [];
@@ -407,7 +415,7 @@ class FoxyClient {
 	private $gameChannel = null;
 	private $logHandle = null;
 	private $toggleAnims = [];
-	private $pollProcessInterval = 0.1;
+	private $pollProcessInterval = 0.025; // 40Hz event polling keeps download progress responsive
 	private $pollProcessLastTime = 0;
 
 	// Background Runtimes & State
@@ -588,6 +596,7 @@ class FoxyClient {
 		"jvm_optimizer" => "default",
 		"java_version" => "auto",
 		"ram_mb" => 2048,
+		"ram_auto" => true,
 		"bg_file" => self::DATA_DIR . "/images/background.jpg",
 		"bg_blur" => 0,
 		"theme" => "auto",
@@ -610,6 +619,7 @@ class FoxyClient {
 		"minecraft_args" => "",
 		"jvm_optimizer" => "default",
 		"ram_mb" => 2048,
+		"ram_auto" => true,
 		"bg_file" => self::DATA_DIR . "/images/background.jpg",
 		"bg_blur" => 0,
 		"theme" => "auto",
@@ -657,6 +667,10 @@ class FoxyClient {
 	private $javaVersionDropdownAnim = 0.0;
 	private $globalAlpha = 1.0;
 	private $boundTexture = 0; // LOW-PERF: early-out glBindTexture
+	private $animDt = 0.0166667; // Frame delta (s) for time-based animation
+	private $textRunCache = []; // Packed glyph quads per string (batched text)
+	private $textRunFloats = 0; // Total floats held by textRunCache
+	private static $roundTrig = []; // Per-step corner cos/sin table (no per-frame trig)
 	private $homeVersionsCache = null;
 	private $homeVersionsKey = null;
 	private $sidebarIndicatorY = 20.0;
@@ -673,6 +687,9 @@ class FoxyClient {
 	private $needsRedraw = true;
 	private $isIdle = false;
 	private $systemRamMB = 32768;
+	// Automatic memory sizing (Properties > Allocated Memory)
+	private $autoRamCache = null; // ['at','ram','base','addon','count','totalMB','heavy','loader']
+	private $lastAutoRamLogged = 0;
 
 	// System Metrics Overlay (parallel thread)
 	private $overlayFuture = null;
@@ -683,97 +700,109 @@ class FoxyClient {
 
 	// UI Color Palettes
 	private $darkColors = [
-		"bg" => [0.05, 0.06, 0.10],
-		"panel" => [0.09, 0.11, 0.16, 0.95],
-		"card" => [0.13, 0.15, 0.21, 0.95],
-		"card_hover" => [0.17, 0.20, 0.27, 0.95],
-		"primary" => [0.26, 0.51, 0.96],
-		"primary_dim" => [0.26, 0.51, 0.96],
-		"accent" => [0.54, 0.36, 0.96],
-		"text" => [0.93, 0.95, 0.98],
-		"text_dim" => [0.58, 0.62, 0.68],
-		"button" => [0.18, 0.20, 0.27, 0.95],
-		"button_hover" => [0.22, 0.25, 0.33, 0.95],
-		"check_off" => [0.20, 0.22, 0.28],
-		"tab_bg" => [0.07, 0.08, 0.13, 0.95],
-		"tab_active" => [0.13, 0.15, 0.21, 0.95],
-		"divider" => [0.18, 0.20, 0.27, 0.5],
-		"status_queue" => [0.26, 0.51, 0.96],
-		"status_active" => [0.22, 0.78, 0.45],
-		"status_done" => [0.22, 0.78, 0.45],
-		"status_error" => [0.94, 0.33, 0.31],
-		"status_update" => [0.26, 0.51, 0.96],
-		"warning" => [0.92, 0.70, 0.20],
-		"sidebar_bg1" => [0.05, 0.06, 0.10, 0.95],
-		"sidebar_bg2" => [0.05, 0.06, 0.10, 0.95],
-		"sidebar_active" => [0.26, 0.51, 0.96, 0.15],
-		"sidebar_hover" => [0.13, 0.15, 0.21, 0.5],
-		"titlebar_bg" => [0.05, 0.06, 0.10, 0.98],
-		"input_bg" => [0.09, 0.11, 0.16, 0.95],
-		"input_bg_active" => [0.13, 0.15, 0.21, 0.95],
-		"button_text" => [1.0, 1.0, 1.0],
-		"acc_active" => [0.26, 0.51, 0.96, 0.12],
-		"acc_active_border" => [0.26, 0.51, 0.96],
-		"del_btn" => [0.94, 0.33, 0.31],
-		"del_btn_hover" => [1.0, 0.40, 0.38],
-		"header_bg" => [0.07, 0.08, 0.13, 0.95],
-		"dropdown_bg" => [0.13, 0.15, 0.21, 0.98],
-		"dropdown_hover" => [0.18, 0.20, 0.27, 0.95],
-		"info_bg" => [0.26, 0.51, 0.96, 0.10],
-		"subtab" => [0.09, 0.11, 0.16],
-		"pill_bg" => [0.18, 0.20, 0.27],
-		"pill_active" => [0.26, 0.51, 0.96, 0.20],
-		"scrollbar" => [0.26, 0.51, 0.96, 0.25],
-		"scrollbar_hover" => [0.26, 0.51, 0.96, 0.45],
-		"overlay_bg" => [0.0, 0.0, 0.0, 0.55],
-		"modal_bg" => [0.13, 0.15, 0.21, 0.98],
+		"bg" => [0.12, 0.12, 0.12],
+		"panel" => [0.15, 0.15, 0.15, 0.97],
+		"card" => [0.18, 0.18, 0.18, 0.97],
+		"card_hover" => [0.21, 0.21, 0.21, 0.97],
+		"primary" => [0.00, 0.47, 0.83],
+		"primary_dim" => [0.00, 0.37, 0.72],
+		"accent" => [0.38, 0.80, 1.00],
+		"accent_hover" => [0.13, 0.55, 0.91],
+		"accent_pressed" => [0.00, 0.37, 0.72],
+		"text" => [0.96, 0.96, 0.96],
+		"text_dim" => [0.63, 0.63, 0.63],
+		"text_on_accent" => [1.0, 1.0, 1.0],
+		"button" => [0.20, 0.20, 0.20, 0.97],
+		"button_hover" => [0.24, 0.24, 0.24, 0.97],
+		"surface_alt" => [0.22, 0.22, 0.22, 0.97],
+		"stroke" => [1.0, 1.0, 1.0, 0.08],
+		"stroke_strong" => [1.0, 1.0, 1.0, 0.14],
+		"check_off" => [0.29, 0.29, 0.29],
+		"tab_bg" => [0.15, 0.15, 0.15, 0.97],
+		"tab_active" => [0.18, 0.18, 0.18, 0.97],
+		"divider" => [1.0, 1.0, 1.0, 0.08],
+		"status_queue" => [0.38, 0.80, 1.00],
+		"status_active" => [0.42, 0.80, 0.37],
+		"status_done" => [0.42, 0.80, 0.37],
+		"status_error" => [1.00, 0.60, 0.64],
+		"status_update" => [0.38, 0.80, 1.00],
+		"warning" => [0.99, 0.88, 0.00],
+		"sidebar_bg1" => [0.15, 0.15, 0.15, 0.97],
+		"sidebar_bg2" => [0.15, 0.15, 0.15, 0.97],
+		"sidebar_active" => [0.00, 0.47, 0.83, 0.14],
+		"sidebar_hover" => [1.0, 1.0, 1.0, 0.06],
+		"titlebar_bg" => [0.15, 0.15, 0.15, 0.98],
+		"input_bg" => [0.17, 0.17, 0.17, 0.97],
+		"input_bg_active" => [0.17, 0.17, 0.17, 0.97],
+		"button_text" => [0.96, 0.96, 0.96],
+		"acc_active" => [0.00, 0.47, 0.83, 0.12],
+		"acc_active_border" => [0.38, 0.80, 1.00],
+		"del_btn" => [0.77, 0.17, 0.11],
+		"del_btn_hover" => [0.84, 0.20, 0.14],
+		"header_bg" => [0.15, 0.15, 0.15, 0.96],
+		"dropdown_bg" => [0.20, 0.20, 0.20, 0.99],
+		"dropdown_hover" => [0.25, 0.25, 0.25, 0.99],
+		"info_bg" => [0.00, 0.47, 0.83, 0.10],
+		"subtab" => [0.18, 0.18, 0.18, 0.97],
+		"pill_bg" => [0.22, 0.22, 0.22, 0.97],
+		"pill_active" => [0.00, 0.47, 0.83, 0.16],
+		"scrollbar" => [1.0, 1.0, 1.0, 0.22],
+		"scrollbar_hover" => [1.0, 1.0, 1.0, 0.40],
+		"overlay_bg" => [0.08, 0.08, 0.08, 0.92],
+		"modal_bg" => [0.15, 0.15, 0.15, 0.99],
 	];
 
 	private $lightColors = [
-		"bg" => [0.95, 0.96, 0.98],
-		"panel" => [1.0, 1.0, 1.0, 0.98],
-		"card" => [1.0, 1.0, 1.0, 0.98],
-		"card_hover" => [0.93, 0.94, 0.96, 1.0],
-		"primary" => [0.22, 0.44, 0.86],
-		"primary_dim" => [0.22, 0.44, 0.86],
-		"accent" => [0.50, 0.32, 0.90],
-		"text" => [0.08, 0.09, 0.11],
-		"text_dim" => [0.50, 0.52, 0.56],
-		"button" => [0.90, 0.91, 0.93, 1.0],
-		"button_hover" => [0.85, 0.86, 0.89, 1.0],
-		"check_off" => [0.82, 0.83, 0.86],
-		"tab_bg" => [0.92, 0.93, 0.95, 0.95],
-		"tab_active" => [1.0, 1.0, 1.0, 1.0],
+		"bg" => [0.95, 0.95, 0.95],
+		"panel" => [0.97, 0.97, 0.97, 0.97],
+		"card" => [1.0, 1.0, 1.0, 0.97],
+		"card_hover" => [0.97, 0.97, 0.97, 1.0],
+		"primary" => [0.00, 0.37, 0.72],
+		"primary_dim" => [0.00, 0.29, 0.58],
+		"accent" => [0.00, 0.47, 0.83],
+		"accent_hover" => [0.00, 0.42, 0.79],
+		"accent_pressed" => [0.00, 0.29, 0.58],
+		"text" => [0.11, 0.11, 0.11],
+		"text_dim" => [0.38, 0.38, 0.38],
+		"text_on_accent" => [1.0, 1.0, 1.0],
+		"button" => [1.0, 1.0, 1.0, 0.97],
+		"button_hover" => [0.95, 0.95, 0.95, 1.0],
+		"surface_alt" => [0.95, 0.95, 0.95, 1.0],
+		"stroke" => [0.0, 0.0, 0.0, 0.08],
+		"stroke_strong" => [0.0, 0.0, 0.0, 0.16],
+		"check_off" => [0.78, 0.78, 0.78],
+		"tab_bg" => [0.95, 0.95, 0.95, 0.97],
+		"tab_active" => [1.0, 1.0, 1.0, 0.97],
 		"divider" => [0.0, 0.0, 0.0, 0.08],
-		"status_queue" => [0.22, 0.44, 0.86],
-		"status_active" => [0.18, 0.72, 0.42],
-		"status_done" => [0.18, 0.72, 0.42],
-		"status_error" => [0.88, 0.25, 0.25],
-		"status_update" => [0.22, 0.44, 0.86],
-		"warning" => [0.90, 0.62, 0.10],
-		"sidebar_bg1" => [0.95, 0.96, 0.98, 0.95],
-		"sidebar_bg2" => [0.95, 0.96, 0.98, 0.95],
-		"sidebar_active" => [0.22, 0.44, 0.86, 0.10],
-		"sidebar_hover" => [0.0, 0.0, 0.0, 0.04],
-		"titlebar_bg" => [0.98, 0.98, 0.99, 0.98],
+		"status_queue" => [0.00, 0.37, 0.72],
+		"status_active" => [0.06, 0.48, 0.06],
+		"status_done" => [0.06, 0.48, 0.06],
+		"status_error" => [0.77, 0.17, 0.11],
+		"status_update" => [0.00, 0.37, 0.72],
+		"warning" => [0.62, 0.36, 0.00],
+		"sidebar_bg1" => [0.97, 0.97, 0.97, 0.97],
+		"sidebar_bg2" => [0.97, 0.97, 0.97, 0.97],
+		"sidebar_active" => [0.00, 0.37, 0.72, 0.10],
+		"sidebar_hover" => [0.0, 0.0, 0.0, 0.05],
+		"titlebar_bg" => [0.95, 0.95, 0.95, 0.98],
 		"input_bg" => [1.0, 1.0, 1.0, 1.0],
 		"input_bg_active" => [1.0, 1.0, 1.0, 1.0],
-		"button_text" => [0.08, 0.09, 0.11],
-		"acc_active" => [0.22, 0.44, 0.86, 0.10],
-		"acc_active_border" => [0.22, 0.44, 0.86],
-		"del_btn" => [0.88, 0.25, 0.25],
-		"del_btn_hover" => [1.0, 0.32, 0.32],
-		"header_bg" => [0.98, 0.98, 0.99, 0.95],
-		"dropdown_bg" => [1.0, 1.0, 1.0, 1.0],
-		"dropdown_hover" => [0.93, 0.94, 0.96, 1.0],
-		"info_bg" => [0.22, 0.44, 0.86, 0.08],
-		"subtab" => [0.95, 0.96, 0.97],
-		"pill_bg" => [0.90, 0.91, 0.93],
-		"pill_active" => [0.22, 0.44, 0.86, 0.15],
-		"scrollbar" => [0.0, 0.0, 0.0, 0.10],
-		"scrollbar_hover" => [0.0, 0.0, 0.0, 0.20],
-		"overlay_bg" => [1.0, 1.0, 1.0, 0.75],
-		"modal_bg" => [1.0, 1.0, 1.0, 0.95],
+		"button_text" => [0.11, 0.11, 0.11],
+		"acc_active" => [0.00, 0.37, 0.72, 0.08],
+		"acc_active_border" => [0.00, 0.37, 0.72],
+		"del_btn" => [0.77, 0.17, 0.11],
+		"del_btn_hover" => [0.84, 0.20, 0.14],
+		"header_bg" => [0.97, 0.97, 0.97, 0.96],
+		"dropdown_bg" => [1.0, 1.0, 1.0, 0.99],
+		"dropdown_hover" => [0.95, 0.95, 0.95, 1.0],
+		"info_bg" => [0.00, 0.37, 0.72, 0.08],
+		"subtab" => [0.95, 0.95, 0.95, 0.97],
+		"pill_bg" => [0.94, 0.94, 0.94, 1.0],
+		"pill_active" => [0.00, 0.37, 0.72, 0.12],
+		"scrollbar" => [0.0, 0.0, 0.0, 0.22],
+		"scrollbar_hover" => [0.0, 0.0, 0.0, 0.40],
+		"overlay_bg" => [0.97, 0.97, 0.97, 0.94],
+		"modal_bg" => [0.98, 0.98, 0.98, 0.99],
 	];
 	private $titleCloseHover = false;
 	private $titleMinHover = false;
@@ -1086,6 +1115,7 @@ class FoxyClient {
 		$this->checkLocalMods();
 		$this->applyTheme();
 		$this->initFFI(); $this->detectSystemRam();
+		$this->refreshAutoRam();
 		$this->initGDIPlus();
 		$this->initMicrosoftLogin();
 		$this->createWindow();
@@ -1098,9 +1128,15 @@ class FoxyClient {
 
 		$this->initFonts(); // Async atlas build (shows progress on the splash screen)
 		$cacheFile = self::CACHE_DIR . DIRECTORY_SEPARATOR . "versions_cache.json";
-		if (file_exists($cacheFile)) {
-			$cacheData = json_decode(file_get_contents($cacheFile), true);
-			if ($cacheData && isset($cacheData["versions"])) {
+		if (is_file($cacheFile) && filesize($cacheFile) < 32 * 1024 * 1024) {
+			$cacheData = json_decode((string) file_get_contents($cacheFile), true);
+			// Reject empty/truncated caches and fall back to a network fetch.
+			if (
+				is_array($cacheData) &&
+				isset($cacheData["versions"]) &&
+				is_array($cacheData["versions"]) &&
+				count($cacheData["versions"]) > 0
+			) {
 				$this->versions = $cacheData["versions"];
 				$this->versionsLoaded = true;
 				$this->log(
@@ -1108,6 +1144,9 @@ class FoxyClient {
 						count($this->versions) .
 						" versions found.",
 				);
+			} else {
+				$this->log("Versions cache invalid, refetching.", "WARN");
+				@unlink($cacheFile);
 			}
 		}
 		$this->loadVersions(); // Background update
@@ -1148,6 +1187,8 @@ class FoxyClient {
 		if (!is_dir(self::ICON_CACHE_DIR)) {
 			mkdir(self::ICON_CACHE_DIR, 0777, true);
 		}
+		// Bounded, schema-versioned icon cache (see initIconCache).
+		$this->initIconCache();
 
 		if (!file_exists($path)) {
 			// Create default config if missing
@@ -1257,6 +1298,216 @@ class FoxyClient {
 			$this->log("Failed to detect system RAM: " . $e->getMessage(), "ERROR");
 			$this->systemRamMB = 8192; // Default fallback
 		}
+	}
+
+	// ─── Automatic memory sizing ───────────────────────────────────────────
+	// Vanilla: a quarter of physical RAM. Modded: that quarter plus a budget
+	// derived from the loader, the number of enabled mods, jar size (content
+	// proxy) and known memory-hungry mod families.
+
+	private function detectLoaderKey($version): string
+	{
+		$v = strtolower((string) $version);
+		if (strpos($v, "neoforge") !== false) return "neoforge";
+		if (strpos($v, "forge") !== false) return "forge";
+		if (strpos($v, "quilt") !== false) return "quilt";
+		if (strpos($v, "fabric") !== false) return "fabric";
+		if (strpos($v, "optifine") !== false) return "optifine";
+		return "vanilla";
+	}
+
+	/** Instance directory whose mods folder should be measured. */
+	private function getCurrentInstanceDir(): string
+	{
+		$gameDir = $this->getAbsolutePath($this->settings["game_dir"] ?? "games");
+		if (
+			!empty($this->lastGameDir) &&
+			is_dir($this->lastGameDir) &&
+			is_dir($this->lastGameDir . DIRECTORY_SEPARATOR . "mods")
+		) {
+			return $this->lastGameDir;
+		}
+		return $gameDir;
+	}
+
+	/**
+	 * Extra heap a single mod is likely to need, on top of the per-mod base.
+	 * Uses the jar size as a content proxy and raises it for well-known heavy
+	 * mod families. Pure optimisation mods contribute nothing extra.
+	 */
+	private function modHeavyBonus(string $filename): int
+	{
+		static $rules = [
+			["/distant[-_]?horizons/", 640],
+			["/gregtech|gtceu|gregicality/", 768],
+			["/appliedenergistics|(^|[-_.])ae2([-_.]|$)/", 320],
+			["/(^|[-_.])create([-_.]|$)/", 256],
+			["/mekanism/", 256],
+			["/immersiveengineering/", 256],
+			["/refinedstorage/", 192],
+			["/(^|[-_.])thermal([-_.]|$)/", 192],
+			["/twilightforest/", 192],
+			["/biomesoplenty|biomes[-_]o[-_]plenty|(^|[-_.])bop([-_.]|$)/", 192],
+			["/terralith|tectonic/", 192],
+			["/oh[-_]the[-_]biomes|betterend|betternether/", 160],
+			["/journeymap|xaero|(^|[-_.])voxelmap([-_.]|$)/", 160],
+			["/kubejs|crafttweaker|groovyscript/", 160],
+			["/(^|[-_.])iris([-_.]|$)|oculus/", 128],
+			["/optifine/", 128],
+			["/chunky/", 128],
+			// Heavy renderer/worldgen add-ons of the above families.
+			["/createaddition|createnuclear|create_diesel|create[-_]?industrial/", 96],
+			["/geckolib|azurelib/", 32],
+			// Performance/optimisation mods: no extra heap.
+			["/sodium|lithium|starlight|ferritecore|krypton|modernfix|memoryleakfix|entityculling|indium|embeddium|rubidium|canary|saturn|fastsuite|clumps/", 0],
+		];
+		$sum = 0;
+		foreach ($rules as [$re, $amount]) {
+			if (preg_match($re, $filename)) {
+				$sum += $amount;
+			}
+		}
+		return max(0, min(900, $sum));
+	}
+
+	/**
+	 * Measure enabled mods in a mods directory.
+	 * @return array{count:int,totalMB:float,heavy:int,weight:int}
+	 */
+	private function measureMods(string $modsDir): array
+	{
+		$out = ["count" => 0, "totalMB" => 0.0, "heavy" => 0, "weight" => 0];
+		if (!is_dir($modsDir)) return $out;
+		$files = @scandir($modsDir);
+		if (!$files) return $out;
+
+		foreach ($files as $file) {
+			$low = strtolower($file);
+			// Only enabled mods are loaded by the game; .jar.disabled is skipped.
+			if (!str_ends_with($low, ".jar")) continue;
+			$path = $modsDir . DIRECTORY_SEPARATOR . $file;
+			$size = @filesize($path);
+			if ($size === false) continue;
+
+			$sizeMB = $size / 1048576.0;
+			$weight = 20; // fixed per-mod overhead (registries, mixins, metadata)
+			if ($sizeMB >= 40)      $weight += 80;
+			elseif ($sizeMB >= 15)  $weight += 48;
+			elseif ($sizeMB >= 5)   $weight += 28;
+			elseif ($sizeMB >= 1)   $weight += 10;
+
+			$bonus = $this->modHeavyBonus($low);
+			$out["count"]++;
+			$out["totalMB"] += $sizeMB;
+			$out["heavy"] += $bonus;
+			$out["weight"] += $weight + $bonus;
+		}
+		return $out;
+	}
+
+	/**
+	 * Compute the auto-allocated heap without touching settings or the cache.
+	 * @return array{ram:int,base:int,addon:int,count:int,totalMB:int,heavy:int,loader:string}
+	 */
+	private function computeAutoRamInfo($instanceDir = null): array
+	{
+		$sys = max(1024, (int) $this->systemRamMB);
+
+		// Default: a quarter of physical RAM, rounded to 256 MB.
+		$base = (int) (round(($sys / 4) / 256) * 256);
+		$base = max(1024, $base);
+
+		$version = $this->selectedVersion ?: ($this->config["minecraft_version"] ?? "");
+		$loader = $this->detectLoaderKey($version);
+
+		$dir = $instanceDir ?: $this->getCurrentInstanceDir();
+		$mods = $this->measureMods($dir . DIRECTORY_SEPARATOR . "mods");
+
+		$addon = 0;
+		if ($mods["count"] > 0) {
+			// 512 MB loader/runtime overhead + measured per-mod budget.
+			$addon = 512 + $mods["weight"];
+			$addon = min($addon, 6144); // don't let a big pack ask for absurd heap
+		} elseif ($loader !== "vanilla") {
+			$addon = 256; // loader with no mods yet
+		}
+
+		// Never reserve more than half of physical RAM for the JVM, and never
+		// more than 12 GB (Minecraft stops benefiting well before that).
+		$cap = (int) min(12288, max(2048, (int) ($sys * 0.5)));
+		$ram = max(1024, min($base + $addon, $cap));
+		$ram = (int) (round($ram / 256) * 256);
+
+		return [
+			"ram" => $ram,
+			"base" => $base,
+			"addon" => max(0, $ram - $base),
+			"count" => (int) $mods["count"],
+			"totalMB" => (int) round($mods["totalMB"]),
+			"heavy" => (int) $mods["heavy"],
+			"loader" => $loader,
+		];
+	}
+
+	private function computeAutoRamMb($instanceDir = null): int
+	{
+		return (int) ($this->computeAutoRamInfo($instanceDir)["ram"] ?? 0);
+	}
+
+	/**
+	 * Refresh the cached auto value and apply it to settings. Cheap enough to
+	 * call while the Properties page is open (3 s TTL).
+	 */
+	private function refreshAutoRam($force = false)
+	{
+		if (empty($this->settings["ram_auto"])) {
+			$this->autoRamCache = null;
+			return null;
+		}
+		$now = microtime(true);
+		if (
+			!$force &&
+			$this->autoRamCache !== null &&
+			($now - $this->autoRamCache["at"]) < 3.0
+		) {
+			return $this->autoRamCache;
+		}
+
+		$info = $this->computeAutoRamInfo();
+		$info["at"] = $now;
+		$this->autoRamCache = $info;
+
+		$target = (int) $info["ram"];
+		if ((int) $this->settings["ram_mb"] !== $target) {
+			$this->settings["ram_mb"] = $target;
+			$this->saveSettings();
+			$this->needsRedraw = true;
+			if ($now - $this->lastAutoRamLogged > 5.0) {
+				$this->lastAutoRamLogged = $now;
+				$this->log(
+					"Auto RAM: {$target} MB (base {$info["base"]} + {$info["addon"]} for " .
+						"{$info["count"]} mods, {$info["loader"]}, {$info["totalMB"]} MB jars)",
+				);
+			}
+		}
+		return $this->autoRamCache;
+	}
+
+	private function getAutoRamStatusText(): string
+	{
+		$info = $this->refreshAutoRam();
+		if ($info === null) {
+			return "Fixed amount of RAM (in MB)";
+		}
+		$sysGB = max(1, (int) round($this->systemRamMB / 1024));
+		$loader = ucfirst($info["loader"]);
+		if ($info["count"] > 0) {
+			return "Auto: 1/4 of system RAM + {$info["count"]} mods ({$loader})";
+		}
+		if ($loader !== "Vanilla") {
+			return "Auto: 1/4 of system RAM + {$loader} loader ({$sysGB} GB system)";
+		}
+		return "Auto: 1/4 of system RAM ({$sysGB} GB system)";
 	}
 
 	private function initFFI()
@@ -1526,6 +1777,7 @@ class FoxyClient {
 					"
 				int DwmGetCompositionTimingInfo(HWND hwnd, DWM_TIMING_INFO *pTimingInfo);
 				long DwmFlush();
+				int DwmSetWindowAttribute(HWND hwnd, DWORD dwAttribute, const void *pvAttribute, DWORD cbAttribute);
 			",
 				"dwmapi.dll",
 			);
@@ -1595,6 +1847,13 @@ class FoxyClient {
 			void glScalef(float x, float y, float z);
 			void glRotatef(float angle, float x, float y, float z);
 			void glVertex3f(float x, float y, float z);
+			// Client-array path: one native call per text run instead of 8 FFI
+			// crossings per glyph. GL 1.1 exports, present in every opengl32.dll.
+			void glVertexPointer(int size, UINT type, int stride, const void *pointer);
+			void glTexCoordPointer(int size, UINT type, int stride, const void *pointer);
+			void glEnableClientState(UINT array);
+			void glDisableClientState(UINT array);
+			void glDrawArrays(UINT mode, int first, int count);
 			void glNormal3f(float nx, float ny, float nz);
 			void glClearDepth(double depth);
 			void glDepthFunc(UINT func);
@@ -1990,6 +2249,11 @@ class FoxyClient {
 						) {
 							$char = $wparam;
 							$key = $this->propActiveField;
+							// Typing a memory value takes manual control back from Auto.
+							if ($key === "ram_mb" && ($char == 8 || $char >= 32)) {
+								$this->settings["ram_auto"] = false;
+								$this->autoRamCache = null;
+							}
 							if ($char == 8) {
 								// Backspace
 								$this->settings[$key] = (string) substr(
@@ -2109,6 +2373,19 @@ class FoxyClient {
 		$winY = max(0, (int)(($this->user32->GetSystemMetrics(1) - $this->height) / 2));
 		$this->hwnd = $this->user32->CreateWindowExA(0, $className, "Foxy Client", $dwStyle, $winX, $winY, $this->width, $this->height, null, null, $inst, null);
 		$this->hdc = $this->user32->GetDC($this->hwnd);
+
+		// Windows 11 decoration: rounded window corners + matching dark frame.
+		try {
+			if ($this->dwmapi) {
+				$dwmVal = FFI::new("int[1]");
+				$dwmVal[0] = 2; // DWMWCP_ROUND
+				$this->dwmapi->DwmSetWindowAttribute($this->hwnd, 33, FFI::addr($dwmVal[0]), 4);
+				$dwmVal[0] = ($this->colors === $this->lightColors) ? 0 : 1;
+				$this->dwmapi->DwmSetWindowAttribute($this->hwnd, 20, FFI::addr($dwmVal[0]), 4);
+			}
+		} catch (\Throwable $e) {
+			// Older Windows builds: ignore unsupported attributes.
+		}
 
 		$pixelFormat = 0;
 		if ($wglChoosePixelFormatARB) {
@@ -2258,7 +2535,27 @@ class FoxyClient {
 		}
 		$this->availableFonts = $bundledUi;
 		$this->overlayFonts = $bundledUi;
-		$this->log("Selectable fonts: " . implode(", ", $bundledUi));
+
+		// Windows 11 system UI font. It is installed, not bundled, so it needs
+		// the system-collection path in buildFontAtlas(). Keep bundled fonts as
+		// the fallback.
+		$win11Font = "Segoe UI Variable Text";
+		if (
+			!in_array($win11Font, $this->availableFonts, true) &&
+			$this->systemFontFamilyExists($win11Font)
+		) {
+			array_unshift($this->availableFonts, $win11Font);
+		}
+		// Move existing installs from the old Nunito default to the native font.
+		if (
+			($this->settings["font_launcher"] ?? "") === "Nunito" &&
+			in_array($win11Font, $this->availableFonts, true)
+		) {
+			$this->settings["font_launcher"] = $win11Font;
+			$this->saveSettings();
+			$this->log("Migrated launcher font to '$win11Font' (Windows 11 UI)");
+		}
+		$this->log("Selectable fonts: " . implode(", ", $this->availableFonts));
 
 		// 6b. A font just installed through the dropdown: apply the family it added
 		if ($this->pendingInstallFont !== null) {
@@ -2404,6 +2701,33 @@ class FoxyClient {
 	}
 
 	/**
+	 * Probe a system-installed font family through GDI+'s default collection.
+	 * Bundled fonts live in our private collection; Windows 11's Segoe UI
+	 * Variable lives in the system collection, so both paths are needed.
+	 */
+	private function systemFontFamilyExists($name)
+	{
+		if (!$this->gdiplus) return false;
+		try {
+			$wide = mb_convert_encoding($name, "UTF-16LE", "UTF-8") . "\0\0";
+			$ptr = $this->gdiplus->new("wchar_t[" . (strlen($wide) / 2) . "]");
+			FFI::memcpy($ptr, $wide, strlen($wide));
+			$family = $this->gdiplus->new("void*");
+			$res = $this->gdiplus->GdipCreateFontFamilyFromName(
+				$ptr,
+				null,
+				FFI::addr($family),
+			);
+			if ($res === 0) {
+				$this->gdiplus->GdipDeleteFontFamily($family);
+				return true;
+			}
+		} catch (\Throwable $e) {
+		}
+		return false;
+	}
+
+	/**
 	 * Auto-detect the configured font: if the saved name does not exist on this
 	 * machine anymore, resolve it against the detected families and repair the
 	 * setting. Returns true when the setting was rewritten.
@@ -2460,6 +2784,9 @@ class FoxyClient {
 		}
 
 		$this->textWidthCache = [];
+		// Packed glyph runs reference the old atlas metrics/texcoords.
+		$this->textRunCache = [];
+		$this->textRunFloats = 0;
 		$this->fontGen++;
 		$this->fontsReady = true;
 	}
@@ -2514,8 +2841,15 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		FFI::memcpy($widePtr, $wideFace, strlen($wideFace));
 
 		$family = $gp->new("void*");
-		// 1) bundled (private) collection only, 2) generic sans-serif fallback
+		// 1) bundled (private) collection, 2) system-installed families
+		// (Segoe UI Variable), 3) generic sans-serif fallback.
 		$res = $gp->GdipCreateFontFamilyFromName($widePtr, $this->fontCollection, FFI::addr($family));
+		if ($res !== 0) {
+			$res = $gp->GdipCreateFontFamilyFromName($widePtr, null, FFI::addr($family));
+			if ($res === 0) {
+				$this->log("Using system font family '$fontFace'");
+			}
+		}
 		if ($res !== 0) {
 			$this->log("Warning: Font '$fontFace' not found (Error: $res).", "WARN");
 			$gp->GdipGetGenericFontFamilySansSerif(FFI::addr($family));
@@ -2777,30 +3111,74 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	public function renderText($text, $x, $y, $color, $listBase = 1000, $spacing = 0, $alignment = "LE")
 	{
-		$gl = $this->opengl32;
 		if (!isset($this->fontAtlas[$listBase])) return;
-
 		$atlas = $this->fontAtlas[$listBase];
-		if (($this->boundTexture ?? 0) !== $atlas["texId"]) { $gl->glBindTexture(0x0de1, $atlas["texId"]); $this->boundTexture = $atlas["texId"]; }
-		$gl->glEnable(0x0de1);
-		$gl->glBegin(0x0007); // GL_QUADS
 
 		if ($color === null) $color = $this->colors["text"] ?? [1, 1, 1];
 		$a = (count($color) > 3 ? $color[3] : 1.0) * ($this->globalAlpha ?? 1.0);
+		if ($a <= 0.001) return; // fully transparent: skip geometry + GL work
+
+		// LOW-PERF: build each string's quad geometry once, then draw it with a
+		// single glDrawArrays. The old path issued 8 FFI calls per glyph every
+		// frame; this issues ~6 per string and reuses the packed buffer.
+		$runKey = $listBase . "|" . $spacing . "|" . $text;
+		$run = $this->textRunCache[$runKey] ?? null;
+		if ($run === null) {
+			$run = $this->buildTextRun($text, $atlas, $spacing);
+			if ($run === null) return; // nothing drawable (e.g. missing glyphs)
+			$this->textRunCache[$runKey] = $run;
+			$this->textRunFloats += $run["floats"];
+			// Bound the cache: strings that change every frame (progress text)
+			// can otherwise grow it forever.
+			if (
+				count($this->textRunCache) > 1024 ||
+				$this->textRunFloats > 1200000
+			) {
+				$this->textRunCache = [$runKey => $run];
+				$this->textRunFloats = $run["floats"];
+			}
+		}
+
+		$gl = $this->opengl32;
+		if (($this->boundTexture ?? 0) !== $atlas["texId"]) {
+			$gl->glBindTexture(0x0de1, $atlas["texId"]);
+			$this->boundTexture = $atlas["texId"];
+		}
+		$gl->glEnable(0x0de1); // GL_TEXTURE_2D
+
 		$gl->glColor4f($color[0], $color[1], $color[2], $a);
 
-		$curX = (float)$x;
-		$h = $atlas["requestedSize"];
-		$glyphH = $atlas["height"];
+		// Geometry is stored relative to the text origin, so a translate is all
+		// that is needed to place it.
+		$gl->glPushMatrix();
+		$gl->glTranslatef((float) $x, (float) $y, 0.0);
+		$gl->glEnableClientState(0x8074); // GL_VERTEX_ARRAY
+		$gl->glEnableClientState(0x8078); // GL_TEXTURE_COORD_ARRAY
+		$gl->glVertexPointer(2, 0x1406, 16, FFI::addr($run["buf"][0])); // GL_FLOAT
+		$gl->glTexCoordPointer(2, 0x1406, 16, FFI::addr($run["buf"][2]));
+		$gl->glDrawArrays(0x0007, 0, $run["verts"]); // GL_QUADS
+		$gl->glDisableClientState(0x8078);
+		$gl->glDisableClientState(0x8074);
+		$gl->glPopMatrix();
+
+		$gl->glDisable(0x0de1);
+		$this->boundTexture = 0;
+	}
+
+	/**
+	 * Pack a string into an interleaved (x, y, u, v) vertex buffer for
+	 * glDrawArrays. Returns null when the string has no drawable glyphs.
+	 */
+	private function buildTextRun($text, $atlas, $spacing)
+	{
+		$h = (float) $atlas["requestedSize"];
+		$glyphH = (float) $atlas["height"];
+		if ($glyphH <= 0.0) return null;
 		$drawScale = $h / $glyphH;
 		$spaceW = $atlas["spaceW"] * $drawScale;
-
-		$aw = (float)$atlas["atlasW"];
-		$ah = (float)$atlas["atlasH"];
-
-		// Vertical positioning (backward-compatible with existing UI layout)
-		$top = $y - $h * 0.75;
-		$bot = $top + $h;
+		$aw = (float) $atlas["atlasW"];
+		$ah = (float) $atlas["atlasH"];
+		if ($aw <= 0.0 || $ah <= 0.0) return null;
 
 		// Decode UTF-8 string into codepoints for Unicode support
 		$codepoints = [];
@@ -2813,10 +3191,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			else if (($c & 0xF8) == 0xF0) { $codepoints[] = (($c & 0x07) << 18) | ((ord($text[++$i]) & 0x3F) << 12) | ((ord($text[++$i]) & 0x3F) << 6) | (ord($text[++$i]) & 0x3F); }
 		}
 
+		$baseY = -$h * 0.75; // Matches the legacy $top = $y - $h * 0.75
+		$bottom = $baseY + $h;
+		$curX = 0.0;
+		$verts = [];
+
 		foreach ($codepoints as $ch) {
 			if ($ch == 9) { $curX += $spaceW * 4; continue; }
 			if ($ch == 32) { $curX += $spaceW + $spacing; continue; }
-
 			if (!isset($atlas["glyphs"][$ch])) continue;
 
 			$g = $atlas["glyphs"][$ch];
@@ -2826,23 +3208,22 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$v2 = ($g["ty"] + $glyphH) / $ah;
 
 			$drawW = $g["tw"] * $drawScale;
-			$drawX = $curX;
+			$x2 = $curX + $drawW;
 
-			$gl->glTexCoord2f($u1, $v1);
-			$gl->glVertex2f($drawX, $top);
-			$gl->glTexCoord2f($u2, $v1);
-			$gl->glVertex2f($drawX + $drawW, $top);
-			$gl->glTexCoord2f($u2, $v2);
-			$gl->glVertex2f($drawX + $drawW, $bot);
-			$gl->glTexCoord2f($u1, $v2);
-			$gl->glVertex2f($drawX, $bot);
+			$verts[] = $curX; $verts[] = $baseY; $verts[] = $u1; $verts[] = $v1;
+			$verts[] = $x2;   $verts[] = $baseY; $verts[] = $u2; $verts[] = $v1;
+			$verts[] = $x2;   $verts[] = $bottom; $verts[] = $u2; $verts[] = $v2;
+			$verts[] = $curX; $verts[] = $bottom; $verts[] = $u1; $verts[] = $v2;
 
 			$curX += ($g["advX"] * $drawScale) + $spacing;
 		}
 
-		$gl->glEnd();
-		$gl->glDisable(0x0de1);
-		$this->boundTexture = 0;
+		$n = count($verts);
+		if ($n === 0) return null;
+
+		$buf = FFI::new("float[$n]");
+		FFI::memcpy($buf, pack("f*", ...$verts), $n * 4);
+		return ["buf" => $buf, "verts" => $n >> 2, "floats" => $n];
 	}
 
 	/**
@@ -3159,8 +3540,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$cw = $this->width - self::SIDEBAR_W;
 				$cx = $x - self::SIDEBAR_W;
 				$fieldX = $cw - self::PAD - 300;
-				$sliderW = 150; // Match renderPropertiesPage
-				$sliderX = $fieldX + 10;
+				$sliderW = 130; // Match the Allocated Memory row renderer
+				$sliderX = $fieldX + 60;
 
 				$val = ($cx - $sliderX) / $sliderW;
 				$val = max(0, min(1, $val));
@@ -4373,7 +4754,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if (file_exists($path)) {
 			$data = json_decode(file_get_contents($path), true);
 			if ($data) {
+				// Existing installs that already chose a RAM value keep manual
+				// control instead of being silently switched to the new auto mode.
+				$hadAuto = array_key_exists("ram_auto", $data);
+				$hadRam = array_key_exists("ram_mb", $data);
 				$this->settings = array_merge($this->settings, $data);
+				if (!$hadAuto && $hadRam) {
+					$this->settings["ram_auto"] = false;
+				}
 				$this->log("Settings loaded: " . realpath($path));
 			}
 		}
@@ -5344,7 +5732,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$iconsToDownload = [];
 		foreach ($this->installedModpacks as $slug => $pack) {
-			if (!empty($pack["icon_url"]) && !isset($this->modpackIconCache[$slug])) {
+			if (!empty($pack["icon_url"]) && empty($this->modpackIconCache[$slug])) {
 				$cachePath = $this->getIconCachePath($slug);
 				if (file_exists($cachePath)) {
 					$this->modpackIconCache[$slug] = $this->createTextureFromFile($cachePath);
@@ -5358,32 +5746,227 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			return;
 		}
 
-		$this->iconDownloadChannel = new \parallel\Channel();
+		$this->startIconDownloads($iconsToDownload);
+	}
+
+	/**
+	 * Dedicated runtime for icon downloads.
+	 *
+	 * Kept alive for the whole session so the worker can reuse its curl share
+	 * handle (DNS + TLS session + connection cache). Renegotiating TLS with the
+	 * icon CDN costs ~0.7s, which used to be paid on every batch. Being separate
+	 * from the transient pool also means a search or mod install no longer has to
+	 * wait behind a running icon batch.
+	 */
+	private function iconRuntime()
+	{
+		if (!$this->iconRuntime) {
+			putenv("FOXY_BACKGROUND=1");
+			$this->iconRuntime = new \parallel\Runtime(__FILE__);
+			putenv("FOXY_BACKGROUND=0");
+		}
+		return $this->iconRuntime;
+	}
+
+	/**
+	 * Downloads a set of icons in the background.
+	 *
+	 * Each image is streamed to the UI as soon as its own transfer completes
+	 * instead of after the whole batch, so the first icons appear long before the
+	 * slowest one. HTTP/2 multiplexing keeps the batch on one connection.
+	 *
+	 * @param array $icons id => url, or id => ["url" => .., "is_modpack" => ..]
+	 */
+	private function startIconDownloads($icons)
+	{
+		if (empty($icons)) {
+			return;
+		}
+
+		// Ask the previous batch to stop; it shares the icon runtime.
+		if ($this->iconCancelSync) {
+			try {
+				$this->iconCancelSync->set(true);
+			} catch (\Throwable $e) {
+			}
+		}
+
+		// Fresh channel per batch so a stale "finished" from the previous batch
+		// can never clear the channel this batch is writing to.
+		if ($this->iconDownloadChannel) {
+			try {
+				$this->pollEvents->remove($this->iconDownloadChannel);
+			} catch (\Throwable $e) {
+			}
+		}
+		// Infinite buffer: the worker must never block on send(), not even when
+		// the main thread has already abandoned a canceled batch.
+		$this->iconDownloadChannel = new \parallel\Channel(
+			\parallel\Channel::Infinite,
+		);
 		$this->pollEvents->addChannel($this->iconDownloadChannel);
-		$this->iconCancelChannel = new \parallel\Channel(1);
-		
+
+		$cancelSync = new \parallel\Sync();
+		$cancelSync->set(false);
+		$this->iconCancelSync = $cancelSync;
+
+		$batchId = ++$this->iconBatchId;
 		$cacert = self::CACERT;
 
 		if ($this->iconDownloadFuture) {
 			$this->pendingFutures[] = $this->iconDownloadFuture;
 		}
 
-		$this->iconDownloadFuture = $this->runTransientTask(
-			function (\parallel\Channel $ch, \parallel\Channel $cancelCh, $icons, $cacert) {
+		$this->iconDownloadFuture = $this->iconRuntime()->run(
+			function (
+				\parallel\Channel $ch,
+				\parallel\Sync $cancel,
+				$icons,
+				$cacert,
+				$batchId,
+			) {
+				// Persistent share handle: kept in the runtime's globals so later
+				// batches reuse warm connections instead of renegotiating TLS.
+				if (!isset($GLOBALS["foxyIconShare"])) {
+					$share = curl_share_init();
+					if ($share) {
+						@curl_share_setopt($share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+						@curl_share_setopt($share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+						@curl_share_setopt($share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+						$GLOBALS["foxyIconShare"] = $share;
+					}
+				}
+				$share = $GLOBALS["foxyIconShare"] ?? null;
+
 				$mh = curl_multi_init();
+				if (defined("CURLMOPT_PIPELINING") && defined("CURLPIPE_MULTIPLEX")) {
+					curl_multi_setopt($mh, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
+				}
+				if (defined("CURLMOPT_MAX_HOST_CONNECTIONS")) {
+					curl_multi_setopt($mh, CURLMOPT_MAX_HOST_CONNECTIONS, 8);
+				}
+				if (defined("CURLMOPT_MAX_TOTAL_CONNECTIONS")) {
+					curl_multi_setopt($mh, CURLMOPT_MAX_TOTAL_CONNECTIONS, 16);
+				}
+
 				$handles = [];
 				foreach ($icons as $id => $data) {
 					$url = is_array($data) ? ($data["url"] ?? "") : $data;
+					if ($url === "") {
+						continue;
+					}
 					$curl = curl_init($url);
+					if (!$curl) {
+						continue;
+					}
 					curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
 					curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+					curl_setopt($curl, CURLOPT_MAXREDIRS, 3);
 					curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/IconFetcher");
+					curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 5);
+					curl_setopt($curl, CURLOPT_TIMEOUT, 15);
+					curl_setopt($curl, CURLOPT_TCP_KEEPALIVE, 1);
+					if (
+						defined("CURLOPT_HTTP_VERSION") &&
+						defined("CURL_HTTP_VERSION_2TLS")
+					) {
+						curl_setopt($curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+					}
+					if ($share) {
+						curl_setopt($curl, CURLOPT_SHARE, $share);
+					}
 					if (file_exists($cacert)) {
 						curl_setopt($curl, CURLOPT_CAINFO, $cacert);
 					}
 					curl_multi_add_handle($mh, $curl);
-					$handles[$id] = ["curl" => $curl, "is_modpack" => true];
+					$handles[spl_object_id($curl)] = [
+						"id" => $id,
+						"curl" => $curl,
+						"is_modpack" => is_array($data) &&
+							($data["is_modpack"] ?? false),
+					];
 				}
+
+				// Icons render at 64px, so a 512px source wastes VRAM and upload
+				// time. Downscale to 128px and re-encode at the default PNG
+				// compression: level 0 would make the payload and the disk cache
+				// several times larger, which the main thread then has to decode.
+				$prepare = function ($content) {
+					if (!function_exists("imagecreatefromstring")) {
+						return $content;
+					}
+					$img = @imagecreatefromstring($content);
+					if (!$img) {
+						return $content;
+					}
+					$w = imagesx($img);
+					$h = imagesy($img);
+					if ($w <= 0 || $h <= 0) {
+						imagedestroy($img);
+						return $content;
+					}
+					if ($w > 128 || $h > 128) {
+						$nw = 128;
+						$nh = 128;
+						if ($w > $h) {
+							$nh = max(1, (int) ($h * (128 / $w)));
+						} else {
+							$nw = max(1, (int) ($w * (128 / $h)));
+						}
+						$scaled = imagecreatetruecolor($nw, $nh);
+						if (!$scaled) {
+							imagedestroy($img);
+							return $content;
+						}
+						imagealphablending($scaled, false);
+						imagesavealpha($scaled, true);
+						imagecopyresampled(
+							$scaled,
+							$img,
+							0,
+							0,
+							0,
+							0,
+							$nw,
+							$nh,
+							$w,
+							$h,
+						);
+						imagedestroy($img);
+						$img = $scaled;
+					} else {
+						imagealphablending($img, false);
+						imagesavealpha($img, true);
+					}
+					ob_start();
+					imagepng($img);
+					$out = ob_get_clean();
+					imagedestroy($img);
+					return $out;
+				};
+
+				// Emit one finished transfer and release its handle.
+				$finish = function ($curl) use ($mh, &$handles, $ch, $prepare) {
+					$key = spl_object_id($curl);
+					$meta = $handles[$key] ?? null;
+					if ($meta) {
+						$content = curl_multi_getcontent($curl);
+						if (
+							$content &&
+							curl_getinfo($curl, CURLINFO_HTTP_CODE) == 200
+						) {
+							$ch->send([
+								"type" => "icon_ready",
+								"id" => $meta["id"],
+								"data" => $prepare($content),
+								"is_modpack" => $meta["is_modpack"],
+							]);
+						}
+						unset($handles[$key]);
+					}
+					curl_multi_remove_handle($mh, $curl);
+					curl_close($curl);
+				};
 
 				if (count($handles) > 0) {
 					do {
@@ -5391,32 +5974,101 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					} while ($mrc == CURLM_CALL_MULTI_PERFORM);
 
 					while ($active && $mrc == CURLM_OK) {
-						if (curl_multi_select($mh) != -1) {
+						if ($cancel->get()) {
+							break;
+						}
+						// Short slice so cancellation is picked up quickly.
+						if (curl_multi_select($mh, 0.02) !== -1) {
 							do {
 								$mrc = curl_multi_exec($mh, $active);
 							} while ($mrc == CURLM_CALL_MULTI_PERFORM);
 						}
+						while ($info = curl_multi_info_read($mh)) {
+							$finish($info["handle"]);
+						}
+					}
+					// Drain transfers that completed on the final exec pass.
+					while ($info = curl_multi_info_read($mh)) {
+						$finish($info["handle"]);
 					}
 
-					foreach ($handles as $id => $data) {
-						$curl = $data["curl"];
-						$content = curl_multi_getcontent($curl);
-						if ($content && curl_getinfo($curl, CURLINFO_HTTP_CODE) == 200) {
-							$ch->send([
-								"type" => "icon_ready",
-								"id" => $id,
-								"data" => $content,
-								"is_modpack" => true,
-							]);
-						}
-						curl_multi_remove_handle($mh, $curl);
-						curl_close($curl);
+					foreach ($handles as $meta) {
+						curl_multi_remove_handle($mh, $meta["curl"]);
+						curl_close($meta["curl"]);
 					}
 				}
 				curl_multi_close($mh);
-				$ch->send(["type" => "finished"]);
+				$ch->send(["type" => "finished", "batch" => $batchId]);
 			},
-			[$this->iconDownloadChannel, $this->iconCancelChannel, $iconsToDownload, $cacert]
+			[$this->iconDownloadChannel, $cancelSync, $icons, $cacert, $batchId],
+		);
+	}
+
+	/**
+	 * Warms the CDN TLS connection while the Modrinth search is still in flight,
+	 * so the first icon of a session does not pay for a fresh handshake.
+	 */
+	private function prewarmIconConnection()
+	{
+		// A running batch already has (or is opening) the connection. Warming
+		// now would only queue behind it on the single-threaded icon runtime.
+		if ($this->iconDownloadChannel !== null) {
+			return;
+		}
+		$now = microtime(true);
+		if ($now - $this->iconPrewarmAt < 10.0) {
+			return; // The runtime keeps the connection warm; don't spam it.
+		}
+		if ($this->iconPrewarmFuture && !$this->iconPrewarmFuture->done()) {
+			return;
+		}
+		if ($this->iconPrewarmFuture) {
+			try {
+				$this->iconPrewarmFuture->value();
+			} catch (\Throwable $e) {
+			}
+			$this->iconPrewarmFuture = null;
+		}
+		$this->iconPrewarmAt = $now;
+		$cacert = self::CACERT;
+		$this->iconPrewarmFuture = $this->iconRuntime()->run(
+			function ($cacert) {
+				if (!isset($GLOBALS["foxyIconShare"])) {
+					$share = curl_share_init();
+					if ($share) {
+						@curl_share_setopt($share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+						@curl_share_setopt($share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+						@curl_share_setopt($share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+						$GLOBALS["foxyIconShare"] = $share;
+					}
+				}
+				$curl = curl_init("https://cdn.modrinth.com/");
+				if (!$curl) {
+					return;
+				}
+				curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+				curl_setopt($curl, CURLOPT_FOLLOWLOCATION, false);
+				// Short cap: this runs off the critical path but still occupies
+				// the single-threaded icon runtime while it is queued.
+				curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 3);
+				curl_setopt($curl, CURLOPT_TIMEOUT, 4);
+				curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/IconFetcher");
+				if (
+					defined("CURLOPT_HTTP_VERSION") &&
+					defined("CURL_HTTP_VERSION_2TLS")
+				) {
+					curl_setopt($curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+				}
+				if (!empty($GLOBALS["foxyIconShare"])) {
+					curl_setopt($curl, CURLOPT_SHARE, $GLOBALS["foxyIconShare"]);
+				}
+				if (file_exists($cacert)) {
+					curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+				}
+				curl_exec($curl);
+				curl_close($curl);
+			},
+			[$cacert],
 		);
 	}
 
@@ -5803,9 +6455,22 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$cpString = implode(";", $cp);
 
 		// 2. Build Full Command Array (Safe for Windows)
+		// Auto mode measures the instance's enabled mods right before launch so
+		// a pack that was just installed/downloaded gets the right heap size.
+		$ramMb = (int) $this->settings["ram_mb"];
+		if (!empty($this->settings["ram_auto"])) {
+			$autoMb = $this->computeAutoRamMb($instanceDir);
+			if ($autoMb > 0) {
+				$ramMb = $autoMb;
+				if ((int) $this->settings["ram_mb"] !== $autoMb) {
+					$this->settings["ram_mb"] = $autoMb;
+					$this->saveSettings();
+				}
+			}
+		}
 		$cmdArray = [$javaExec];
-		$cmdArray[] = "-Xms" . round($this->settings["ram_mb"] / 3) . "M";
-		$cmdArray[] = "-Xmx" . $this->settings["ram_mb"] . "M";
+		$cmdArray[] = "-Xms" . round($ramMb / 3) . "M";
+		$cmdArray[] = "-Xmx" . $ramMb . "M";
 
 		$versionDir =
 			$baseDir .
@@ -6433,9 +7098,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->searchModrinth($this->modSearchQuery, $this->modPageTarget);
 		}
 
-		// Low-end: full poll at most every 0.1s (was every frame); $pendingFutures sweep same budget.
+		// Low-end: adaptive poll interval (25ms idle, 8ms while downloads run so % stays live).
 		$nowT = microtime(true);
-		if ($nowT - $this->pollProcessLastTime < $this->pollProcessInterval) return;
+		if ($nowT - $this->pollProcessLastTime < $this->pollProcessInterval) {
+			if (empty($this->modDownloadChannels)) return;
+			// Downloads active: bypass throttle but still cap at ~125Hz.
+			if ($nowT - $this->pollProcessLastTime < 0.008) return;
+		}
 		$this->pollProcessLastTime = $nowT;
 
 		// Cleanup completed Futures to free memory
@@ -6458,6 +7127,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$pollStartTime = microtime(true);
 			$processed = 0;
 			// Low-end: 2000→120 + pre-cast src once (was (string) ×15/event); 8ms budget already breaks.
+			$pollBudget = empty($this->modDownloadChannels) ? 0.008 : 0.004; // downloads: tighter budget, more frequent polls
 			while ($processed < 120 && ($event = $this->pollEvents->poll())) {
 				$processed++;
 				// Determine source channel and re-add
@@ -6759,7 +7429,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							
 							// Also check installed modpacks for icons
 							foreach ($this->installedModpacks as $slug => $pack) {
-								if (!empty($pack["icon_url"]) && !isset($this->modpackIconCache[$slug])) {
+								if (!empty($pack["icon_url"]) && empty($this->modpackIconCache[$slug])) {
 									$cachePath = $this->getIconCachePath($slug);
 									if (file_exists($cachePath)) {
 										$this->modpackIconCache[$slug] = $this->createTextureFromFile($cachePath);
@@ -6770,232 +7440,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							}
 
 							if (!empty($iconsToDownload)) {
-								// Signal previous task to STOP if it's still running
-								if ($this->iconCancelChannel) {
-									try {
-										$this->iconCancelChannel->send(true);
-									} catch (\Throwable $e) {
-									}
-								}
-
-								if (!$this->iconDownloadChannel) {
-									$this->iconDownloadChannel = new \parallel\Channel();
-									$this->pollEvents->addChannel(
-										$this->iconDownloadChannel,
-									);
-								}
-
-								// Buffered(1) cancel channel so send() never blocks the main thread
-								$this->iconCancelChannel = new \parallel\Channel(
-									1,
-								);
-
-								// Fresh runtime each time - a persistent runtime BLOCKS if old task is still running
-								
-
-								$cacert = self::CACERT;
-
-								// Push old Future to pending array to prevent blocking destructor
-								if ($this->iconDownloadFuture) {
-									$this->pendingFutures[] =
-										$this->iconDownloadFuture;
-								}
-								$this->iconDownloadFuture = $this->runTransientTask(
-									function (
-										\parallel\Channel $ch,
-										\parallel\Channel $cancelCh,
-										$icons,
-										$cacert,
-									) {
-										$mh = curl_multi_init();
-										$handles = [];
-										foreach ($icons as $id => $data) {
-											$url = is_array($data) ? ($data["url"] ?? "") : $data;
-											$curl = curl_init($url);
-											curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-											curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
-											curl_setopt($curl, CURLOPT_USERAGENT, "FoxyClient/IconFetcher");
-											if (file_exists($cacert)) {
-												curl_setopt($curl, CURLOPT_CAINFO, $cacert);
-											}
-											curl_multi_add_handle($mh, $curl);
-											$handles[$id] = [
-												"curl" => $curl, 
-												"is_modpack" => is_array($data) && ($data["is_modpack"] ?? false)
-											];
-										}
-
-										// Helper: non-blocking cancel check (recv throws when empty)
-										$isCanceled = function () use (
-											$cancelCh,
-										) {
-											try {
-												return (bool) $cancelCh->recv(
-													false,
-												);
-											} catch (\Throwable $e) {
-												return false;
-											}
-										};
-
-										if (count($handles) > 0) {
-											do {
-												$mrc = curl_multi_exec(
-													$mh,
-													$active,
-												);
-											} while (
-												$mrc == CURLM_CALL_MULTI_PERFORM
-											);
-
-											while (
-												$active &&
-												$mrc == CURLM_OK
-											) {
-												if ($isCanceled()) {
-													foreach ($handles as $h) {
-														curl_close($h["curl"]);
-													}
-													curl_multi_close($mh);
-													return;
-												}
-												if (
-													curl_multi_select(
-														$mh,
-														0.05,
-													) !== -1
-												) {
-													do {
-														$mrc = curl_multi_exec(
-															$mh,
-															$active,
-														);
-													} while (
-														$mrc ==
-														CURLM_CALL_MULTI_PERFORM
-													);
-												}
-											}
-
-											foreach ($handles as $id => $data) {
-												if ($isCanceled()) {
-													break;
-												}
-
-												$curl = $data["curl"];
-												$content = curl_multi_getcontent(
-													$curl,
-												);
-												if (
-													$content &&
-													curl_getinfo(
-														$curl,
-														CURLINFO_HTTP_CODE,
-													) == 200
-												) {
-													if (
-														function_exists(
-															"imagecreatefromstring",
-														)
-													) {
-														$img = @imagecreatefromstring(
-															$content,
-														);
-														if ($img) {
-															$w = imagesx($img);
-															$h = imagesy($img);
-
-															// Downscale to 128px max for performance (icons are rendered at 64x64)
-															if (
-																$w > 128 ||
-																$h > 128
-															) {
-																$nw = 128;
-																$nh = 128;
-																if ($w > $h) {
-																	$nh =
-																		(int) ($h *
-																			(128 /
-																				$w));
-																} else {
-																	$nw =
-																		(int) ($w *
-																			(128 /
-																				$h));
-																}
-																$scaled = imagecreatetruecolor(
-																	$nw,
-																	$nh,
-																);
-																imagealphablending(
-																	$scaled,
-																	false,
-																);
-																imagesavealpha(
-																	$scaled,
-																	true,
-																);
-																imagecopyresampled(
-																	$scaled,
-																	$img,
-																	0,
-																	0,
-																	0,
-																	0,
-																	$nw,
-																	$nh,
-																	$w,
-																	$h,
-																);
-																imagedestroy(
-																	$img,
-																);
-																$img = $scaled;
-															} else {
-																imagealphablending(
-																	$img,
-																	false,
-																);
-																imagesavealpha(
-																	$img,
-																	true,
-																);
-															}
-
-															ob_start();
-															imagepng(
-																$img,
-																null,
-																0,
-															); // Compression level 0 (Fastest)
-															$content = ob_get_clean();
-															imagedestroy($img);
-														}
-													}
-													$ch->send([
-														"type" => "icon_ready",
-														"id" => $id,
-														"data" => $content,
-														"is_modpack" => $data["is_modpack"] ?? false,
-													]);
-												}
-												curl_multi_remove_handle(
-													$mh,
-													$curl,
-												);
-												curl_close($curl);
-											}
-										}
-										curl_multi_close($mh);
-										$ch->send(["type" => "finished"]);
-									},
-									[
-										$this->iconDownloadChannel,
-										$this->iconCancelChannel,
-										$iconsToDownload,
-										$cacert,
-									],
-								);
+								$this->startIconDownloads($iconsToDownload);
 							}
 						} else {
 							$this->modrinthError =
@@ -7079,12 +7524,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							$this->isFetchingVersions = false;
 							$this->filteredVersionsCache = null; // force refresh
 
-							// Save to cache
+							// Save to cache (atomic: never leave a half-written JSON)
 							$cacheFile =
 								self::CACHE_DIR .
 								DIRECTORY_SEPARATOR .
 								"versions_cache.json";
-							file_put_contents(
+							$this->atomicWrite(
 								$cacheFile,
 								json_encode(["versions" => $this->versions]),
 							);
@@ -7104,6 +7549,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 								$tex = $this->createTextureFromFile($cachePath);
 							} else {
 								$tex = $this->createTextureFromMemory($memData);
+							}
+
+							if (!$tex) {
+								// Decode failed: leave the id uncached so a later
+								// search can retry instead of drawing texture 0.
+								continue;
 							}
 
 							if ($isMp) {
@@ -7159,10 +7610,36 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 						$data["type"] === "finished"
 					) {
 						if ($isIcon) {
-							$this->iconDownloadChannel = null;
-							$this->log(
-								"Icon download background task completed and channel cleaned up.",
-							);
+							// A canceled batch keeps draining its queued messages
+							// into the channel it started on, so its late
+							// "finished" must not clear the current batch. Compare
+							// the batch token carried in the message.
+							$batch = (int) ($data["batch"] ?? 0);
+							if ($batch === $this->iconBatchId) {
+								// Consume the Future after the worker's final send so its
+								// return/exception is observed before dropping the handle.
+								if ($this->iconDownloadFuture) {
+									try {
+										$this->iconDownloadFuture->value();
+									} catch (\Throwable $e) {
+										$this->log(
+											"Icon download worker failed: " . $e->getMessage(),
+											"ERROR",
+										);
+									}
+								}
+								try {
+									$this->pollEvents->remove(
+										$this->iconDownloadChannel,
+									);
+								} catch (\Throwable $e) {
+								}
+								$this->iconDownloadChannel = null;
+								$this->iconDownloadFuture = null;
+								$this->log(
+									"Icon download background task completed and channel cleaned up.",
+								);
+							}
 						} elseif ($isCompat) {
 							$this->compatChannel = null;
 							$this->log(
@@ -7307,6 +7784,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 						$this->log("Successfully downloaded and installed latest cacert.pem");
 					} elseif (isset($data["type"]) && $data["type"] === "ca_update_err") {
 						$this->isUpdatingCacert = false;
+
 						$this->updateMessage = "Error: " . ($data["msg"] ?? "CA download failed");
 						$this->log("CA Update error: " . $this->updateMessage, "ERROR");
 					} elseif (isset($data["type"]) && $data["type"] === "ca_update_progress") {
@@ -7315,7 +7793,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				}
 				
 				// Exit early if we've spent too much time processing events this frame (approx 8ms boundary)
-				if (microtime(true) - $pollStartTime > 0.008) {
+				if (microtime(true) - $pollStartTime > $pollBudget) {
 					break;
 				}
 			}
@@ -9949,8 +10427,34 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 	}
 
+	/**
+	 * Frame-rate independent easing. At 60 fps this advances exactly by
+	 * $perFrame of the remaining distance, so the look is unchanged, but the
+	 * same animation now takes the same wall-clock time at any refresh rate.
+	 */
+	private function animStep(&$value, $target, $perFrame, $dt, $eps = 0.001): void
+	{
+		if (abs($target - $value) <= $eps) {
+			$value = $target;
+			return;
+		}
+		$f = 1.0 - pow(1.0 - $perFrame, $dt * 60.0);
+		if ($f <= 0.0) return;
+		if ($f > 1.0) $f = 1.0;
+		$value += ($target - $value) * $f;
+	}
+
 	private function updateAnimations(float $now): void
 	{
+		// Delta time, clamped so a stall (debugger, sleep, hidden window) cannot
+		// make the UI jump. All easing below is expressed per 60 fps frame and
+		// converted with $dt, so 30/60/144 Hz behave identically.
+		$last = $this->lastTime ?? ($now - 0.0166667);
+		$dt = $now - $last;
+		if ($dt <= 0.0) $dt = 0.0166667;
+		elseif ($dt > 0.1) $dt = 0.1;
+		$this->animDt = $dt;
+
 		// Scroll interpolation
 		$scrollPairs = [
 			[$this->scrollTarget, &$this->scrollOffset],
@@ -9962,15 +10466,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			[$this->modsFilterScrollTarget, &$this->modsFilterScrollOffset],
 		];
 		foreach ($scrollPairs as [$t, &$o]) {
-			$d = $t - $o;
-			if (abs($d) > 0.5) $o += $d * $this->scrollSpeed;
-			else $o = $t;
+			$this->animStep($o, $t, $this->scrollSpeed, $dt, 0.5);
 		}
 		unset($o);
 
-		// Upload message auto-dismiss
-		if ($this->uploadSkinMessageTimer > 0) $this->uploadSkinMessageTimer--;
-		if ($this->fontNoticeTimer > 0) $this->fontNoticeTimer--;
+		// Upload message auto-dismiss (timers are in 60 fps frames)
+		$frameDelta = $dt * 60.0;
+		if ($this->uploadSkinMessageTimer > 0) $this->uploadSkinMessageTimer -= $frameDelta;
+		if ($this->fontNoticeTimer > 0) $this->fontNoticeTimer -= $frameDelta;
 
 		// Dropdown toggles
 		$dropdownPairs = [
@@ -9983,50 +10486,50 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			[$this->modsVerDropdownOpen, &$this->modsVerDropdownAnim, 0.25],
 		];
 		foreach ($dropdownPairs as [$open, &$anim, $speed]) {
-			$target = $open ? 1.0 : 0.0;
-			if (abs($anim - $target) > 0.005) $anim += ($target - $anim) * $speed;
-			else $anim = $target;
+			$this->animStep($anim, $open ? 1.0 : 0.0, $speed, $dt, 0.005);
 		}
 		unset($anim);
 
 		// Mods filter dropdown
-		$filterTarget = ($this->modsFilterDropdown !== "") ? 1.0 : 0.0;
-		if (abs($this->modsFilterDropdownAnim - $filterTarget) > 0.005) $this->modsFilterDropdownAnim += ($filterTarget - $this->modsFilterDropdownAnim) * 0.25;
-		else $this->modsFilterDropdownAnim = $filterTarget;
+		$this->animStep(
+			$this->modsFilterDropdownAnim,
+			$this->modsFilterDropdown !== "" ? 1.0 : 0.0,
+			0.25,
+			$dt,
+			0.005,
+		);
 
 		// Properties dropdown
 		$propTarget = ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen || $this->propThemeDropdownOpen) ? 1.0 : 0.0;
-		if (abs($this->propDropdownAnim - $propTarget) > 0.005) $this->propDropdownAnim += ($propTarget - $this->propDropdownAnim) * 0.25;
-		else $this->propDropdownAnim = $propTarget;
+		$this->animStep($this->propDropdownAnim, $propTarget, 0.25, $dt, 0.005);
 
 		// Sidebar indicator glide
-		$sDiff = $this->sidebarTargetY - $this->sidebarIndicatorY;
-		if (abs($sDiff) > 0.1) $this->sidebarIndicatorY += $sDiff * 0.25;
-		else $this->sidebarIndicatorY = $this->sidebarTargetY;
-
-		$hDiff = $this->sidebarHoverTargetY - $this->sidebarHoverY;
-		if (abs($hDiff) > 0.1) $this->sidebarHoverY += $hDiff * 0.25;
-		else $this->sidebarHoverY = $this->sidebarHoverTargetY;
+		$this->animStep($this->sidebarIndicatorY, $this->sidebarTargetY, 0.25, $dt, 0.1);
+		$this->animStep($this->sidebarHoverY, $this->sidebarHoverTargetY, 0.25, $dt, 0.1);
 
 		// Sidebar hover alpha
-		if ($this->sidebarHover !== -1) $this->sidebarHoverAlpha = min(1.0, $this->sidebarHoverAlpha + 0.1);
-		else $this->sidebarHoverAlpha = max(0.0, $this->sidebarHoverAlpha - 0.1);
+		$this->animStep(
+			$this->sidebarHoverAlpha,
+			$this->sidebarHover !== -1 ? 1.0 : 0.0,
+			0.1,
+			$dt,
+			0.001,
+		);
 
 		// Window launch animation
 		$elapsed = $now - $this->appLaunchTime;
 		if ($elapsed < 5.0 || !$this->fontsReady) {
 			$this->windowAnim = min(1.0, $elapsed / 5.0) * 0.4;
 		} elseif ($this->windowAnim < 1.0) {
-			$this->windowAnim += (1.0 - $this->windowAnim) * 0.08;
-			if ($this->windowAnim >= 0.998) $this->windowAnim = 1.0;
+			$this->animStep($this->windowAnim, 1.0, 0.08, $dt, 0.002);
 		}
 
-		// Page transitions
-		if ($this->pageAnim < 1.0) $this->pageAnim = min(1.0, $this->pageAnim + 0.08);
-		$this->modrinthAnim = min(1.0, $this->modrinthAnim + 0.16);
+		// Page transitions (linear ramps keep their original feel)
+		if ($this->pageAnim < 1.0) $this->pageAnim = min(1.0, $this->pageAnim + 4.8 * $dt);
+		$this->modrinthAnim = min(1.0, $this->modrinthAnim + 9.6 * $dt);
 
-		// Button pulse
-		$this->buttonPulse += 0.03;
+		// Button pulse (1.8 rad/s == the old 0.03 per frame at 60 fps)
+		$this->buttonPulse += 1.8 * $dt;
 		if ($this->buttonPulse > 6.283) $this->buttonPulse -= 6.283;
 
 		$this->lastTime = $now;
@@ -10034,7 +10537,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Icon alphas
 		foreach ($this->modIconAlpha as $id => $alpha) {
 			if ($alpha < 1.0) {
-				$this->modIconAlpha[$id] = min(1.0, $alpha + 0.05);
+				$this->modIconAlpha[$id] = min(1.0, $alpha + 3.0 * $dt);
 				$this->needsRedraw = true;
 			}
 		}
@@ -10093,6 +10596,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if ($isPropOpen && $this->propDropdownAnim < 1.0) return true;
 		if (!$isPropOpen && $this->propDropdownAnim > 0.01) return true;
 
+		// Transient notice fade-outs need frames to progress.
+		if ($this->uploadSkinMessageTimer > 0) return true;
+		if ($this->fontNoticeTimer > 0) return true;
+
 		// Background tasks
 		if ($this->isLaunching || $this->isDownloadingAssets || $this->gameProcess !== null || $this->isStoppingOverlay || $this->isSearchingModrinth || $this->isCheckingCompat) return true;
 
@@ -10138,6 +10645,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->pollProcess();
 				$this->pollOAuthServer();
 
+				// Minimized: nothing is visible. Skip animation, hover hit-testing
+				// and rendering entirely; only keep background polling alive.
+				if (!empty($isMinimized)) {
+					$this->needsRedraw = true;
+					usleep(100000);
+					continue;
+				}
+
 				// Step font loading
 				if ($this->isLoadingFonts) {
 					if ($this->fontGenerator && $this->fontGenerator->valid()) {
@@ -10164,9 +10679,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					continue;
 				}
 
-				// Throttle when unfocused (was 66ms/200ms + DwmFlush → ~2x/frame spike on low-end)
+				// Workload governor: never repaint a throttled window at full
+				// speed. Focused windows stay on VSync so animation pacing is
+				// smooth; a sleeping cap here can halve the frame rate because
+				// Windows timer granularity is ~15 ms.
 				if ($shouldThrottle) {
-					usleep(($isGameRunning && $isVisible) ? 120000 : 33000);
+					usleep(($isGameRunning && $isVisible) ? 125000 : 50000);
 				}
 
 				if ($this->currentPage === self::PAGE_LOGIN && $this->loginType === self::ACC_MICROSOFT && $this->loginStep === 1) {
@@ -11232,38 +11750,67 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				}
 			} elseif ($idx === 4) {
 				// RAM MB Interaction
-				$sliderW = 150;
-				$sliderX = $fieldX + 10;
-				$sliderHitH = 30;
+				$isAuto = (bool) ($this->settings["ram_auto"] ?? false);
 				$rowY = $contentTop + $idx * $rowH - $this->propScrollOffset;
+
+				// Auto switch hit area (left of the slider)
+				if (
+					$cx >= $fieldX &&
+					$cx <= $fieldX + 56 &&
+					$cy >= $rowY + 5 &&
+					$cy <= $rowY + 45
+				) {
+					$this->settings["ram_auto"] = !$isAuto;
+					$this->autoRamCache = null;
+					$this->propActiveField = "";
+					if ($this->settings["ram_auto"]) {
+						$this->refreshAutoRam(true);
+					}
+					$this->saveSettings();
+					$this->needsRedraw = true;
+					return;
+				}
+
+				$sliderW = 130;
+				$sliderX = $fieldX + 60;
+				$sliderHitH = 30;
 				$sliderHitTop = $rowY + ($rowH - $sliderHitH) / 2;
-				
-				// Check for slider interaction
-				if ($cy >= $sliderHitTop && $cy <= $sliderHitTop + $sliderHitH) {
-					if ($cx >= $sliderX - 10 && $cx <= $sliderX + $sliderW + 10) {
+				$tfX = $fieldX + 200;
+				$tfW = 72;
+
+				// Manual drag only makes sense while Auto is off.
+				if (!$isAuto) {
+					if (
+						$cy >= $sliderHitTop &&
+						$cy <= $sliderHitTop + $sliderHitH &&
+						$cx >= $sliderX - 8 &&
+						$cx <= $sliderX + $sliderW + 8
+					) {
 						$this->isDraggingScroll = true;
 						$this->dragType = "ram_slider";
-						
+
 						$val = ($cx - $sliderX) / $sliderW;
 						$val = max(0, min(1, $val));
 						$minRam = 512;
 						$maxRam = $this->systemRamMB;
 						$mb = $minRam + $val * ($maxRam - $minRam);
-						$this->settings["ram_mb"] = max(512, min($this->systemRamMB, round($mb / 256) * 256));
+						$this->settings["ram_mb"] = (int) max(512, min($this->systemRamMB, round($mb / 256) * 256));
 						$this->needsRedraw = true;
 						$this->saveSettings();
-						return; 
+						return;
 					}
-				}
-				
-				// Check for text field click
-				$tfX = $sliderX + $sliderW + 15;
-				$tfW = 80;
-				$tfH = 36;
-				$tfY = $rowY + (50 - $tfH) / 2;
-				if ($cx >= $tfX && $cx <= $tfX + $tfW && $cy >= $tfY && $cy <= $tfY + $tfH) {
-					$this->propActiveField = "ram_mb";
-					$this->needsRedraw = true;
+
+					// Text field click
+					if (
+						$cx >= $tfX &&
+						$cx <= $tfX + $tfW &&
+						$cy >= $rowY + 5 &&
+						$cy <= $rowY + 45
+					) {
+						$this->propActiveField = "ram_mb";
+						$this->needsRedraw = true;
+						return;
+					}
 				}
 			} elseif ($idx >= 5 && $idx <= 8) {
 				// Open folder buttons
@@ -11554,11 +12101,15 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$uvs,
 				);
 			}
+			// Fluent/Mica-like scrim: let the image read as a tint, not a photo,
+			// and keep contrast correct in both themes.
+			$isLight = $this->colors === $this->lightColors;
+			$scrim = $isLight ? [0.95, 0.95, 0.95] : [0.12, 0.12, 0.12];
 			$this->drawRect(0, 0, $this->width, $this->height, [
-				0,
-				0,
-				0,
-				0.4 * $bgAlpha,
+				$scrim[0],
+				$scrim[1],
+				$scrim[2],
+				($isLight ? 0.62 : 0.58) * $bgAlpha,
 			]);
 		} else {
 			$this->drawRect(0, 0, $this->width, $this->height, [
@@ -11706,7 +12257,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$pw = $lw + 40;
 				$px = $this->width - $pw - 24;
 				$py = $this->height - 74;
-				$this->drawRoundedRect($px, $py, $pw, 32, 8, [0.08, 0.08, 0.08, 0.9], [1, 1, 1, 0.08]);
+				$this->drawRoundedRect($px, $py, $pw, 32, 6, $this->colors["dropdown_bg"], $this->colors["stroke"]);
 				$this->renderText($label, $px + 20, $py + 21, $this->colors["text"], 3000);
 			}
 
@@ -11718,7 +12269,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$pw = $lw + 40;
 				$px = $this->width - $pw - 24;
 				$py = ($this->isLoadingFonts && $this->fontsReady) ? $this->height - 114 : $this->height - 74;
-				$this->drawRoundedRect($px, $py, $pw, 32, 8, [0.08, 0.08, 0.08, 0.9 * $ac], [1, 1, 1, 0.08]);
+				$this->drawRoundedRect($px, $py, $pw, 32, 6, $this->tint($this->colors["dropdown_bg"], $ac), $this->tint($this->colors["stroke"], $ac));
 				$tc = $this->colors["text"];
 				$this->renderText($label, $px + 20, $py + 21, [$tc[0], $tc[1], $tc[2], $ac], 3000);
 			}
@@ -11792,10 +12343,19 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$indicatorW = $tabMetrics[$activeIdx]["w"];
 		}
 
-		// Draw Floating Indicator
-		$btnH = 26;
+		// Win11 pivot: selected tab is marked by a 3px accent underline and a
+		// subtle rounded hover surface (no floating pill).
+		$btnH = 32;
 		$btnY = $y + (self::TAB_H - $btnH) / 2;
-		$this->drawRoundedRect($indicatorX, $btnY, $indicatorW, $btnH, $btnH / 2, $this->colors["pill_active"], $this->colors["primary"]);
+		$indY = $y + self::TAB_H - 3;
+		$this->drawRoundedRect(
+			$indicatorX + 10,
+			$indY,
+			max(12, $indicatorW - 20),
+			3,
+			1.5,
+			$this->colors["primary"],
+		);
 
 		// Render Tabs
 		foreach ($tabs as $i => $name) {
@@ -11804,15 +12364,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$isHover = $this->subTabHoverIdx === $hoverIdxBase + $i;
 
 			if (!$isActive && $isHover) {
-				// Glassy Hover Capsule
-				$this->drawRoundedRect($metric["x"], $btnY, $metric["w"], $btnH, $btnH / 2, [1, 1, 1, 0.05]);
+				$this->drawRoundedRect($metric["x"] + 4, $btnY, $metric["w"] - 8, $btnH, 4, $this->colors["surface_alt"]);
 			}
 
-			// Text color: Primary if active, dim if not, bright if hover
-			$tc = $isActive ? $this->colors["text"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
-			$tabAlpha = $isActive ? 1.0 : ($isHover ? 0.9 : 0.7);
-			
-			$this->renderText($name, $metric["x"] + 16, $y + 24, $tc, 1000, $tabAlpha);
+			$tc = $isActive ? $this->colors["text"] : $this->colors["text_dim"];
+			$this->renderText($name, $metric["x"] + 16, $y + 24, $tc, 1000, 0.2);
 		}
 	}
 
@@ -11824,17 +12380,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$isLight = $this->colors === $this->lightColors;
 		$bgColor = $isFocused ? $this->colors["input_bg_active"] : $this->colors["input_bg"];
 		
-		// 1. Draw Glassmorphic Base
-		$borderAlpha = $isFocused ? 0.3 : 0.08;
-		$borderColor = $isFocused ? $this->colors["primary"] : ($isLight ? [0,0,0, $borderAlpha] : [1,1,1, $borderAlpha]);
-		
-		// Focus Glow
+		// Fluent TextBox: 4px corners, hairline stroke, accent underline on focus.
+		$borderColor = $isFocused ? $this->colors["primary"] : $this->colors["stroke"];
+		$this->drawRoundedRect($x, $y, $w, $h, 4, $bgColor, $borderColor);
 		if ($isFocused) {
-			$glowColor = [$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], 0.15];
-			$this->drawRoundedRect($x - 2, $y - 2, $w + 4, $h + 4, 10, $glowColor);
+			$this->drawRoundedRect($x + 2, $y + $h - 2, $w - 4, 2, 1, $this->colors["primary"]);
 		}
-		
-		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColor, $borderColor);
 		
 		// 2. Render Search Icon (High-Fidelity Material Symbol 0xe8b6)
 		$iconColor = $isFocused ? $this->colors["primary"] : $this->colors["text_dim"];
@@ -11869,7 +12420,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		$sw = self::SIDEBAR_W;
 		$c = $this->colors["sidebar_bg1"];
-		if ($this->bgTex) $c = [$c[0], $c[1], $c[2], 0.85];
+		if ($this->bgTex) $c = [$c[0], $c[1], $c[2], 0.82];
 		$this->drawRect(0, 0, $sw, $this->height - self::TITLEBAR_H, $c);
 		$this->drawRect($sw - 1, 0, 1, $this->height - self::TITLEBAR_H, $this->colors["divider"]);
 
@@ -11888,19 +12439,26 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		];
 
 		$hasActiveTab = false;
-		foreach ($this->sidebarItems as $item) {
-			if ($this->currentPage === $item["id"]) { $hasActiveTab = true; break; }
+		$activeIdx = -1;
+		foreach ($this->sidebarItems as $i => $item) {
+			if ($this->currentPage === $item["id"]) {
+				$hasActiveTab = true;
+				$activeIdx = $i;
+				break;
+			}
+		}
+
+		// Win11 navigation pane: rounded selection pill + 3px accent rail.
+		if ($this->sidebarHoverAlpha > 0.001 && $this->sidebarHover !== $activeIdx) {
+			$hC = $this->colors["sidebar_hover"];
+			$this->drawRoundedRect(8, $this->sidebarHoverY + 2, $sw - 16, $itemH - 4, 4, [
+				$hC[0], $hC[1], $hC[2], ($hC[3] ?? 1.0) * $this->sidebarHoverAlpha
+			]);
 		}
 
 		if ($hasActiveTab) {
-			$this->drawRoundedRect(4, $this->sidebarIndicatorY + 2, $sw - 8, $itemH - 4, 10, $this->colors["sidebar_active"]);
-		}
-
-		if ($this->sidebarHoverAlpha > 0.001) {
-			$hC = $this->colors["sidebar_hover"];
-			$this->drawRoundedRect(4, $this->sidebarHoverY + 2, $sw - 8, $itemH - 4, 10, [
-				$hC[0], $hC[1], $hC[2], ($hC[3] ?? 1.0) * $this->sidebarHoverAlpha
-			]);
+			$this->drawRoundedRect(8, $this->sidebarIndicatorY + 2, $sw - 16, $itemH - 4, 4, $this->colors["sidebar_active"]);
+			$this->drawRoundedRect(4, $this->sidebarIndicatorY + ($itemH - 18) / 2, 3, 18, 1.5, $this->colors["primary"]);
 		}
 
 		foreach ($this->sidebarItems as $i => $item) {
@@ -11962,7 +12520,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$animX = $tx + (1.0 - $this->sidebarHoverAlpha) * 10;
 
 		$bg = $this->colors["dropdown_bg"];
-		$this->drawRoundedRect($animX, $ty, $tw + 20, 24, 6, [$bg[0], $bg[1], $bg[2], ($bg[3] ?? 1.0) * $this->sidebarHoverAlpha]);
+		$this->drawRoundedRect($animX, $ty, $tw + 20, 24, 4, [$bg[0], $bg[1], $bg[2], ($bg[3] ?? 1.0) * $this->sidebarHoverAlpha], $this->colors["stroke"]);
 		$this->renderText($name, $animX + 10, $ty + 17, [$this->colors["text"][0], $this->colors["text"][1], $this->colors["text"][2], $this->sidebarHoverAlpha], 1000);
 	}
 
@@ -12556,15 +13114,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Progress Bar on Home Page
 		if ($this->isDownloadingAssets) {
 			$barW = 400;
-			$barH = 8;
+			$barH = 6;
 			$barX = ($cw - $barW) / 2;
 			$barY = $ly - 30;
-			$this->drawRect($barX, $barY, $barW, $barH, $this->colors["card"]);
-			$this->drawRect(
+			$this->drawRoundedRect($barX, $barY, $barW, $barH, 3, $this->colors["surface_alt"], $this->colors["stroke"]);
+			$this->drawRoundedRect(
 				$barX,
 				$barY,
-				$barW * $this->assetProgress,
+				max(0, $barW * $this->assetProgress),
 				$barH,
+				3,
 				$this->colors["primary"],
 			);
 
@@ -12572,9 +13131,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->renderText(
 				$msg,
 				$barX,
-				$barY + $barH + 15,
-				$this->colors["primary"],
-				1000,
+				$barY + $barH + 18,
+				$this->colors["text_dim"],
+				3000,
 			);
 		}
 
@@ -12594,18 +13153,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$ddH,
 			);
 
-			$this->drawRoundedRect($ax, $dY, $aw, $maxH, 8, $this->colors["dropdown_bg"]);
-			$this->drawRect($ax, $dY, $aw, 8, $this->colors["dropdown_bg"]);
-			$this->drawRect($ax, $dY, $aw, 1, $this->colors["divider"]);
+			$this->drawRoundedRect($ax, $dY, $aw, $maxH, 4, $this->colors["dropdown_bg"], $this->colors["stroke"]);
+			$this->drawRect($ax + 1, $dY, $aw - 2, 4, $this->colors["dropdown_bg"]);
 
 			$i = 0;
 			foreach ($this->accounts as $uuid => $accData) {
 				$itemY = $dY + $i * 40;
 				$isHover = $this->homeHoverIdx === 10 + $i;
 				if ($isHover) {
-					$this->drawRect($ax + 4, $itemY + 2, $aw - 8, 36, $this->colors["dropdown_hover"], 4);
+					$this->drawRoundedRect($ax + 4, $itemY + 2, $aw - 8, 36, 4, $this->colors["dropdown_hover"]);
 				}
-				$this->drawRect($ax + 4, $itemY + 6, 2, 28, $this->colors["primary"], 1);
+				$this->drawRoundedRect($ax + 6, $itemY + 8, 3, 24, 1.5, $this->colors["primary"]);
 
 				$type = $accData["Type"] ?? self::ACC_OFFLINE;
 				$tex = null;
@@ -12634,9 +13192,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$itemY = $dY + $i * 40;
 			$isHover = $this->homeHoverIdx === 10 + $i;
 			if ($isHover) {
-				$this->drawRect($ax + 4, $itemY + 2, $aw - 8, 36, $this->colors["dropdown_hover"], 4);
+				$this->drawRoundedRect($ax + 4, $itemY + 2, $aw - 8, 36, 4, $this->colors["dropdown_hover"]);
 			}
-			$this->drawRect($ax + 4, $itemY + 6, 2, 28, $this->colors["text_dim"], 1);
+			$this->drawRoundedRect($ax + 6, $itemY + 8, 3, 24, 1.5, $this->colors["text_dim"]);
 			$this->renderText("ADD ACCOUNT", $ax + 16, $itemY + 26, $this->colors["text_dim"], 1000);
 
 			$gl->glDisable(0x0c11);
@@ -12659,9 +13217,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$vw,
 				$ddH,
 			);
-			$this->drawRoundedRect($vx, $dY, $vw, $fullDDH, 8, $this->colors["dropdown_bg"]);
-			$this->drawRect($vx, $dY, $vw, 8, $this->colors["dropdown_bg"]);
-			$this->drawRect($vx, $dY, $vw, 1, $this->colors["divider"]);
+			$this->drawRoundedRect($vx, $dY, $vw, $fullDDH, 4, $this->colors["dropdown_bg"], $this->colors["stroke"]);
+			$this->drawRect($vx + 1, $dY, $vw - 2, 4, $this->colors["dropdown_bg"]);
 
 			// Draw Search Box
 			$searchHover = $this->homeHoverIdx === 10000;
@@ -12685,11 +13242,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					if ($itemY + 40 > $dY + $searchH && $itemY < $dY + $ddH) {
 						$isHover = $this->homeHoverIdx === 1000 + $i;
 						if ($isHover) {
-							$this->drawRect($vx + 4, $itemY + 2, $vw - 8, 36, $this->colors["dropdown_hover"], 4);
+							$this->drawRoundedRect($vx + 4, $itemY + 2, $vw - 8, 36, 4, $this->colors["dropdown_hover"]);
 						}
 						
 						$accentColor = $v["type"] === "release" ? $this->colors["primary"] : $this->colors["text_dim"];
-						$this->drawRect($vx + 4, $itemY + 6, 2, 28, $accentColor, 1);
+						$this->drawRoundedRect($vx + 6, $itemY + 8, 3, 24, 1.5, $accentColor);
 						
 						$jarP = $this->settings["game_dir"] . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $v["id"] . DIRECTORY_SEPARATOR . $v["id"] . ".jar";
 						$isInst = file_exists($jarP);
@@ -12711,9 +13268,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 							$textX += 24;
 						}
 
-						// Green for installed, gray for not installed
+						// Theme-aware installed state
 						if ($isInst) {
-							$textC = $isHover ? [0.4, 0.9, 0.5] : [0.3, 0.8, 0.4];
+							$textC = $this->colors["status_active"];
 						} else {
 							$textC = $isHover ? $this->colors["text"] : $this->colors["text_dim"];
 						}
@@ -12742,12 +13299,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 						$listScissorH,
 						$this->colors["bg"],
 					); // bg
-					$this->drawRect(
-						$vx + $vw - 5,
+					$this->drawRoundedRect(
+						$vx + $vw - 6,
 						$scrollY,
 						4,
 						$scrollH,
-						$this->colors["tab_active"],
+						2,
+						$this->colors["scrollbar"],
 					); // handle
 				}
 			}
@@ -13439,7 +13997,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$isHover = $this->foxySettingsHoverIdx === $idx;
 
 		if ($isHover) {
-			$this->drawRect(5, $y, $cw - 10, 44, [0.15, 0.15, 0.17, 0.5]);
+			$this->drawRoundedRect(5, $y, $cw - 10, 44, 4, $this->colors["sidebar_hover"]);
 		}
 
 		$this->renderText(
@@ -13745,28 +14303,27 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	private function drawStyledButton($x, $y, $w, $h, $label, $isHover, $style = "primary", $fontSize = 1000)
 	{
+		$border = null;
 		switch ($style) {
 			case "danger":
-				$bg = $isHover ? [0.94, 0.33, 0.31] : [0.80, 0.25, 0.25];
-				$tc = [1, 1, 1];
+				$bg = $isHover ? $this->colors["del_btn_hover"] : $this->colors["del_btn"];
+				$tc = $this->colors["text_on_accent"];
 				break;
 			case "secondary":
 				$bg = $isHover ? $this->colors["button_hover"] : $this->colors["button"];
 				$tc = $this->colors["text"];
+				$border = $isHover ? $this->colors["stroke_strong"] : $this->colors["stroke"];
 				break;
-			case "success":
-				$bg = $isHover ? [0.25, 0.80, 0.48] : [0.20, 0.65, 0.40];
-				$tc = [1, 1, 1];
-				break;
+			case "success": // primary action in Windows 11 is the system accent
+			case "primary":
 			default:
-				$p = $this->colors["primary"];
-				$bg = $isHover ? [$p[0]*1.1, $p[1]*1.1, $p[2]*1.1] : $p;
-				$tc = [1, 1, 1];
+				$bg = $isHover ? $this->colors["accent_hover"] : $this->colors["primary"];
+				$tc = $this->colors["text_on_accent"];
 				break;
 		}
 
-		$radius = min(8, $h / 2);
-		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bg);
+		$radius = min(6, $h / 2);
+		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bg, $border);
 
 		$spacing = ($fontSize === 2000) ? 1.5 : 0.8;
 		$textW = $this->getTextWidth($label, $fontSize, $spacing);
@@ -13782,16 +14339,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		
-		// Header background with bottom divider
+		// Header background with bottom divider (flat Fluent surface)
 		$this->drawRect(0, 0, $cw, self::HEADER_H, $this->colors["header_bg"]);
 		$this->drawRect(0, self::HEADER_H - 1, $cw, 1, $this->colors["divider"]);
 
-		// Title: Sub-Header (Semi-Bold 18px)
-		$this->renderText($title, self::PAD, 35, $this->colors["primary"], 1500, 0.8);
+		// Title: Win11 title text (primary-on-surface, semibold)
+		$this->renderText($title, self::PAD, 35, $this->colors["text"], 1500, 0.4);
 		
-		// Subtitle: Caption (Light 12px)
+		// Subtitle: secondary caption
 		if ($subtitle !== "") {
-			$this->renderText($subtitle, self::PAD, 55, $this->colors["text_dim"], 3000, 0.5);
+			$this->renderText($subtitle, self::PAD, 55, $this->colors["text_dim"], 3000, 0.3);
 		}
 	}
 
@@ -13801,11 +14358,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function drawCard($x, $y, $w, $h, $isHover = false, $isActive = false)
 	{
 		$radius = 8;
-		$bgColor = $isActive ? $this->colors["acc_active"] : ($isHover ? $this->colors["card_hover"] : $this->colors["card"]);
-		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bgColor);
-		$this->drawRoundedRect($x, $y, $w, $h, $radius, $this->colors["divider"]);
+		$bg = $isActive
+			? $this->colors["acc_active"]
+			: ($isHover ? $this->colors["card_hover"] : $this->colors["card"]);
+		$stroke = $isActive
+			? $this->colors["acc_active_border"]
+			: ($isHover ? $this->colors["stroke_strong"] : $this->colors["stroke"]);
+		// Flat Fluent surface: one fill + a 1px hairline border. No overlay fill.
+		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bg, [
+			$stroke[0],
+			$stroke[1],
+			$stroke[2],
+			$isActive ? 0.45 : ($stroke[3] ?? 1.0),
+		]);
 		if ($isActive) {
-			$this->drawRoundedRect($x + 2, $y + $h/2 - 12, 4, 24, 2, $this->colors["primary"]);
+			$this->drawRoundedRect($x + 1, $y + 10, 3, max(10, $h - 20), 1.5, $this->colors["primary"]);
 		}
 	}
 
@@ -13826,15 +14393,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			if (!isset($this->toggleAnims[$id])) {
 				$this->toggleAnims[$id] = $target;
 			}
-			$current = $this->toggleAnims[$id];
-			if (abs($current - $target) > 0.01) {
-				$this->toggleAnims[$id] += ($target - $current) * 0.25;
-				$current = $this->toggleAnims[$id];
+			if (abs($this->toggleAnims[$id] - $target) > 0.01) {
+				$this->animStep($this->toggleAnims[$id], $target, 0.25, $this->animDt, 0.01);
 				$this->needsRedraw = true;
 			} else {
 				$this->toggleAnims[$id] = $target;
-				$current = $target;
 			}
+			$current = $this->toggleAnims[$id];
 		}
 
 		// Track background (Lerp color)
@@ -13868,10 +14433,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$knobOff[2] + ($knobOn[2] - $knobOff[2]) * $current
 		];
 
-		// Subtle shadow under the knob (drawn first so knob paints over it)
-		$this->drawRoundedRect($knobX, $knobY + 1, $knobSize, $knobSize, $knobSize / 2, [0, 0, 0, 0.2]);
-
-		// Draw smooth circular knob
+		// Flat Win11 toggle: solid track + plain circular knob (no shadow).
 		$this->drawRoundedRect($knobX, $knobY, $knobSize, $knobSize, $knobSize / 2, $knobColor);
 	}
 
@@ -13881,25 +14443,22 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function drawDropdownSelector($x, $y, $w, $h, $label, $isOpen = false, $isHover = false, $iconTex = 0)
 	{
 		$isLight = $this->colors === $this->lightColors;
-		$radius = 6;
+		$radius = 4;
 		
-		// Background transition
-		$bg = $isOpen
-			? ($isLight ? [0.86, 0.88, 0.92] : [0.12, 0.14, 0.18])
-			: ($isHover
-				? $this->colors["card_hover"]
-				: $this->colors["card"]);
+		// Fluent control surface: subtle fill + hairline stroke. Hover/open
+		// brightens the surface; open uses the accent stroke.
+		$bg = ($isOpen || $isHover)
+			? $this->colors["surface_alt"]
+			: $this->colors["input_bg"];
+		$stroke = $isOpen
+			? $this->colors["primary"]
+			: ($isHover ? $this->colors["stroke_strong"] : $this->colors["stroke"]);
 		
-		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bg);
-
-		// Clean outline for hover state (LunarClient styled hover on borders)
-		if ($isHover && !$isOpen) {
-			$this->drawRoundedRect($x, $y, $w, $h, $radius, [1, 1, 1, 0.05]);
-		}
+		$this->drawRoundedRect($x, $y, $w, $h, $radius, $bg, $stroke);
 
 		if ($isOpen) {
 			// Flatten bottom corners to connect seamlessly to the dropdown list overlay
-			$this->drawRect($x, $y + $h - $radius, $w, $radius, $bg);
+			$this->drawRect($x + 1, $y + $h - $radius, $w - 2, $radius, $bg);
 		}
 
 		// Label text (brighter if hover or open)
@@ -14137,7 +14696,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					"(Code automatically copied to clipboard!)",
 					$boxX,
 					280,
-					[0.3, 0.8, 0.4],
+					$this->colors["status_active"],
 					1000,
 				);
 
@@ -14647,8 +15206,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$contentH = count($filtered) * 40;
 		$thumbH = max(32, ($h / max(1, $contentH)) * $h);
 		$thumbY = $y + ($this->vScrollOffset / $maxScroll) * ($h - $thumbH);
-		$pc = $this->colors["primary"];
-		$this->drawRoundedRect($barX, $thumbY, $barW, $thumbH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
+		$isBarHover = $this->mouseX >= $barX - 3 && $this->mouseX <= $barX + $barW + 3;
+		$thumbColor = $isBarHover ? $this->colors["scrollbar_hover"] : $this->colors["scrollbar"];
+		$this->drawRoundedRect($barX, $thumbY, $barW, $thumbH, 3, $thumbColor);
 	}
 
 	private function loadVersions()
@@ -14802,7 +15362,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				
 				// Type badge
 				$badgeW = $this->getTextWidth($typeLabel, 3000) + 12;
-				$this->drawRect(self::PAD + 64, $y + 38, $badgeW, 16, [0.0, 0.0, 0.0, 0.2]);
+				$this->drawRoundedRect(self::PAD + 64, $y + 38, $badgeW, 16, 3, $this->colors["surface_alt"]);
 				$this->renderText($typeLabel, self::PAD + 70, $y + 49, $typeColor, 3000);
 
 				// Manage button (local accounts only)
@@ -14814,8 +15374,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 					$isManageHover = $this->accHoverIndex === $uuid . "_manage";
 
-					$this->drawRoundedRect($manageBtnX, $manageY, $manageBtnW, $manageBtnH, 6, $isManageHover ? [0.5, 0.3, 0.9, 0.3] : [1.0, 1.0, 1.0, 0.08]);
-					$this->renderIcon(0xef7b, $manageBtnX + 8, $manageY + 20, $isManageHover ? [0.7, 0.5, 1.0] : $this->colors["text_dim"]);
+					$this->drawRoundedRect($manageBtnX, $manageY, $manageBtnW, $manageBtnH, 4, $isManageHover ? $this->colors["acc_active"] : $this->colors["button"], $isManageHover ? $this->colors["acc_active_border"] : $this->colors["stroke"]);
+					$this->renderIcon(0xef7b, $manageBtnX + 8, $manageY + 20, $isManageHover ? $this->colors["primary"] : $this->colors["text_dim"]);
 				}
 
 				// Log Out button
@@ -14851,9 +15411,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$msgW = $this->getTextWidth($this->uploadSkinMessage, 2000) + 40;
 			$msgX = ($cw - $msgW) / 2;
 			$msgY = ($this->height - self::TITLEBAR_H) - 60;
-			$this->drawRoundedRect($msgX, $msgY, $msgW, 36, 8, [0.0, 0.0, 0.0, 0.7]);
+			$this->drawRoundedRect($msgX, $msgY, $msgW, 36, 6, $this->colors["dropdown_bg"], $this->colors["stroke"]);
 			$isSuccess = strpos($this->uploadSkinMessage, "failed") === false;
-			$msgColor = $isSuccess ? [0.2, 0.8, 0.3] : [0.9, 0.2, 0.2];
+			$msgColor = $isSuccess ? $this->colors["status_active"] : $this->colors["status_error"];
 			$this->renderText($this->uploadSkinMessage, ($cw - $this->getTextWidth($this->uploadSkinMessage, 2000)) / 2, $msgY + 25, $msgColor, 2000);
 		}
 	}
@@ -14898,16 +15458,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$tw = strlen($cat) * 8 + 30;
 
 			if ($isActive) {
-				// Premium Active Tab Capsule
-				$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 8, $this->colors["tab_active"]);
-				$this->drawRect($tx + ($tw - 20) / 2, $y + self::TAB_H - 3, 20, 3, $this->colors["primary"]);
-				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text"], 1000);
+				// Active tab: subtle surface + accent underline (Win11 pivot)
+				$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 4, $this->colors["surface_alt"]);
+				$this->drawRoundedRect($tx + 10, $y + self::TAB_H - 3, max(12, $tw - 20), 3, 1.5, $this->colors["primary"]);
+				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text"], 1000, 0.2);
 			} else {
 				if ($isHover) {
-					// Soft Glassy Hover
-					$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 8, [1, 1, 1, 0.05]);
+					// Soft hover surface
+					$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 4, $this->colors["surface_alt"]);
 				}
-				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text_dim"], 1000);
+				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text_dim"], 1000, 0.2);
 			}
 			$tx += $tw + 12; // Increased spacing for capsules
 		}
@@ -15024,10 +15584,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$placeholder = "",
 	) {
 		$isActive = $this->propActiveField === $key;
-		$borderColor = $isActive ? $this->colors["primary"] : [1, 1, 1, 0.1];
-		$bg = $isActive ? [0, 0, 0, 0.4] : [0, 0, 0, 0.2];
+		$borderColor = $isActive ? $this->colors["primary"] : $this->colors["stroke"];
+		$bg = $isActive ? $this->colors["input_bg_active"] : $this->colors["input_bg"];
 
-		$this->drawRoundedRect($x, $y, $w, $h, 6, $bg, $borderColor);
+		$this->drawRoundedRect($x, $y, $w, $h, 4, $bg, $borderColor);
 
 		$val = $this->settings[$key] ?? "";
 		$display = $val . ($isActive ? "_" : "");
@@ -15148,59 +15708,67 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			4,
 			$y,
 			"Allocated Memory",
-			"RAM for Minecraft game (in MB)",
+			$this->getAutoRamStatusText(),
 			function ($x, $cy, $w, $h) {
+				$isAuto = (bool) ($this->settings["ram_auto"] ?? false);
 				$cur = (int) $this->settings["ram_mb"];
-				
-				$sliderW = 160;
+				$pc = $this->colors["primary"];
+				$pcDim = [$pc[0], $pc[1], $pc[2], 0.4];
+
+				// Auto switch (left of the slider)
+				$this->drawToggleSwitch(
+					$x + 2,
+					$cy + 9,
+					$isAuto,
+					$this->propFieldHover === 4,
+					"prop:ram_auto",
+				);
+
+				$sliderX = $x + 60;
+				$sliderW = 130;
 				$sliderH = 8;
-				$sliderX = $x + 10;
 				$sliderY = $cy + ($h - $sliderH) / 2;
 
 				$minRam = 512;
-				$maxRam = $this->systemRamMB;
+				$maxRam = max(1024, $this->systemRamMB);
 				$pct = ($cur - $minRam) / (max(1, $maxRam - $minRam));
 				$pct = max(0, min(1, $pct));
 
-				// Track (Glassy)
-				$this->drawRoundedRect($sliderX, $sliderY, $sliderW, $sliderH, 4, [1, 1, 1, 0.05], [1, 1, 1, 0.1]);
-				
-				// Fill (Glowing Primary)
+				// Track
+				$this->drawRoundedRect($sliderX, $sliderY, $sliderW, $sliderH, 4, $this->colors["surface_alt"], $this->colors["stroke"]);
+
+				// Fill (dimmed while Auto owns the value)
 				$fillW = $sliderW * $pct;
-				$pc = $this->colors["primary"];
 				if ($fillW > 0) {
-					$this->drawRoundedRect($sliderX, $sliderY, $fillW, $sliderH, 4, [$pc[0], $pc[1], $pc[2], 0.8]);
-					// Soft Glow
-					$this->drawGlow($sliderX, $sliderY, $fillW, $sliderH, 10, [$pc[0], $pc[1], $pc[2], 0.2]);
+					$this->drawRoundedRect($sliderX, $sliderY, $fillW, $sliderH, 4, $isAuto ? $pcDim : $pc);
 				}
 
 				// Thumb (Premium Handle)
 				$thumbSize = 18;
 				$thumbX = $sliderX + $fillW - $thumbSize / 2;
 				$thumbY = $sliderY + ($sliderH - $thumbSize) / 2;
-				
+
 				$absMouseX = $this->mouseX - self::SIDEBAR_W;
 				$absMouseY = $this->mouseY - self::TITLEBAR_H;
-				$isHover = $absMouseX >= $sliderX - 10 && $absMouseX <= $sliderX + $sliderW + 10 && $absMouseY >= $cy + ($h - 30) / 2 && $absMouseY <= $cy + ($h + 30) / 2;
-				$isDragging = $this->isDraggingScroll && $this->dragType === "ram_slider";
-				
+				$isHover = !$isAuto && $absMouseX >= $sliderX - 10 && $absMouseX <= $sliderX + $sliderW + 10 && $absMouseY >= $cy + ($h - 30) / 2 && $absMouseY <= $cy + ($h + 30) / 2;
+				$isDragging = !$isAuto && $this->isDraggingScroll && $this->dragType === "ram_slider";
+
 				// Hover/Drag Halo
 				if ($isHover || $isDragging) {
-					$haloAlpha = $isDragging ? 0.3 : 0.15;
-					$this->drawRoundedRect($thumbX - 6, $thumbY - 6, $thumbSize + 12, $thumbSize + 12, ($thumbSize+12)/2, [1, 1, 1, $haloAlpha]);
+					$haloAlpha = $isDragging ? 0.28 : 0.15;
+					$this->drawRoundedRect($thumbX - 6, $thumbY - 6, $thumbSize + 12, $thumbSize + 12, ($thumbSize + 12) / 2, [$pc[0], $pc[1], $pc[2], $haloAlpha]);
 				}
-				
-				// Thumb Body
-				$thumbColor = $isDragging ? [1, 1, 1] : ($isHover ? [0.95, 0.95, 1.0] : [0.9, 0.9, 0.95]);
-				$this->drawRoundedRect($thumbX, $thumbY, $thumbSize, $thumbSize, $thumbSize/2, $thumbColor, [0, 0, 0, 0.2]);
-				// Inner Dot
-				$this->drawRect($thumbX + ($thumbSize - 4)/2, $thumbY + ($thumbSize - 4)/2, 4, 4, [0.4, 0.4, 0.5], 2);
-				
-				// Editable text field for RAM (Aligned)
-				$tfW = 90;
+
+				// Thumb: accent circle with a contrasting center dot (Win11 style)
+				$this->drawRoundedRect($thumbX, $thumbY, $thumbSize, $thumbSize, $thumbSize / 2, $isAuto ? $pcDim : $pc);
+				$dot = $this->colors["text_on_accent"];
+				$this->drawRoundedRect($thumbX + ($thumbSize - 6) / 2, $thumbY + ($thumbSize - 6) / 2, 6, 6, 3, $isAuto ? [$dot[0], $dot[1], $dot[2], 0.5] : $dot);
+
+				// Editable text field for RAM (value is computed while Auto is on)
+				$tfW = 72;
 				$tfH = 34;
-				$this->renderPropTextField($sliderX + $sliderW + 20, $cy + ($h - $tfH) / 2, $tfW, $tfH, "ram_mb");
-				$this->renderText("MB", $sliderX + $sliderW + $tfW + 30, $cy + 24, $this->colors["text_dim"], 3000, 0.4);
+				$this->renderPropTextField($x + 200, $cy + ($h - $tfH) / 2, $tfW, $tfH, "ram_mb");
+				$this->renderText("MB", $x + 278, $cy + 24, $this->colors["text_dim"], 3000, 0.4);
 			},
 		);
 
@@ -15536,7 +16104,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Panel background (High-Fidelity Glass)
 		$bgColor = $this->colors["dropdown_bg"];
-		$this->drawRoundedRect($x, $y, $w, $ddH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.1 * $alpha]);
+		$this->drawRoundedRect($x, $y, $w, $ddH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], $this->tint($this->colors["stroke_strong"], $alpha));
 		if ($alpha > 0.5) $this->drawRect($x, $y, $w, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha]);
 
 		$gl->glEnable(0x0c11); // GL_SCISSOR_TEST
@@ -15564,11 +16132,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->drawGlow($x + 6, $iy + 2, $w - 12, $itemH - 4, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
 			} elseif ($isHover) {
 				// Soft Glassy Hover Capsule
-				$hoverColor = $isLight ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+				$hoverColor = $isLight ? [0, 0, 0, 0.05 * $alpha] : $this->tint($this->colors["surface_alt"], $alpha);
 				$this->drawRoundedRect($x + 6, $iy + 2, $w - 12, $itemH - 4, 8, $hoverColor);
 			}
 
-			$color = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$color = $isActive ? $this->colors["text_on_accent"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
 			if ($item === self::FONT_INSTALL_ITEM && !$isActive) {
 				$pc = $this->colors["primary"];
 				$color = $pc;
@@ -15614,15 +16182,15 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 				if ($idx === 1 && $this->isUpdatingCacert) {
 					// Draw a progress bar inside the button
-					$this->drawRect($bx, $cy, $bw, 40, [0.08, 0.1, 0.12]);
+					$this->drawRoundedRect($bx, $cy, $bw, 40, 4, $this->colors["input_bg"], $this->colors["stroke"]);
 					$fillW = $bw * ($this->caUpdateProgress / 100);
 					if ($fillW > 0) {
-						$this->drawRect($bx, $cy, $fillW, 40, $this->colors["status_queue"]);
+						$this->drawRoundedRect($bx, $cy, $fillW, 40, 4, $this->colors["primary"]);
 					}
 					
 					$progressLabel = "UPDATING... " . floor($this->caUpdateProgress) . "%";
 					$txtW = $this->getTextWidth($progressLabel, 1000);
-					$this->renderText($progressLabel, $bx + ($bw - $txtW) / 2, $cy + 25, [1, 1, 1], 1000);
+					$this->renderText($progressLabel, $bx + ($bw - $txtW) / 2, $cy + 25, $this->colors["text_on_accent"], 1000);
 				} else {
 					$this->drawStyledButton($bx, $cy, $bw, 40, $label, $btnHover, "primary");
 				}
@@ -15752,9 +16320,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$isHover = $this->mouseX >= self::SIDEBAR_W + $selX && $this->mouseX <= self::SIDEBAR_W + $selX + $selW &&
 				   $this->mouseY >= self::TITLEBAR_H + $selY && $this->mouseY <= self::TITLEBAR_H + $selY + $selH;
 		
-		$selBg = $this->explorerSubTabDropdownOpen ? $this->colors["primary"] : ($isHover ? $this->colors["button_hover"] : $this->colors["button"]);
-		$this->drawRoundedRect($selX, $selY, $selW, $selH, 8, $selBg);
-		$tc = $this->explorerSubTabDropdownOpen ? [1,1,1] : $this->colors["text"];
+		$selBg = $this->explorerSubTabDropdownOpen ? $this->colors["surface_alt"] : ($isHover ? $this->colors["button_hover"] : $this->colors["button"]);
+		$selBorder = $this->explorerSubTabDropdownOpen ? $this->colors["primary"] : $this->colors["stroke"];
+		$this->drawRoundedRect($selX, $selY, $selW, $selH, 4, $selBg, $selBorder);
+		$tc = $this->explorerSubTabDropdownOpen ? $this->colors["text"] : $this->colors["text"];
 		$this->renderText($curTabName, $selX + 12, $selY + 24, $tc, 3000);
 		$this->renderIcon($this->explorerSubTabDropdownOpen ? 0xe5c7 : 0xe5c5, $selX + $selW - 24, $selY + 24, $tc, 20);
 		
@@ -15876,11 +16445,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$isActive = $prop !== "" && !empty($this->$prop);
 
 				// Pill background
-				$bg = $isOpen ? $this->colors["primary"] : ($isActive ? $this->colors["pill_active"] : $this->colors["pill_bg"]);
-				$this->drawRoundedRect($pillX, $pillY, $tw, $pillH, 6, $bg, $isOpen ? null : [1, 1, 1, 0.05]);
+				$bg = $isOpen ? $this->colors["surface_alt"] : ($isActive ? $this->colors["pill_active"] : $this->colors["pill_bg"]);
+				$this->drawRoundedRect($pillX, $pillY, $tw, $pillH, 4, $bg, $isOpen ? $this->colors["primary"] : $this->colors["stroke"]);
 
 				// Pill text
-				$tc = $isOpen ? [1, 1, 1] : ($isActive ? $this->colors["primary"] : $this->colors["text_dim"]);
+				$tc = $isOpen ? $this->colors["text"] : ($isActive ? $this->colors["primary"] : $this->colors["text_dim"]);
 				$this->renderText($display, $pillX + 10, $pillY + 16, $tc, 3000, 0);
 
 				// Down arrow
@@ -16186,7 +16755,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Dropdown background
 		$bgColor = $this->colors["dropdown_bg"];
-		$this->drawRoundedRect($ddX, $ddY, $ddW, $ddH, 10, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.12 * $alpha]);
+		$this->drawRoundedRect($ddX, $ddY, $ddW, $ddH, 10, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], $this->tint($this->colors["stroke_strong"], $alpha));
 
 		foreach ($items as $idx => $item) {
 			$itemY = $ddY + $idx * $itemH - $this->modsFilterScrollOffset;
@@ -16199,10 +16768,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$isHover = $mx >= $ddX && $mx <= $ddX + $ddW && $my >= $itemY && $my <= $itemY + $itemH;
 
 			if ($isHover) {
-				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, [1, 1, 1, 0.1 * $alpha]);
+				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, $this->tint($this->colors["stroke_strong"], $alpha));
 			}
 
-			$tc = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$tc = $isSelected ? $this->colors["text_on_accent"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
 			
 			// Support icons/textures in dropdown items
 			$loaderTex = $this->verIcons[$item[0]] ?? null;
@@ -16210,7 +16779,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->drawTexture($loaderTex, $ddX + 16, $itemY + 8, 18, 18, [1, 1, 1, $alpha]);
 				$this->renderText($item[1], $ddX + 44, $itemY + 21, $tc, 3000, 0);
 			} elseif (isset($item[2]) && $item[2] !== 0) {
-				$ic = $isSelected ? [1, 1, 1] : ($item[3] ?? $tc);
+				$ic = $isSelected ? $this->colors["text_on_accent"] : ($item[3] ?? $tc);
 				$this->renderIcon($item[2], $ddX + 16, $itemY + 21, $ic, 18);
 				$this->renderText($item[1], $ddX + 44, $itemY + 21, $tc, 3000, 0);
 			} else {
@@ -16231,7 +16800,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$barTrackH = $ddH - 12;
 			$barH = ($fullH / $totalH) * $barTrackH;
 			$barY = $ddY + 6 + ($this->modsFilterScrollOffset / $totalH) * $barTrackH;
-			$this->drawRoundedRect($barX, $barY, $barW, $barH, 2, [1, 1, 1, 0.4 * $alpha]);
+			$this->drawRoundedRect($barX, $barY, $barW, $barH, 2, $this->tint($this->colors["scrollbar_hover"], $alpha));
 		}
 	}
 
@@ -16272,7 +16841,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		
 		// High-Fidelity Glassy Panel
 		$bgColor = $this->colors["dropdown_bg"];
-		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullDDH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.1 * $alpha]);
+		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullDDH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], $this->tint($this->colors["stroke_strong"], $alpha));
 		if ($alpha > 0.5) $this->drawRect($ddX, $ddY, $ddW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha]);
 
 		$lx = $ddX + 6;
@@ -16285,11 +16854,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$pc = $this->colors["primary"];
 				$this->drawRoundedRect($lx, $ddY + 4, $ltw, 24, 6, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
 			} elseif ($isHover) {
-				$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+				$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : $this->tint($this->colors["surface_alt"], $alpha);
 				$this->drawRoundedRect($lx, $ddY + 4, $ltw, 24, 6, $sh);
 			}
 			
-			$itc = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$itc = $isActive ? $this->colors["text_on_accent"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
 			$this->renderText(ucfirst($loaderOpt), $lx + 10, $ddY + 19, $itc, 1000, $alpha);
 			$lx += $ltw + 6;
 		}
@@ -16307,11 +16876,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, 31, 8, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
 					$this->drawGlow($ddX + 6, $itemY + 2, $ddW - 12, 31, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
 				} elseif ($isHover) {
-					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : $this->tint($this->colors["surface_alt"], $alpha);
 					$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, 31, 8, $sh);
 				}
 
-				$itc = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+				$itc = $isSelected ? $this->colors["text_on_accent"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
 				$this->renderText($vId, $ddX + 16, $itemY + 22, $itc, 1000, $alpha);
 			}
 			$itemY += 35;
@@ -16325,7 +16894,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$maxScroll = $totalH - $fullDDH;
 
 			// Glassy Track
-			$this->drawRoundedRect($barX, $ddY + 35, $barW, $fullDDH - 35, 2, [1, 1, 1, 0.03 * $alpha], [1, 1, 1, 0.05 * $alpha]);
+			$this->drawRoundedRect($barX, $ddY + 35, $barW, $fullDDH - 35, 2, $this->tint($this->colors["surface_alt"], $alpha), $this->tint($this->colors["surface_alt"], $alpha));
 
 			// Primary Capsule Thumb
 			$barH = max(20, (($fullDDH - 35) / $totalH) * ($fullDDH - 35));
@@ -16361,18 +16930,20 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$isHover = $i === $this->tabHover;
 
 			if ($isActive) {
-				$this->drawRect(
-					$tabX,
-					$y,
-					$tw,
-					self::TAB_H,
-					$this->colors["tab_active"],
+				$this->drawRoundedRect(
+					$tabX + 2,
+					$y + 5,
+					$tw - 4,
+					self::TAB_H - 10,
+					4,
+					$this->colors["surface_alt"],
 				);
-				$this->drawRect(
-					$tabX,
+				$this->drawRoundedRect(
+					$tabX + 10,
 					$y + self::TAB_H - 3,
-					$tw,
+					max(12, $tw - 20),
 					3,
+					1.5,
 					$this->colors["primary"],
 				);
 				$this->renderText(
@@ -16381,14 +16952,18 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$y + 26,
 					$this->colors["text"],
 					1000,
+					0.2,
 				);
 			} else {
 				if ($isHover) {
-					$this->drawRect($tabX, $y, $tw, self::TAB_H, [
-						0.11,
-						0.11,
-						0.12,
-					]);
+					$this->drawRoundedRect(
+						$tabX + 2,
+						$y + 5,
+						$tw - 4,
+						self::TAB_H - 10,
+						4,
+						$this->colors["surface_alt"],
+					);
 				}
 				$this->renderText(
 					$tab["name"],
@@ -16396,6 +16971,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$y + 26,
 					$this->colors["text_dim"],
 					1000,
+					0.2,
 				);
 			}
 			$tabX += $tw + 4;
@@ -16417,12 +16993,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$saH = self::TAB_H - 16;
 
 		// Button bg
-		$saBg = $allChecked ? [0.18, 0.15, 0.12] : [0.12, 0.14, 0.18];
-		$this->drawRect($saX, $saY, $saW, $saH, $saBg);
-		$saColor = $allChecked
-			? $this->colors["primary"]
-			: $this->colors["accent"];
-		$this->renderText($saLabel, $saX + 8, $saY + 18, $saColor, 3000);
+		$saBg = $allChecked ? $this->colors["acc_active"] : $this->colors["button"];
+		$saStroke = $allChecked ? $this->colors["acc_active_border"] : $this->colors["stroke"];
+		$this->drawRoundedRect($saX, $saY, $saW, $saH, 4, $saBg, $saStroke);
+		$saColor = $allChecked ? $this->colors["primary"] : $this->colors["text"];
+		$saTw = $this->getTextWidth($saLabel, 3000);
+		$this->renderText($saLabel, $saX + ($saW - $saTw) / 2, $saY + 18, $saColor, 3000);
 	}
 
 	private function renderScrollbar($y, $h)
@@ -16437,8 +17013,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$barW = 6;
 
 		$this->drawRoundedRect($barX, $y, $barW, $h, 3, $this->colors["divider"]);
-		$pc = $this->colors["primary"];
-		$this->drawRoundedRect($barX, $scrollY, $barW, $scrollH, 3, [$pc[0], $pc[1], $pc[2], 0.7]);
+		$isBarHover = $this->mouseX >= $barX - 3 && $this->mouseX <= $barX + $barW + 3;
+		$thumbColor = $isBarHover ? $this->colors["scrollbar_hover"] : $this->colors["scrollbar"];
+		$this->drawRoundedRect($barX, $scrollY, $barW, $scrollH, 3, $thumbColor);
 	}
 
 	private function drawModCard($mod, $y, $isHover)
@@ -16448,9 +17025,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$w = $cw - self::PAD * 2;
 		$h = self::CARD_H;
 
-		// Card Background (Premium Rounded)
+		// Flat card surface + hairline border
 		$bgColor = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
-		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColor);
+		$stroke = $isHover ? $this->colors["stroke_strong"] : $this->colors["stroke"];
+		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColor, $stroke);
 
 		// Left accent pill
 		if ($mod["enabled"] ?? true) {
@@ -16658,12 +17236,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			[$pgY, $pgX, $totalPages, $curPage, $pages, $navW, $pageW, $btnGap, $totalW] = $this->getPaginationData($cw);
 
 			// Background pill bar
-			$this->drawRoundedRect($pgX - 10, $pgY - 4, $totalW + 20, 38, 12, [$this->colors["overlay_bg"][0], $this->colors["overlay_bg"][1], $this->colors["overlay_bg"][2], 0.95], [1, 1, 1, 0.1]);
+			$pbg = $this->colors["dropdown_bg"];
+			$this->drawRoundedRect($pgX - 10, $pgY - 4, $totalW + 20, 38, 6, [$pbg[0], $pbg[1], $pbg[2], 0.98], $this->colors["stroke"]);
 
 			// Prev Button
 			$hasPrev = $curPage > 1;
 			$prevCol = $hasPrev ? ($this->pgPrevHover ? $this->colors["primary"] : $this->colors["card_hover"]) : $this->colors["tab_bg"];
-			$this->drawRoundedRect($pgX, $pgY, $navW, 30, 6, $prevCol);
+			$this->drawRoundedRect($pgX, $pgY, $navW, 30, 4, $prevCol);
 			$pc = $hasPrev ? $this->colors["text"] : $this->colors["text_dim"];
 			$this->renderIcon(0xe5c4, $pgX + 4, $pgY + 19, $pc, 24);
 
@@ -16678,12 +17257,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$isActive = $p === $curPage;
 					$isHover = $this->pgPageHover === $p;
 					if ($isActive) {
-						$this->drawRoundedRect($bx, $pgY + 1, $pageW, 28, 8, $this->colors["primary"]);
-						$this->renderText((string)$p, $bx + 8, $pgY + 20, [1, 1, 1], 3000);
+						$this->drawRoundedRect($bx, $pgY + 1, $pageW, 28, 4, $this->colors["primary"]);
+						$this->renderText((string)$p, $bx + 8, $pgY + 20, $this->colors["text_on_accent"], 3000);
 					} else {
 						$bg = $isHover ? $this->colors["pill_active"] : $this->colors["pill_bg"];
 						$tc = $isHover ? $this->colors["text"] : $this->colors["text_dim"];
-						$this->drawRoundedRect($bx, $pgY + 1, $pageW, 28, 8, $bg);
+						$this->drawRoundedRect($bx, $pgY + 1, $pageW, 28, 4, $bg);
 						$this->renderText((string)$p, $bx + 8, $pgY + 20, $tc, 3000);
 					}
 					$bx += $pageW + $btnGap;
@@ -16693,7 +17272,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			// Next Button
 			$hasNext = $curPage < $totalPages;
 			$nextCol = $hasNext ? ($this->pgNextHover ? $this->colors["primary"] : $this->colors["card_hover"]) : $this->colors["tab_bg"];
-			$this->drawRoundedRect($bx, $pgY, $navW, 30, 6, $nextCol);
+			$this->drawRoundedRect($bx, $pgY, $navW, 30, 4, $nextCol);
 			$nc = $hasNext ? $this->colors["text"] : $this->colors["text_dim"];
 			$this->renderIcon(0xe5c8, $bx + 4, $pgY + 19, $nc, 24);
 		}
@@ -16775,14 +17354,31 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$iconY = $y + 12;
 
 		// Icon
-		if ($mod["icon_path"] && isset($this->modIconCache["local_" . $mod["id"]])) {
-			$this->drawTexture($this->modIconCache["local_" . $mod["id"]], $iconX, $iconY, $iconSize, $iconSize, [1,1,1,$alpha]);
-		} else {
-			// Placeholder or delayed load
-			$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 8, [1,1,1,0.05 * $alpha]);
-			if ($mod["icon_path"]) {
-				$this->modIconCache["local_" . $mod["id"]] = $this->createTextureFromFile($mod["icon_path"]);
+		if ($mod["icon_path"]) {
+			$iconKey = "local_" . $mod["id"];
+			// array_key_exists (not empty) so a failed decode is remembered and
+			// the file is not re-decoded every frame.
+			if (!array_key_exists($iconKey, $this->modIconCache)) {
+				$this->modIconCache[$iconKey] = $this->createTextureFromFile($mod["icon_path"]);
 			}
+			$tid = $this->modIconCache[$iconKey];
+			if ($tid) {
+				$this->drawTexture($tid, $iconX, $iconY, $iconSize, $iconSize, [1,1,1,$alpha]);
+			} else {
+				$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 8, [
+								$this->colors["surface_alt"][0],
+								$this->colors["surface_alt"][1],
+								$this->colors["surface_alt"][2],
+								0.9 * $alpha,
+							]);
+			}
+		} else {
+			$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 8, [
+								$this->colors["surface_alt"][0],
+								$this->colors["surface_alt"][1],
+								$this->colors["surface_alt"][2],
+								0.9 * $alpha,
+							]);
 		}
 
 		// Text info
@@ -16875,26 +17471,36 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				if ($iconTid) {
 					$this->drawTexture($iconTid, $iconX, $iconY, $iconSize, $iconSize, [1, 1, 1, 1]);
 				} else {
-					// Attempt Local Discovery if not in cache
+					// Discover a local icon once. A stored 0 means "checked,
+					// none found", so we never scan the folder every frame.
 					$instPath = $pack["install_path"] ?? null;
 					if ($instPath && !isset($this->modpackIconCache[$slug])) {
 						$pDir = $this->getAbsolutePath($instPath);
+						$found = null;
 						foreach (["logo.png", "pack.png", "icon.png"] as $fName) {
 							$fPath = $pDir . DIRECTORY_SEPARATOR . $fName;
-							if (file_exists($fPath)) {
-								$this->modpackIconCache[$slug] = $this->loadTexture($fPath);
+							if (is_file($fPath)) {
+								$found = $fPath;
 								break;
 							}
 						}
+						if ($found !== null) {
+							$cachePath = $this->importLocalIcon($slug, $found);
+							$this->modpackIconCache[$slug] = $cachePath
+								? $this->createTextureFromFile($cachePath)
+								: 0;
+						} else {
+							$this->modpackIconCache[$slug] = 0;
+						}
 					}
-					
+
 					// Re-check after discovery
 					$iconTid = $this->modpackIconCache[$slug] ?? null;
 					if ($iconTid) {
 						$this->drawTexture($iconTid, $iconX, $iconY, $iconSize, $iconSize);
 					} else {
 						// Premium Placeholder (Package Icon)
-						$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 10, [1, 1, 1, 0.05], [1, 1, 1, 0.1]);
+						$this->drawRoundedRect($iconX, $iconY, $iconSize, $iconSize, 8, $this->colors["surface_alt"], $this->colors["stroke"]);
 						$this->renderText("📦", $iconX + 12, $iconY + 32, $this->colors["primary"], 1000);
 					}
 				}
@@ -17047,30 +17653,22 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if ($isUpdating && $totalQueued > 0) {
 			$progress = $completed / $totalQueued;
 
-			// Progress bar background
+			// Win11 progress bar: thin rounded track + accent fill, no glow.
 			$barW = 400;
-			$barH = 12;
+			$barH = 6;
 			$barX = ($cw - $barW) / 2;
-			$barY = $y + 14;
-			$this->drawRect($barX, $barY, $barW, $barH, [0.15, 0.15, 0.17]);
+			$barY = $y + 18;
+			$this->drawRoundedRect($barX, $barY, $barW, $barH, $barH / 2, $this->colors["surface_alt"], $this->colors["stroke"]);
 
-			// Progress fill with gradient effect
 			$fillW = $barW * $progress;
 			if ($fillW > 0) {
-				$this->drawRect(
+				$this->drawRoundedRect(
 					$barX,
 					$barY,
 					$fillW,
 					$barH,
+					$barH / 2,
 					$this->colors["primary"],
-				);
-				// Bright edge highlight
-				$this->drawRect(
-					$barX + $fillW - 2,
-					$barY,
-					2,
-					$barH,
-					$this->colors["accent"],
 				);
 			}
 
@@ -17080,18 +17678,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->renderText(
 				$pctText,
 				$barX,
-				$barY + $barH + 18,
+				$barY + $barH + 20,
 				$this->colors["text_dim"],
 				3000,
 			);
 
-			// Pulsing status text
-			$pulse = sin($this->buttonPulse) * 0.1 + 0.7;
 			$this->renderText(
 				"Downloading...",
 				($cw - 80) / 2,
-				$barY + $barH + 42,
-				[$pulse, $pulse, 1.0],
+				$barY + $barH + 44,
+				$this->colors["text_dim"],
 				1000,
 			);
 		}
@@ -17135,31 +17731,37 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		);
 
 		// Brand logo
-		$this->drawTexture($this->logoTex, 6, 6, 20, 20);
+		$this->drawTexture($this->logoTex, 8, 6, 20, 20);
 		$this->renderText(
-			"Foxy Client " . self::VERSION,
-			32,
-			22,
-			$this->colors["text"],
+			"Foxy Client  " . self::VERSION,
+			34,
+			21,
+			$this->colors["text_dim"],
 			3000,
+			0.2,
 		);
 
-		// Window Controls
+		// Window Controls (Win11 caption buttons: flat, full-height hit area)
 		// Close
 		$clsBg = $this->titleCloseHover
-			? [0.85, 0.25, 0.25]
+			? $this->colors["del_btn"]
 			: $this->colors["titlebar_bg"];
 		$this->drawRect($this->width - 46, 0, 46, self::TITLEBAR_H, $clsBg);
 		// Draw Close icon (0xe5cd)
-		$this->renderIcon(0xe5cd, $this->width - 33, 22, $this->colors["text"]);
+		$this->renderIcon(
+			0xe5cd,
+			$this->width - 33,
+			21,
+			$this->titleCloseHover ? $this->colors["text_on_accent"] : $this->colors["text"],
+		);
 
 		// Minimize
 		$minBg = $this->titleMinHover
-			? $this->colors["card_hover"]
+			? $this->colors["surface_alt"]
 			: $this->colors["titlebar_bg"];
 		$this->drawRect($this->width - 92, 0, 46, self::TITLEBAR_H, $minBg);
 		// Draw Minimize icon (0xe15b)
-		$this->renderIcon(0xe15b, $this->width - 79, 22, $this->colors["text"]);
+		$this->renderIcon(0xe15b, $this->width - 79, 21, $this->colors["text"]);
 	}
 
 	private function performNativeDrag()
@@ -17756,24 +18358,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$my -= (1.0 - $this->crashModalAnim) * 50; // slide up
 		$ha = $this->crashModalAnim;
 
-		// Modal Box
-		$this->drawRoundedRect($mx, $my, $mw, $mh, 10, [0.12, 0.12, 0.12, $ha]);
+		// Modal Box (flat Fluent dialog)
+		$this->drawRoundedRect($mx, $my, $mw, $mh, 8, $this->colors["modal_bg"], $this->colors["stroke"]);
 
-		// Modal Header
+		// Modal Header: surface layer + red accent rail
 		$hh = 62;
-		$this->drawRoundedRect($mx, $my, $mw, $hh, 10, [0.9, 0.3, 0.3, $ha]);
-		$gl->glColor4f(0.12, 0.12, 0.12, $ha);
-		$gl->glBegin(0x0007);
-		$gl->glVertex2f($mx, $my + 40);
-		$gl->glVertex2f($mx + $mw, $my + 40);
-		$gl->glVertex2f($mx + $mw, $my + $hh);
-		$gl->glVertex2f($mx, $my + $hh);
-		$gl->glEnd();
+		$hdr = $this->colors["surface_alt"];
+		$this->drawRoundedRect($mx, $my, $mw, $hh, 8, [$hdr[0], $hdr[1], $hdr[2], $ha]);
+		$this->drawRect($mx, $my + $hh - 8, $mw, 8, [$hdr[0], $hdr[1], $hdr[2], $ha]);
+		$this->drawRect($mx, $my + $hh - 1, $mw, 1, $this->colors["divider"]);
+		$this->drawRoundedRect($mx + 10, $my + 12, 4, $hh - 24, 2, [$this->colors["del_btn"][0], $this->colors["del_btn"][1], $this->colors["del_btn"][2], $ha]);
 
 		// Title + where the analysis came from
-		$this->renderText($this->crashTitle, $mx + 20, $my + 31, [1, 1, 1, $ha], 1500);
+		$this->renderText($this->crashTitle, $mx + 24, $my + 31, [$this->colors["text"][0], $this->colors["text"][1], $this->colors["text"][2], $ha], 1500);
 		if ($this->crashSource !== "") {
-			$this->renderText("Source: " . $this->crashSource, $mx + 20, $my + 56, [1, 1, 1, 0.6 * $ha], 1000);
+			$this->renderText("Source: " . $this->crashSource, $mx + 24, $my + 54, [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], 0.9 * $ha], 1000);
 		}
 
 		// Body: cause + solution, scrollable when the text is long
@@ -17803,10 +18402,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Scrollbar
 		if ($maxScroll > 1.0) {
 			$sx = $mx + $mw - 14;
-			$this->drawRect($sx, $bodyTop, 3, $viewH, [1, 1, 1, 0.10 * $ha]);
+			$dv = $this->colors["divider"];
+			$sb = $this->colors["scrollbar"];
+			$this->drawRect($sx, $bodyTop, 3, $viewH, [$dv[0], $dv[1], $dv[2], ($dv[3] ?? 0.08) * $ha]);
 			$thumbH = max(24.0, $viewH * ($viewH / $totalH));
 			$thumbY = $bodyTop + ($viewH - $thumbH) * ($this->crashScroll / $maxScroll);
-			$this->drawRect($sx, $thumbY, 3, $thumbH, [1, 1, 1, 0.4 * $ha]);
+			$this->drawRoundedRect($sx, $thumbY, 3, $thumbH, 1.5, [$sb[0], $sb[1], $sb[2], ($sb[3] ?? 0.22) * $ha]);
 		}
 
 		// Buttons: OPEN FILE / OPEN FOLDER (only when there are files) / CLOSE
@@ -17870,7 +18471,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$gl = $this->opengl32;
 		// Reimplemented Cinematic Animation (Smooth Stagger + Scale)
 		$target = $this->modInfoModalOpen ? 1.0 : 0.0;
-		$this->modInfoAlpha += ($target - $this->modInfoAlpha) * ($this->modInfoModalOpen ? 0.18 : 0.20);
+		$this->animStep(
+			$this->modInfoAlpha,
+			$target,
+			$this->modInfoModalOpen ? 0.18 : 0.20,
+			$this->animDt,
+			0.001,
+		);
 		$progress = $this->modInfoAlpha;
 
 		// Staggered Animation: 0.0 -> 0.3 (Modal), 0.3 -> 1.0 (Content)
@@ -17889,9 +18496,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$mx = ($this->width - $mw) / 2;
 		$my = ($this->height - $mh) / 2;
 
-		// Main Modal Glass
-		$this->drawRoundedRect($mx, $my, $mw, $mh, 12, [$this->colors["dropdown_bg"][0], $this->colors["dropdown_bg"][1], $this->colors["dropdown_bg"][2], 0.98 * $mAlpha], [1, 1, 1, 0.1 * $mAlpha]);
-		$this->drawGlow($mx, $my, $mw, $mh, 20, $this->colors["primary"], 0.15 * $mAlpha);
+		// Main Modal (flat Fluent dialog)
+		$this->drawRoundedRect($mx, $my, $mw, $mh, 8, [$this->colors["modal_bg"][0], $this->colors["modal_bg"][1], $this->colors["modal_bg"][2], 0.99 * $mAlpha], $this->tint($this->colors["stroke"], $mAlpha));
 
 		$mod = $this->modInfoSelected;
 		if (!$mod) return;
@@ -18027,7 +18633,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$mY = ($this->height - $mH) / 2;
 
 		// Modal Card
-		$this->drawRoundedRect($mX, $mY, $mW, $mH, 12, $this->colors["modal_bg"], [1, 1, 1, 0.1]);
+		$this->drawRoundedRect($mX, $mY, $mW, $mH, 8, $this->colors["modal_bg"], $this->colors["stroke"]);
 		$this->drawGlow($mX, $mY, $mW, $mH, 20, [0, 0, 0, 0.3]);
 
 		// Title
@@ -18123,23 +18729,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$isCustom = $mode === "custom";
 		$isCustomHover = $this->javaModalHoverIdx === 97;
 		if ($isCustom) {
-			$pc = $this->colors["primary"];
-			$this->drawRoundedRect($toggleX, $toggleY, $toggleItemW, $toggleH, 6, [$pc[0], $pc[1], $pc[2], 0.8]);
+			$this->drawRoundedRect($toggleX, $toggleY, $toggleItemW, $toggleH, 4, $this->colors["primary"]);
 		} elseif ($isCustomHover) {
-			$this->drawRoundedRect($toggleX, $toggleY, $toggleItemW, $toggleH, 6, [1, 1, 1, 0.08]);
+			$this->drawRoundedRect($toggleX, $toggleY, $toggleItemW, $toggleH, 4, $this->colors["surface_alt"]);
 		}
-		$this->renderText("Custom", $toggleX + 14, $toggleY + 22, $isCustom ? [1, 1, 1] : $this->colors["text"], 1000);
+		$this->renderText("Custom", $toggleX + 14, $toggleY + 22, $isCustom ? $this->colors["text_on_accent"] : $this->colors["text"], 1000);
 
 		// Auto button
 		$isAuto = $mode === "auto";
 		$isAutoHover = $this->javaModalHoverIdx === 96;
 		if ($isAuto) {
-			$pc = $this->colors["primary"];
-			$this->drawRoundedRect($toggleX + $toggleItemW, $toggleY, $toggleItemW, $toggleH, 6, [$pc[0], $pc[1], $pc[2], 0.8]);
+			$this->drawRoundedRect($toggleX + $toggleItemW, $toggleY, $toggleItemW, $toggleH, 4, $this->colors["primary"]);
 		} elseif ($isAutoHover) {
-			$this->drawRoundedRect($toggleX + $toggleItemW, $toggleY, $toggleItemW, $toggleH, 6, [1, 1, 1, 0.08]);
+			$this->drawRoundedRect($toggleX + $toggleItemW, $toggleY, $toggleItemW, $toggleH, 4, $this->colors["surface_alt"]);
 		}
-		$this->renderText("Auto", $toggleX + $toggleItemW + 20, $toggleY + 22, $isAuto ? [1, 1, 1] : $this->colors["text"], 1000);
+		$this->renderText("Auto", $toggleX + $toggleItemW + 20, $toggleY + 22, $isAuto ? $this->colors["text_on_accent"] : $this->colors["text"], 1000);
 
 		$y += 55;
 
@@ -18295,7 +18899,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$gl->glScissor($ddX, $this->height - ($dy + $ddListH), $ddW, $ddListH);
 
 			$bgColor = $this->colors["dropdown_bg"];
-			$this->drawRoundedRect($ddX, $dy, $ddW, $maxH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98], [1, 1, 1, 0.1]);
+			$this->drawRoundedRect($ddX, $dy, $ddW, $maxH, 4, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98], $this->colors["stroke"]);
 			if ($this->javaModalDropdownAnim > 0.5) $this->drawRect($ddX, $dy, $ddW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98]);
 			$idx = 0;
 			foreach ($this->jvmOptions as $optKey => $optLabel) {
@@ -18310,7 +18914,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05] : [1, 1, 1, 0.08];
 					$this->drawRoundedRect($ddX + 6, $itemY + 2, $ddW - 12, 31, 8, $sh);
 				}
-				$color = $isSelected ? [1, 1, 1] : ($isItemHover ? $this->colors["text"] : $this->colors["text_dim"]);
+				$color = $isSelected ? $this->colors["text_on_accent"] : ($isItemHover ? $this->colors["text"] : $this->colors["text_dim"]);
 				$this->renderText($optLabel, $ddX + 16, $itemY + 23, $color, 1000, $this->javaModalDropdownAnim);
 				$idx++;
 			}
@@ -18334,7 +18938,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$gl->glScissor($vDropX, $this->height - ($vDy + $vListH), $vDropW, $vListH);
 
 			$bgColor = $this->colors["dropdown_bg"];
-			$this->drawRoundedRect($vDropX, $vDy, $vDropW, $vMaxH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98], [1, 1, 1, 0.1]);
+			$this->drawRoundedRect($vDropX, $vDy, $vDropW, $vMaxH, 4, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98], $this->colors["stroke"]);
 			if ($vAlpha > 0.5) $this->drawRect($vDropX, $vDy, $vDropW, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98]);
 			$vIdx = 0;
 			foreach ($this->javaVersionOptions as $vKey => $vLabel) {
@@ -18349,7 +18953,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05] : [1, 1, 1, 0.08];
 					$this->drawRoundedRect($vDropX + 6, $itemY + 2, $vDropW - 12, 31, 8, $sh);
 				}
-				$color = $isSelected ? [1, 1, 1] : ($isItemHover ? $this->colors["text"] : $this->colors["text_dim"]);
+				$color = $isSelected ? $this->colors["text_on_accent"] : ($isItemHover ? $this->colors["text"] : $this->colors["text_dim"]);
 				$this->renderText($vLabel, $vDropX + 16, $itemY + 23, $color, 1000, $vAlpha);
 				$vIdx++;
 			}
@@ -18434,7 +19038,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 			// Panel background (High-Fidelity Glass)
 			$bgColor = $this->colors["dropdown_bg"];
-			$this->drawRoundedRect($x, $dy, $w, $maxH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.1 * $alpha]);
+			$this->drawRoundedRect($x, $dy, $w, $maxH, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], $this->tint($this->colors["stroke_strong"], $alpha));
 			if ($alpha > 0.5) $this->drawRect($x, $dy, $w, 8, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha]);
 			$idx = 0;
 			foreach ($this->jvmOptions as $optKey => $optLabel) {
@@ -18448,10 +19052,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$this->drawGlow($x + 6, $itemY + 2, $w - 12, 31, 10, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
 				} elseif ($isHover) {
 					// Soft Glassy Hover Capsule
-					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : [1, 1, 1, 0.08 * $alpha];
+					$sh = (($this->settings["theme"] ?? "dark") === "light") ? [0, 0, 0, 0.05 * $alpha] : $this->tint($this->colors["surface_alt"], $alpha);
 					$this->drawRoundedRect($x + 6, $itemY + 2, $w - 12, 31, 8, $sh);
 				}
-				$color = $isSelected ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+				$color = $isSelected ? $this->colors["text_on_accent"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
 				$this->renderText(
 					$optLabel,
 					$x + 16,
@@ -18979,6 +19583,17 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	}
 
 	// ─── Drawing primitives ───
+	/** Scale a palette color's alpha (keeps theme-aware RGB). */
+	private function tint($color, $mult)
+	{
+		return [
+			$color[0],
+			$color[1],
+			$color[2],
+			($color[3] ?? 1.0) * $mult,
+		];
+	}
+
 	private function drawLine($x1, $y1, $x2, $y2, $color)
 	{
 		$gl = $this->opengl32;
@@ -18993,6 +19608,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		$gl = $this->opengl32;
 		$alpha = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
+		if ($alpha <= 0.001) return; // fully transparent: skip the draw
 		$gl->glColor4f($color[0], $color[1], $color[2], $alpha);
 		$gl->glBegin(0x0007);
 		$gl->glVertex2f($x, $y);
@@ -19017,6 +19633,26 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$gl->glEnd();
 	}
 
+	/**
+	 * Cached unit-circle points for the four rounded-rect quadrants, using the
+	 * exact angles the renderer has always used. Avoids 72 cos/sin calls per
+	 * rounded rectangle per frame.
+	 */
+	private function roundTrig($steps)
+	{
+		if (isset(self::$roundTrig[$steps])) return self::$roundTrig[$steps];
+		$hq = M_PI_2 / $steps;
+		$q = [[], [], [], []];
+		for ($i = 0; $i <= $steps; $i++) {
+			$a = M_PI + $i * $hq;       $q[0][] = [cos($a), sin($a)];
+			$a = M_PI * 1.5 + $i * $hq; $q[1][] = [cos($a), sin($a)];
+			$a = $i * $hq;              $q[2][] = [cos($a), sin($a)];
+			$a = M_PI_2 + $i * $hq;     $q[3][] = [cos($a), sin($a)];
+		}
+		self::$roundTrig[$steps] = $q;
+		return $q;
+	}
+
 	private function drawRoundedRect($x, $y, $w, $h, $radius, $color = null, $border = null)
 	{
 		if (is_array($radius) && $color === null) {
@@ -19027,6 +19663,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$gl = $this->opengl32;
 		$alpha = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
+		if (
+			$alpha <= 0.001 &&
+			($border === null || (($border[3] ?? 0.0) <= 0.001))
+		) {
+			return; // fully transparent fill and border
+		}
 
 		$gl->glColor4f($color[0], $color[1], $color[2], $alpha);
 		$radius = min($radius, (float)$w / 2, (float)$h / 2);
@@ -19034,21 +19676,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Low-end: 8 quadrant steps (~-2/3 verts vs 16-60/corner). MSAA(2x) hides faceting.
 		$steps = 8;
+		$trig = $this->roundTrig($steps);
 
 		if ($radius > 0) {
-			$cx = $x + $w / 2; $cy = $y + $h / 2;
 			$gl->glBegin(0x0006); // GL_TRIANGLE_FAN
-			$gl->glVertex2f($cx, $cy);
-			$hq = M_PI_2 / $steps;
-			// TL: [PI, 1.5PI]
-			for ($i = 0; $i <= $steps; $i++) { $a = M_PI + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $radius + $s * $radius); }
-			// TR: [1.5PI, 2PI]
-			for ($i = 0; $i <= $steps; $i++) { $a = M_PI * 1.5 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $radius + $s * $radius); }
-			// BR: [0, PI/2]
-			for ($i = 0; $i <= $steps; $i++) { $a = $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
-			// BL: [PI/2, PI]
-			for ($i = 0; $i <= $steps; $i++) { $a = M_PI_2 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
-			$a = M_PI; $gl->glVertex2f($x + $radius + cos($a) * $radius, $y + $radius + sin($a) * $radius);
+			$gl->glVertex2f($x + $w / 2, $y + $h / 2);
+			$rx = $radius;
+			foreach ($trig[0] as $p) { $gl->glVertex2f($x + $rx + $p[0] * $rx, $y + $rx + $p[1] * $rx); }
+			foreach ($trig[1] as $p) { $gl->glVertex2f($x + $w - $rx + $p[0] * $rx, $y + $rx + $p[1] * $rx); }
+			foreach ($trig[2] as $p) { $gl->glVertex2f($x + $w - $rx + $p[0] * $rx, $y + $h - $rx + $p[1] * $rx); }
+			foreach ($trig[3] as $p) { $gl->glVertex2f($x + $rx + $p[0] * $rx, $y + $h - $rx + $p[1] * $rx); }
+			// A fan does NOT wrap back to its first perimeter vertex, so without
+			// this the left edge stays unfilled (a wedge-shaped hole). Repeat the
+			// first point to close the outline.
+			$p0 = $trig[0][0];
+			$gl->glVertex2f($x + $rx + $p0[0] * $rx, $y + $rx + $p0[1] * $rx);
 			$gl->glEnd();
 		} else {
 			$this->drawRect($x, $y, $w, $h, $color);
@@ -19061,11 +19703,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$gl->glLineWidth(1.0);
 			$gl->glBegin(0x0002); // GL_LINE_LOOP
 			if ($radius > 0) {
-				$hq = M_PI_2 / $steps;
-				for ($i = 0; $i <= $steps; $i++) { $a = M_PI + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $radius + $s * $radius); }
-				for ($i = 0; $i <= $steps; $i++) { $a = M_PI * 1.5 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $radius + $s * $radius); }
-				for ($i = 0; $i <= $steps; $i++) { $a = $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $w - $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
-				for ($i = 0; $i <= $steps; $i++) { $a = M_PI_2 + $i * $hq; $c = cos($a); $s = sin($a); $gl->glVertex2f($x + $radius + $c * $radius, $y + $h - $radius + $s * $radius); }
+				$rx = $radius;
+				foreach ($trig[0] as $p) { $gl->glVertex2f($x + $rx + $p[0] * $rx, $y + $rx + $p[1] * $rx); }
+				foreach ($trig[1] as $p) { $gl->glVertex2f($x + $w - $rx + $p[0] * $rx, $y + $rx + $p[1] * $rx); }
+				foreach ($trig[2] as $p) { $gl->glVertex2f($x + $w - $rx + $p[0] * $rx, $y + $h - $rx + $p[1] * $rx); }
+				foreach ($trig[3] as $p) { $gl->glVertex2f($x + $rx + $p[0] * $rx, $y + $h - $rx + $p[1] * $rx); }
 			} else {
 				$gl->glVertex2f($x, $y); $gl->glVertex2f($x+$w, $y); $gl->glVertex2f($x+$w, $y+$h); $gl->glVertex2f($x, $y+$h);
 			}
@@ -19085,6 +19727,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$radius = min($radius, (float)$w / 2, (float)$h / 2);
 		$steps = 8; // Low-end: match drawRoundedRect (MSAA covers AA)
+		$trig = $this->roundTrig($steps);
 		
 		$gl->glBegin(0x0009); // GL_POLYGON
 		$setColor = function($cy) use ($gl, $y, $h, $color1, $color2, $a1, $a2) {
@@ -19096,10 +19739,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$gl->glColor4f($r, $g, $b, $a);
 		};
 		
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI * 1.5; $cy = $y + $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2); $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $w - $radius + cos($angle) * $radius, $cy); }
-		for ($i = 0; $i <= $steps; $i++) { $angle = ($i / $steps) * (M_PI / 2) + M_PI / 2; $cy = $y + $h - $radius + sin($angle) * $radius; $setColor($cy); $gl->glVertex2f($x + $radius + cos($angle) * $radius, $cy); }
+		$rx = $radius;
+		foreach ($trig[0] as $p) { $cy = $y + $rx + $p[1] * $rx; $setColor($cy); $gl->glVertex2f($x + $rx + $p[0] * $rx, $cy); }
+		foreach ($trig[1] as $p) { $cy = $y + $rx + $p[1] * $rx; $setColor($cy); $gl->glVertex2f($x + $w - $rx + $p[0] * $rx, $cy); }
+		foreach ($trig[2] as $p) { $cy = $y + $h - $rx + $p[1] * $rx; $setColor($cy); $gl->glVertex2f($x + $w - $rx + $p[0] * $rx, $cy); }
+		foreach ($trig[3] as $p) { $cy = $y + $h - $rx + $p[1] * $rx; $setColor($cy); $gl->glVertex2f($x + $rx + $p[0] * $rx, $cy); }
 		$gl->glEnd();
 	}
 
@@ -19126,6 +19770,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->bgW,
 			$this->bgH,
 			$blurVal,
+			false, // full-screen quad: mipmaps only waste VRAM
 		);
 	}
 
@@ -19315,6 +19960,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		&$width = null,
 		&$height = null,
 		$blurRadius = 0,
+		$mipmap = true,
 	) {
 		if (!file_exists($path)) {
 			return 0;
@@ -19523,9 +20169,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$texId = $texIdBuf[0];
 
 		$gl->glBindTexture(0x0de1, $texId);
-		$gl->glTexParameteri(0x0de1, 0x2801, 0x2703); // GL_TEXTURE_MIN_FILTER = GL_LINEAR_MIPMAP_LINEAR
-		$gl->glTexParameteri(0x0de1, 0x2800, 0x2601); // GL_TEXTURE_MAG_FILTER = GL_LINEAR
-		$gl->glTexParameteri(0x0de1, 0x8191, 1); // GL_GENERATE_MIPMAP = GL_TRUE
+		if ($mipmap) {
+			$gl->glTexParameteri(0x0de1, 0x2801, 0x2703); // GL_TEXTURE_MIN_FILTER = GL_LINEAR_MIPMAP_LINEAR
+			$gl->glTexParameteri(0x0de1, 0x2800, 0x2601); // GL_TEXTURE_MAG_FILTER = GL_LINEAR
+			$gl->glTexParameteri(0x0de1, 0x8191, 1); // GL_GENERATE_MIPMAP = GL_TRUE
+		} else {
+			// Full-screen art never minifies enough to need mips; skipping them
+			// saves ~1/3 of its VRAM and the per-upload mip generation.
+			$gl->glTexParameteri(0x0de1, 0x2801, 0x2601); // GL_LINEAR
+			$gl->glTexParameteri(0x0de1, 0x2800, 0x2601); // GL_LINEAR
+		}
 
 		// Enable anti-aliasing (smooth edges)
 		$gl->glTexParameteri(0x0de1, 0x2802, 0x2901); // REPEAT
@@ -19565,9 +20218,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			return;
 		}
 		$gl = $this->opengl32;
+		$alpha = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
+		if ($alpha <= 0.001) return; // fully transparent: skip bind + quad
 		$gl->glEnable(0x0de1);
 		if ($this->boundTexture !== $tex) { $gl->glBindTexture(0x0de1, $tex); $this->boundTexture = $tex; }
-		$alpha = (count($color) > 3 ? $color[3] : 1.0) * $this->globalAlpha;
 		$gl->glColor4f($color[0], $color[1], $color[2], $alpha);
 		$gl->glBegin(0x0007);
 		$gl->glTexCoord2f($uvs[0], $uvs[1]);
@@ -19627,31 +20281,189 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		return self::ICON_CACHE_DIR . DIRECTORY_SEPARATOR . preg_replace('/[^a-zA-Z0-9_\-]/', '_', $id) . ".png";
 	}
 
+	/** Write a file via a temp sibling so a crash cannot leave a torn cache. */
+	private function atomicWrite($path, $data)
+	{
+		$dir = dirname($path);
+		if (!is_dir($dir)) @mkdir($dir, 0777, true);
+		$tmp = $path . ".tmp" . getmypid();
+		if (@file_put_contents($tmp, $data) === false) return false;
+		if (@rename($tmp, $path)) return true;
+		// Windows refuses rename() onto an existing file.
+		@unlink($path);
+		if (@rename($tmp, $path)) return true;
+		@unlink($tmp);
+		return @file_put_contents($path, $data) !== false;
+	}
+
+	/** Cheap signature check so a truncated/legacy entry is re-fetched. */
+	private function isValidImageFile($path)
+	{
+		$size = @filesize($path);
+		if (!$size || $size < 16) return false;
+		$h = @fopen($path, "rb");
+		if (!$h) return false;
+		$sig = fread($h, 12);
+		fclose($h);
+		if ($sig === false || strlen($sig) < 12) return false;
+		if (substr($sig, 0, 8) === "\x89PNG\r\n\x1a\n") return true;
+		if (substr($sig, 0, 3) === "\xFF\xD8\xFF") return true;
+		if (substr($sig, 0, 6) === "GIF87a" || substr($sig, 0, 6) === "GIF89a") return true;
+		if (substr($sig, 0, 4) === "RIFF" && substr($sig, 8, 4) === "WEBP") return true;
+		return false;
+	}
+
+	/**
+	 * One-time disk cache maintenance.
+	 *
+	 * The icon cache used to be unbounded and kept older, oversized/raw entries
+	 * forever. Bump CACHE_SCHEMA when the on-disk encoding changes: that drops
+	 * the old files once, then normal age/size pruning keeps the directory small.
+	 */
+	private function initIconCache()
+	{
+		$dir = self::ICON_CACHE_DIR;
+		if (!is_dir($dir)) {
+			@mkdir($dir, 0777, true);
+			return;
+		}
+
+		$schema = "3";
+		$marker = $dir . DIRECTORY_SEPARATOR . ".cache_v";
+		// Leftovers from a crash mid-write (atomicWrite temp siblings).
+		foreach (glob($dir . DIRECTORY_SEPARATOR . "*.tmp*") ?: [] as $f) {
+			@unlink($f);
+		}
+		$current = @file_get_contents($marker);
+		if ($current !== $schema) {
+			$removed = 0;
+			foreach (glob($dir . DIRECTORY_SEPARATOR . "*.png") ?: [] as $f) {
+				if (@unlink($f)) $removed++;
+			}
+			@file_put_contents($marker, $schema);
+			$this->log("Icon cache schema updated to v$schema (cleared $removed old files)");
+			return;
+		}
+
+		$maxBytes = 64 * 1024 * 1024; // hard cap for the on-disk icon cache
+		$maxAge = 90 * 86400; // seconds
+		$now = time();
+		$files = [];
+		$total = 0;
+		foreach (glob($dir . DIRECTORY_SEPARATOR . "*.png") ?: [] as $f) {
+			$mt = @filemtime($f) ?: 0;
+			$sz = @filesize($f) ?: 0;
+			$total += $sz;
+			$files[] = [$f, $mt, $sz];
+		}
+		if (empty($files)) return;
+
+		$removed = 0;
+		foreach ($files as $i => $e) {
+			if ($e[1] > 0 && $now - $e[1] > $maxAge) {
+				if (@unlink($e[0])) $removed++;
+				$total -= $e[2];
+				unset($files[$i]);
+			}
+		}
+		if ($total > $maxBytes) {
+			usort($files, function ($a, $b) { return $a[1] <=> $b[1]; });
+			foreach ($files as $e) {
+				if ($total <= $maxBytes) break;
+				if (@unlink($e[0])) { $removed++; $total -= $e[2]; }
+			}
+		}
+		if ($removed > 0) {
+			$this->log(
+				"Icon cache pruned: $removed files removed, " .
+					round($total / 1048576, 1) .
+					" MB remaining",
+			);
+		}
+	}
+
 	private function processIconData($id, $data)
 	{
 		if (empty($data)) return null;
 
 		$path = $this->getIconCachePath($id);
-		if (file_exists($path)) return $path;
+		if (file_exists($path)) {
+			if ($this->isValidImageFile($path)) return $path;
+			@unlink($path); // torn/legacy entry: rewrite it
+		}
 
 		// Detect WebP (RIFF signature at pos 0, WEBP at pos 8)
 		$isWebp = (substr($data, 0, 4) === 'RIFF' && substr($data, 8, 4) === 'WEBP');
+		$payload = $data;
 
 		if ($isWebp && extension_loaded('gd')) {
 			$img = @imagecreatefromwebp("data://image/webp;base64," . base64_encode($data));
 			if ($img) {
 				ob_start();
 				imagepng($img);
-				$pngData = ob_get_clean();
+				$png = ob_get_clean();
 				imagedestroy($img);
-				file_put_contents($path, $pngData);
-				return $path;
+				if (is_string($png) && strlen($png) > 16) $payload = $png;
 			}
 		}
 
-		// Save as-is if not webp or conversion failed (GDI+ might handle it)
-		file_put_contents($path, $data);
+		if (!$this->atomicWrite($path, $payload)) return null;
 		return $path;
+	}
+
+	/**
+	 * Import an installed modpack's local icon (logo.png/pack.png) into the
+	 * bounded icon cache, downscaling it once so large art does not become a
+	 * large texture. Returns the cache path or null.
+	 */
+	private function importLocalIcon($id, $srcPath)
+	{
+		$cachePath = $this->getIconCachePath($id);
+		if ($this->isValidImageFile($cachePath)) return $cachePath;
+
+		$data = @file_get_contents($srcPath);
+		if ($data === false || $data === "") return null;
+
+		if (function_exists("imagecreatefromstring")) {
+			$img = @imagecreatefromstring($data);
+			if ($img) {
+				$w = imagesx($img);
+				$h = imagesy($img);
+				if ($w > 0 && $h > 0 && ($w > 128 || $h > 128)) {
+					$nw = 128;
+					$nh = 128;
+					if ($w > $h) {
+						$nh = max(1, (int) ($h * (128 / $w)));
+					} else {
+						$nw = max(1, (int) ($w * (128 / $h)));
+					}
+					$scaled = imagecreatetruecolor($nw, $nh);
+					if ($scaled) {
+						imagealphablending($scaled, false);
+						imagesavealpha($scaled, true);
+						imagecopyresampled(
+							$scaled,
+							$img,
+							0, 0, 0, 0,
+							$nw, $nh,
+							$w, $h,
+						);
+						imagedestroy($img);
+						$img = $scaled;
+					}
+				}
+				if (function_exists("imagepng")) {
+					ob_start();
+					imagepng($img);
+					$png = ob_get_clean();
+					if (is_string($png) && strlen($png) > 16) $data = $png;
+				}
+				imagedestroy($img);
+			}
+		}
+
+		if (!$this->atomicWrite($cachePath, $data)) return null;
+		return $cachePath;
 	}
 
 	private function purgeIconCache($currentPage = -1)
@@ -19693,6 +20505,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// 3. Delete textures not in the keep list
 		$toDelete = [];
 		foreach ($this->modIconCache as $id => $tid) {
+			// Local installed-mod icons are bounded by the user's mod folder and
+			// costly to re-decode; they are not part of the search window.
+			if (str_starts_with((string) $id, "local_")) continue;
 			if (!isset($keepIds[$id])) {
 				$toDelete[] = $tid;
 				unset($this->modIconCache[$id]);
@@ -19984,6 +20799,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->log("Search Modrinth: URL=$url");
 
 		$cacert = self::CACERT;
+		// Warm the CDN TLS connection while the search request is in flight, so
+		// the first icon batch does not pay for a fresh handshake (~0.7s).
+		if (!$isPrefetch) {
+			$this->prewarmIconConnection();
+		}
 		if ($this->modrinthFuture) $this->pendingFutures[] = $this->modrinthFuture;
 		$this->modrinthFuture = $this->runTransientTask(
 			function (
@@ -20239,7 +21059,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$lastUpdate = 0;
 				curl_setopt($dCurl, CURLOPT_PROGRESSFUNCTION, function($handle, $dlSize, $dlCurrent, $ulSize, $ulCurrent) use ($ch, &$lastUpdate) {
 					$now = microtime(true);
-					if ($dlSize > 0 && ($now - $lastUpdate > 0.1)) { // Rate limit to 10Hz
+					if ($dlSize > 0 && ($now - $lastUpdate > 0.05)) { // 20Hz progress for snappier bars
 						$lastUpdate = $now;
 						$pct = ($dlCurrent / $dlSize) * 100;
 						$ch->send(json_encode([
@@ -20299,10 +21119,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function drawModSkeleton($x, $y, $w, $h, $alpha)
 	{
 		$bg = [$this->colors["card"][0], $this->colors["card"][1], $this->colors["card"][2], 0.6 * $alpha];
-		$this->drawRoundedRect($x, $y, $w, $h, 8, $bg, [1, 1, 1, 0.05 * $alpha]);
+		$this->drawRoundedRect($x, $y, $w, $h, 8, $bg, $this->tint($this->colors["surface_alt"], $alpha));
 		
 		// Icon placeholder
-		$ph = [1, 1, 1, 0.12 * $alpha];
+		$ph = $this->tint($this->colors["stroke_strong"], $alpha);
 		$this->drawRoundedRect($x + 16, $y + 16, 64, 64, 8, $ph);
 		
 		// Line placeholders
@@ -20315,10 +21135,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		// Glassmorphic Card Background (Premium Rounded)
 		$bgColor = $isHover ? $this->colors["card_hover"] : $this->colors["card"];
-		$bgColorWithAlpha = [$bgColor[0], $bgColor[1], $bgColor[2], ($isHover ? 0.95 : ($bgColor[3] ?? 0.85)) * $alpha];
+		$bgColorWithAlpha = [$bgColor[0], $bgColor[1], $bgColor[2], ($isHover ? 0.97 : ($bgColor[3] ?? 0.85)) * $alpha];
 		
-		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColorWithAlpha);
-		$this->drawRect($x + 20, $y, $w - 40, 1, [$this->colors["divider"][0], $this->colors["divider"][1], $this->colors["divider"][2], 0.15 * $alpha]);
+		$this->drawRoundedRect($x, $y, $w, $h, 8, $bgColorWithAlpha, $this->tint($isHover ? $this->colors["stroke_strong"] : $this->colors["stroke"], $alpha));
 
 		// Left accent pill on hover (Minimalist 2px)
 		if ($isHover) {
@@ -20410,27 +21229,27 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Stats Badges
 		$statsY = $y + 68;
 		$dlTw = $this->getTextWidth("DL $dlStr", 3000) + 12;
-		$this->drawRect($x + $textOffsetX, $statsY - 11, $dlTw, 16, [0,0,0,0.2*$alpha]);
+		$this->drawRoundedRect($x + $textOffsetX, $statsY - 11, $dlTw, 16, 3, $this->tint($this->colors["surface_alt"], $alpha));
 		$this->renderText("DL $dlStr", $x + $textOffsetX + 6, $statsY, [$td[0], $td[1], $td[2], $alpha], 3000);
 		
 		$favTw = $this->getTextWidth("FAV $flStr", 3000) + 12;
-		$this->drawRect($x + $textOffsetX + $dlTw + 8, $statsY - 11, $favTw, 16, [0,0,0,0.2*$alpha]);
+		$this->drawRoundedRect($x + $textOffsetX + $dlTw + 8, $statsY - 11, $favTw, 16, 3, $this->tint($this->colors["surface_alt"], $alpha));
 		$this->renderText("FAV $flStr", $x + $textOffsetX + $dlTw + 14, $statsY, [$td[0], $td[1], $td[2], $alpha], 3000);
 
 		if (isset($this->modDownloadProgresses[$projId])) {
-			// Premium Glassy Progress Bar
-			$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 8, [0, 0, 0, 0.3 * $alpha], [1, 1, 1, 0.05 * $alpha]);
+			// Progress bar
+			$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 4, $this->tint($this->colors["input_bg"], $alpha), $this->tint($this->colors["stroke"], $alpha));
 			$fillW = ($this->modDownloadProgresses[$projId] / 100.0) * ($btnW - 4);
 			$pc = $this->colors["primary"];
 			if ($fillW > 0) {
-				$this->drawRoundedRect($btnX + 2, $btnY2 + 2, (int)$fillW, $btnH - 4, 6, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
+				$this->drawRoundedRect($btnX + 2, $btnY2 + 2, (int)$fillW, $btnH - 4, 3, [$pc[0], $pc[1], $pc[2], $alpha]);
 			}
 			$pctText = round($this->modDownloadProgresses[$projId]) . "%";
-			$this->renderText($pctText, $btnX + ($btnW - $this->getTextWidth($pctText, 1000, 0.4))/2, $btnY2 + 20, [1, 1, 1, $alpha], 1000, 0.4);
+			$this->renderText($pctText, $btnX + ($btnW - $this->getTextWidth($pctText, 1000, 0.4))/2, $btnY2 + 20, [$this->colors["text_on_accent"][0], $this->colors["text_on_accent"][1], $this->colors["text_on_accent"][2], $alpha], 1000, 0.4);
 		} elseif ($isInstalled) {
-			// Subtle Glassy Installed Badge
+			// Installed badge
 			$statusColor = $this->colors["status_done"];
-			$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 10, [$statusColor[0], $statusColor[1], $statusColor[2], 0.1 * $alpha], [1, 1, 1, 0.05 * $alpha]);
+			$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 4, $this->tint($statusColor, 0.14 * $alpha), $this->tint($statusColor, 0.5 * $alpha));
 			$this->renderText("INSTALLED", $btnX + ($btnW - $this->getTextWidth("INSTALLED", 3000, 0.4))/2, $btnY2 + 20, [$statusColor[0], $statusColor[1], $statusColor[2], $alpha], 3000, 0.4);
 			// Installed version below badge
 			if ($installedVersion) {
@@ -20438,38 +21257,30 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->renderText($verText, $btnX + ($btnW - $this->getTextWidth($verText, 3000, 0.35))/2, $btnY2 + 44, [$td[0], $td[1], $td[2], $alpha * 0.7], 3000, 0.35);
 			}
 		} else {
-			// High-Fidelity Interaction Button (Isolated Hover)
+			// Install button: outlined at rest, accent-filled on hover
 			$isActionHover = $this->mouseX >= self::SIDEBAR_W + $btnX && $this->mouseX <= self::SIDEBAR_W + $btnX + $btnW && $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= self::TITLEBAR_H + $btnY2 + $btnH;
 			
 			if ($isActionHover) {
-				// Filled & Glowing State (Only on Button Hover)
 				$pc = $this->colors["primary"];
-				$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 10, [$pc[0], $pc[1], $pc[2], 0.9 * $alpha]);
-				$this->drawGlow($btnX, $btnY2, $btnW, $btnH, 12, [$pc[0], $pc[1], $pc[2], 0.2 * $alpha]);
+				$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 4, [$pc[0], $pc[1], $pc[2], $alpha]);
 			} else {
-				// Glassy Outlined State
-				$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 10, [1, 1, 1, 0.03 * $alpha], [1, 1, 1, 0.15 * $alpha]);
+				$this->drawRoundedRect($btnX, $btnY2, $btnW, $btnH, 4, $this->tint($this->colors["surface_alt"], $alpha), $this->tint($this->colors["stroke_strong"], $alpha));
 			}
 			
-			$btnText = $this->modpackSubTab >= 2 ? "INSTALL" : "INSTALL"; 
-			// Wait, the user wants INSTALL everywhere? 
-			// Let's make it consistent.
 			$btnText = "INSTALL";
-			if ($this->modpackSubTab === 2 || $this->modpackSubTab === 3) {
-				// Discovery for Modpacks
-				$btnText = "INSTALL";
-			}
 			
-			$btc = $isActionHover ? [0, 0, 0, $alpha] : [$tc[0], $tc[1], $tc[2], $alpha];
+			$btc = $isActionHover
+				? [$this->colors["text_on_accent"][0], $this->colors["text_on_accent"][1], $this->colors["text_on_accent"][2], $alpha]
+				: [$tc[0], $tc[1], $tc[2], $alpha];
 			$this->renderText($btnText, $btnX + ($btnW - $this->getTextWidth($btnText, 1000, 0.5))/2, $btnY2 + 20, $btc, 1000, 0.5);
 		}
 
 		// Refined Navigation Utility button (>)
 		$brHover = $this->mouseX >= self::SIDEBAR_W + $brX && $this->mouseX <= self::SIDEBAR_W + $brX + $btnSize && $this->mouseY >= self::TITLEBAR_H + $btnY2 && $this->mouseY <= self::TITLEBAR_H + $btnY2 + $btnSize;
-		$brBg = $brHover ? [1, 1, 1, 0.1 * $alpha] : [1, 1, 1, 0.03 * $alpha];
-		$brBorder = $brHover ? [1, 1, 1, 0.25 * $alpha] : [1, 1, 1, 0.1 * $alpha];
+		$brBg = $brHover ? $this->tint($this->colors["card_hover"], $alpha) : $this->tint($this->colors["surface_alt"], $alpha);
+		$brBorder = $brHover ? $this->tint($this->colors["primary"], $alpha) : $this->tint($this->colors["stroke"], $alpha);
 		
-		$this->drawRoundedRect($brX, $btnY2, $btnSize, $btnSize, 8, $brBg, $brBorder);
+		$this->drawRoundedRect($brX, $btnY2, $btnSize, $btnSize, 4, $brBg, $brBorder);
 		$this->renderIcon(0xe89e, $brX + 7, $btnY2 + 22, [$this->colors["text_dim"][0], $this->colors["text_dim"][1], $this->colors["text_dim"][2], $alpha], 18);
 	}
 
@@ -20583,7 +21394,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Dropdown Background (Lunar-Style frosted dark glass)
 		$bgColor = $this->colors["dropdown_bg"];
-		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullH, 10, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], [1, 1, 1, 0.12 * $alpha]);
+		$this->drawRoundedRect($ddX, $ddY, $ddW, $fullH, 10, [$bgColor[0], $bgColor[1], $bgColor[2], 0.98 * $alpha], $this->tint($this->colors["stroke_strong"], $alpha));
 
 		foreach ($tabs as $i => $tab) {
 			$name = $tab[0];
@@ -20602,10 +21413,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, [$pc[0], $pc[1], $pc[2], 0.8 * $alpha]);
 			} elseif ($isHover) {
 				// Soft white glow for hover
-				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, [1, 1, 1, 0.06 * $alpha]);
+				$this->drawRoundedRect($ddX + 6, $itemY + 4, $ddW - 12, $itemH - 8, 6, $this->tint($this->colors["surface_alt"], $alpha));
 			}
 
-			$tc = $isActive ? [1, 1, 1] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
+			$tc = $isActive ? $this->colors["text_on_accent"] : ($isHover ? $this->colors["text"] : $this->colors["text_dim"]);
 			$this->renderIcon($icon, $ddX + 16, $itemY + 23, $tc, 18);
 			$this->renderText($name, $ddX + 44, $itemY + 23, $tc, 3000, $alpha);
 		}
@@ -21132,7 +21943,7 @@ class FoxyVersionJob
 			&$activeTransfers,
 		) {
 			$now = microtime(true);
-			if ($now - $lastTime >= 0.1) {
+			if ($now - $lastTime >= 0.05) { // 20Hz (was 10Hz) so file counts/speed feel live
 				// Calculate current total downloaded bytes
 				$currentTotalBytes = $downloadedBytes;
 				foreach ($activeTransfers as $transfer) {
@@ -21462,8 +22273,11 @@ class FoxyJreDownloadJob
 		curl_setopt($curl, CURLOPT_BUFFERSIZE, 1048576);
 		curl_setopt($curl, CURLOPT_TCP_NODELAY, true);
 		curl_setopt($curl, CURLOPT_NOPROGRESS, false);
-		curl_setopt($curl, CURLOPT_PROGRESSFUNCTION, function($resource, $downloadSize, $downloaded, $uploadSize, $uploaded) use ($ch) {
-			if ($downloadSize > 0) {
+		$jreLastUpdate = 0.0;
+		curl_setopt($curl, CURLOPT_PROGRESSFUNCTION, function($resource, $downloadSize, $downloaded, $uploadSize, $uploaded) use ($ch, &$jreLastUpdate) {
+			$now = microtime(true);
+			if ($downloadSize > 0 && ($now - $jreLastUpdate > 0.05)) { // 20Hz, was unthrottled
+				$jreLastUpdate = $now;
 				$pct = min(90, (int)round(($downloaded / $downloadSize) * 100));
 				$ch->send(json_encode(["type" => "progress", "pct" => $pct, "msg" => "Downloading Java JRE ($pct%)"]));
 			}
@@ -21737,7 +22551,7 @@ class FoxyModrinthJob
 			) use ($ch, $id, &$lastTime) {
 				if ($download_size > 0) {
 					$now = microtime(true);
-					if ($now - $lastTime >= 0.1) {
+					if ($now - $lastTime >= 0.05) { // 20Hz (was 10Hz)
 						$pct = (int) (($downloaded / $download_size) * 100);
 						$ch->send(
 							json_encode([
