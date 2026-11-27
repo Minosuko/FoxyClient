@@ -6,7 +6,7 @@ class FoxyClient {
 
 	
 
-	public const VERSION = "1.4.17";
+	public const VERSION = "1.4.18";
 	private $kernel32;
 	private $user32, $gdi32, $opengl32, $dwmapi, $msimg32, $shlwapi, $shell32, $comctl32, $comdlg32, $ole32;
 	private $gdiplus, $gdiplusToken;
@@ -63,6 +63,83 @@ class FoxyClient {
 	private const ACC_FOXY = "foxy";
 	private const ACC_MOJANG = "mojang";
 	private const ACC_LOCAL = "local";
+
+	// ── Self-integrity ──
+	// Public key used to verify our own bytes against FoxyClient.sign. It is
+	// embedded so a bare `php FoxyClient.php` can self-check before trusting
+	// anything it loads.
+	private const PUBLIC_KEY_PEM = '-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA5MXCJgfGlZzSKurJWeza
+tLslQpImwg4/Zp/noOKkvs5uurpPb3TKVCGcV3KiuVAqdyT4KKKdd7n8Ofnks4SH
+H0HTlkU4QPAe/0+DflJyLvKnvrfnl47ORpo43JpEOejNhVYWRnDdg/dHEz/mczM2
+96MgcKMvm89ChfM/YEPuh5AtuaGUlqcNCXSr4fXPZ8aVvlWqvn8YAJ1yosD3Q0xR
+TKwZ37w/8giTESXOf892h9FG7NPS9JS3XtZhoih4l1OTSkjVD4q9cmRIAoofLOUQ
+pDu45dpEcLuGpULIm9P0WvfLZ0n9slejnuY1Z5bpUVHuXWdTk7SFzn0y91hz/01W
+w8100qa2OjaWNGwxx1gZboxknYBujsm4R1MfdEXFy6yHGHb6FFVuLakdolXmuZZt
+bjVUMME/DuwCMX3MSzZY06QaBk1V9lLgZBnPK74zahCn/YArHDWCgdL74LEWiaqR
+Ge9sLvUFzof0gag6nRW1YggMAC8Vu360fNifYBnrkJggCwks8TLkKMat9VO2p+cr
+/u1K9BcYoKCckX8vUZDFyQEcz28MpqmerqDwcJgIc1ctR8erJk+G2rT7sFWZRYuK
+NTDsYVpcjb9mRwnWCMba23ZWBefZjn24hlOwOq/CMmabPGNpkU7r5fM+fxBND0UH
+htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
+-----END PUBLIC KEY-----';
+
+	// ── Account vault ──
+	// AES-256-GCM at-rest encryption for account tokens. The key is derived
+	// from the embedded public key (our signing identity) plus a pepper, so
+	// tokens are never written in the clear.
+	private const VAULT_PEPPER = "ffee80ba05541dc82737f47e96930cd2b7a0bd0af9eab877a4fc51625b74d392";
+	// Legacy prefix (pre-tier vault). Decrypt understands it via both keys.
+	private const VAULT_PREFIX = "enc:v1:";
+	// Strong vault: full FoxyClient Secure, only for signed tiers.
+	private const VAULT_PREFIX_STRONG = "enc:s2:";
+	// Partial vault: a part of FoxyClient Secure for third-party launches.
+	private const VAULT_PREFIX_PARTIAL = "enc:p1:";
+	// Distinct pepper so the partial key can never equal the strong key.
+	private const VAULT_PARTIAL_PEPPER = "3b91d0c47ec1a9f8026d5e17bc8a4f0d9a2c6e1874fb035ad19c8e64b72fa3d1";
+
+	// ── Trusted Execution Environment (software enclave) ──
+	// A sealed container plus an attested execution path. It only comes alive
+	// under an Authenticated FoxyClient signature launched by the signed host.
+	// Think of it as the launcher's equivalent of a device secure chip: data
+	// is sealed under a dedicated key and critical operations must present a
+	// fresh attestation before they may touch it.
+	private const TEE_PEPPER = "c7a2e50b9d4183360af27c6b953ee08d41b7c9605d38ae274f0b1c8a6d93e517";
+	private const TEE_PREFIX = "enc:tee:";
+	private const TEE_CONTAINER = "FoxyClient/config/secure_enclave.json";
+	private const TEE_VERSION = 1;
+
+	// ── Integrity tiers ──
+	// The launcher adapts what it trusts to how it was launched:
+	//  unsigned      - not signed and not host-launched: local accounts only.
+	//  user          - signed bytes, launched directly (bare php): 3rd-party
+	//                  accounts allowed, Microsoft/Mojang denied.
+	//  third_party   - signed host launched modified bytes: every account and
+	//                  modification allowed, but only part of FoxyClient Secure.
+	//  authentic     - signed bytes + signed host: strongest; strong vault and
+	//                  the Trusted Execution Environment protect every secret.
+	private const SEC_UNSIGNED = "unsigned";
+	private const SEC_USER = "user";
+	private const SEC_THIRD_PARTY = "third_party";
+	private const SEC_AUTHENTIC = "authentic";
+
+	// Active integrity tier for this session (set by initTrust()).
+	private $securityTier = self::SEC_UNSIGNED;
+
+	// Cached trust signals, resolved once in initTrust(); the Info tab reads
+	// these instead of re-running the (costly) RSA self-check every frame.
+	private $selfSignatureOk = false;
+	private $hostLaunched = false;
+
+	// True only in the authentic tier (signed bytes + signed host).
+	private $trusted = false;
+
+	// ── TEE state ──
+	private $teeActive = false;
+	private $teeAttested = false;
+	private $teeNonce = "";
+	private $teeAttestationToken = "";
+	private $teeContainer = []; // uuid => [field => sealed blob]
+	private $teeDirty = false;
 
 	private $currentPage = self::PAGE_HOME;
 	private $sidebarHover = -1;
@@ -277,6 +354,8 @@ class FoxyClient {
 	private $lastModrinthQuery = null; // Query associated with current cache
 	private $lastModrinthSubTab = null; // 0=Mods, 1=Modpacks associated with cache
 	private $subTabFadeStart = 0;
+	private $subTabAnimDir = 0; // +1 = new tab is to the right, -1 = to the left, 0 = idle
+	private const SUBTAB_ANIM_DUR = 0.24;
 	private $subTabAnimSourceX = 0;
 
 	// Translation Dictionary
@@ -348,6 +427,10 @@ class FoxyClient {
 	private $pgPrevHover = false;
 	private $pgNextHover = false;
 	private $pgPageHover = -1;
+
+	// Explore tab state persistence
+	private $exploreStateSig = null; // signature of the last state written to settings
+	private $explorePersistAt = 0.0; // last time the state was checked (throttled)
 
 	// Modrinth Download State (Concurrent)
 	private $modDownloadChannels = []; // projectId => Channel
@@ -451,7 +534,7 @@ class FoxyClient {
 	private $uiUpdateProcess = null;
 
 	// Properties system
-	private $propSubTab = 0; // 0=Minecraft, 1=Launcher, 2=About
+	private $propSubTab = 0; // 0=Minecraft, 1=Launcher, 2=Update, 3=About
 	private $propTabHover = -1;
 	private $propFieldHover = -1;
 	private $propActiveField = ""; // which text field is focused
@@ -519,6 +602,11 @@ class FoxyClient {
 	private $modInfoButtonHover = ""; // 'install', 'external', 'close'
 	private $modInfoScrollOffset = 0;
 	private $modInfoScrollTarget = 0;
+
+	// FoxySecure Info Modal System (opened from Properties > About)
+	private $foxySecureModalOpen = false;
+	private $foxySecureAlpha = 0.0;
+	private $foxySecureBtnHover = false;
 
 	// Background Modal System
 	private $bgModalOpen = false;
@@ -659,6 +747,7 @@ class FoxyClient {
 	private $lastTime;
 	private $buttonPulse = 0.0;
 	private $pageAnim = 1.0;
+	private $pageSlideDir = 1; // +1 = new page is lower in the sidebar (enters from below)
 	private $homeAccDropdownAnim = 0.0;
 	private $homeVerSearchQuery = "";
 	private $homeVerSearchFocus = false;
@@ -682,6 +771,15 @@ class FoxyClient {
 	// Window launch animation
 	private $windowAnim = 0.0;
 	private $appLaunchTime = 0;
+
+	// Window minimize/close transition
+	// The native window stays alive until the animation finishes; render() draws
+	// the collapsing frame, then run() performs the real SW_MINIMIZE/DestroyWindow.
+	private $winAnimMode = "";    // "", "minimize", "close"
+	private $winAnimT = 0.0;      // 0..1 progress
+	private $winAnimPending = ""; // action to run after the final frame is presented
+	private const WIN_ANIM_MIN_DUR = 0.26;
+	private const WIN_ANIM_CLOSE_DUR = 0.20;
 
 	// Dynamic FPS / Idle detection
 	private $needsRedraw = true;
@@ -1108,6 +1206,10 @@ class FoxyClient {
 		}
 		
 		$this->colors = $this->darkColors; // Default initial colors to prevent null access
+		// Establish trust before loading anything that may contain secrets.
+		$this->initTrust();
+		// The enclave is only available to an authenticated launch.
+		$this->initTEE();
 		$this->loadConfig($configPath);
 		$this->loadSettings();
 		$this->loadModpacks();
@@ -1997,6 +2099,25 @@ class FoxyClient {
 		$this->wndProc = function ($hwnd, $msg, $wparam, $lparam) {
 			try {
 				switch ($msg) {
+					case 0x0010: // WM_CLOSE (Alt+F4, taskbar close)
+						if ($this->winAnimMode === "") {
+							$this->startWindowTransition("close");
+							return 0;
+						}
+						break;
+					case 0x0112: // WM_SYSCOMMAND
+						$sc = $wparam & 0xfff0;
+						if ($sc === 0xf020 && $this->winAnimMode === "") {
+							// SC_MINIMIZE
+							$this->startWindowTransition("minimize");
+							return 0;
+						}
+						if ($sc === 0xf060 && $this->winAnimMode === "") {
+							// SC_CLOSE
+							$this->startWindowTransition("close");
+							return 0;
+						}
+						break;
 					case 0x0002: // WM_DESTROY
 						if ($hwnd == $this->hwnd) {
 							$this->terminateGame();
@@ -3305,6 +3426,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if ($this->currentPage === $page) {
 			return;
 		}
+
+		// Directional transition: +1 when the new page sits lower in the
+		// sidebar (so it slides in from below), -1 when it sits higher.
+		$oldIdx = -1;
+		$newIdx = -1;
+		foreach ($this->sidebarItems as $i => $item) {
+			if ($item["id"] === $this->currentPage) {
+				$oldIdx = $i;
+			}
+			if ($item["id"] === $page) {
+				$newIdx = $i;
+			}
+		}
+		$this->pageSlideDir = ($oldIdx >= 0 && $newIdx >= 0 && $newIdx < $oldIdx) ? -1 : 1;
+
 		$this->currentPage = $page;
 		$this->pageAnim = 0.0;
 		$this->scrollTarget = 0;
@@ -3326,8 +3462,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		$this->updateDiscordPresence();
 		if ($page === self::PAGE_MODS) {
-			$this->searchModrinth($this->modSearchQuery);
-			
+			// Lazy entry: only fetch discovery results when the tab has none in
+			// memory yet (first visit, or after a context change cleared them).
+			// Re-entering Explore reuses the current view instead of resetting
+			// it to page 0.
+			if ($this->modpackSubTab < 4 && empty($this->modrinthSearchResults)) {
+				$this->searchModrinth($this->modSearchQuery, 0);
+			}
+
 			// Trigger network maintenance only when entering explore tab
 			$this->triggerCheckForUpdate(true);
 			
@@ -3352,11 +3494,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// Title bar click
 		if ($y < self::TITLEBAR_H) {
 			if ($this->titleCloseHover) {
-				$this->user32->DestroyWindow($this->hwnd);
+				$this->startWindowTransition("close");
 				return;
 			}
 			if ($this->titleMinHover) {
-				$this->user32->ShowWindow($this->hwnd, 6); // SW_MINIMIZE
+				$this->startWindowTransition("minimize");
 				return;
 			}
 			if ($this->titleDragHover) {
@@ -3368,6 +3510,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		if ($this->modInfoModalOpen) {
 			$this->handleModInfoModalClick($x, $y);
+			return;
+		}
+
+		if ($this->foxySecureModalOpen) {
+			$this->handleFoxySecureModalClick($x, $y);
 			return;
 		}
 
@@ -3907,6 +4054,18 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$cy >= $y &&
 					$cy <= $y + 40
 				) {
+					// Account types locked by the current integrity tier.
+					if (!$this->accountTypeAllowed($tid)) {
+						if ($this->securityTier === self::SEC_UNSIGNED) {
+							$this->msError =
+								"Unsigned mode: only local accounts are allowed.";
+						} else {
+							$this->msError =
+								$this->accountTypeLabel($tid) .
+								" accounts are locked in this integrity tier.";
+						}
+						return;
+					}
 					$this->loginType = $tid;
 					$this->loginInput = "";
 					$this->loginInputPassword = "";
@@ -4086,7 +4245,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		// 0. Scrollbar drag detection
 		$maxScroll = $this->getMaxScroll();
 		if ($maxScroll > 0 && $cx >= $cw - 15 && $cx <= $cw) {
-			$yOff = self::HEADER_H + self::TAB_H;
+			$yOff = self::HEADER_H + 90;
 			$listH = $this->height - self::TITLEBAR_H - self::FOOTER_H - $yOff;
 			$scrollH = max(30, ($listH / ($listH + $maxScroll)) * $listH);
 			$thumbY = $yOff + ($this->scrollOffset / $maxScroll) * ($listH - $scrollH);
@@ -4143,8 +4302,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$idx = (int)floor(($cy - $ddY) / $itemH);
 				if ($idx >= 0 && $idx < count($tabs)) {
 					if ($this->modpackSubTab !== $idx) {
+						$prev = $this->modpackSubTab;
 						$this->modpackSubTab = $idx;
-						$this->subTabFadeStart = microtime(true);
+						$this->beginSubTabSwitch($prev, $idx);
 						$this->scrollOffset = 0;
 						$this->scrollTarget = 0;
 						$this->hoverModIndex = -1;
@@ -4332,7 +4492,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		// 7. Grid/List Interaction (Managed, Installed, or Discovery)
-		$y = self::HEADER_H + 54;
+		$y = self::HEADER_H + 90;
 		$usableH = $this->height - self::TITLEBAR_H;
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$h = $usableH - $footerH - $y;
@@ -4700,16 +4860,606 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			   substr($hex, 12, 4) . "-" . substr($hex, 16, 4) . "-" . substr($hex, 20, 12);
 	}
 
+	/**
+	 * Verifies our own bytes on disk against FoxyClient.sign using the
+	 * embedded public key. Returns true only for an exact, authentic copy.
+	 */
+	private function verifySelfIntegrity()
+	{
+		$signPath = __DIR__ . DIRECTORY_SEPARATOR . "FoxyClient.sign";
+		if (!is_file($signPath)) {
+			return false;
+		}
+		$signB64 = trim((string) @file_get_contents($signPath));
+		if ($signB64 === "") {
+			return false;
+		}
+		$signature = base64_decode($signB64, true);
+		if ($signature === false || $signature === "") {
+			return false;
+		}
+		$data = @file_get_contents(__FILE__);
+		if ($data === false) {
+			return false;
+		}
+		$key = @openssl_pkey_get_public(self::PUBLIC_KEY_PEM);
+		if ($key === false) {
+			return false;
+		}
+		$result = @openssl_verify($data, $signature, $key, OPENSSL_ALGO_SHA256);
+		return $result === 1;
+	}
+
+	/**
+	 * Establishes the integrity tier for this session.
+	 *
+	 * Two independent signals decide it:
+	 *   - the signed C# host set FOXYCLIENT_LAUNCHED=1, and
+	 *   - our own bytes verify against FoxyClient.sign.
+	 *
+	 * Both -> authentic; signature only -> user signed; host only ->
+	 * third-party signed; neither -> unsigned. See the SEC_* constants.
+	 */
+	private function initTrust()
+	{
+		$launchedByHost = getenv("FOXYCLIENT_LAUNCHED") === "1";
+		$signatureOk = $this->verifySelfIntegrity();
+		$this->hostLaunched = $launchedByHost;
+		$this->selfSignatureOk = $signatureOk;
+
+		if ($signatureOk && $launchedByHost) {
+			$this->securityTier = self::SEC_AUTHENTIC;
+		} elseif ($signatureOk) {
+			$this->securityTier = self::SEC_USER;
+		} elseif ($launchedByHost) {
+			$this->securityTier = self::SEC_THIRD_PARTY;
+		} else {
+			$this->securityTier = self::SEC_UNSIGNED;
+		}
+
+		$this->trusted = $this->securityTier === self::SEC_AUTHENTIC;
+		$this->log(
+			"Integrity: host=" .
+				($launchedByHost ? "1" : "0") .
+				" signature=" .
+				($signatureOk ? "OK" : "FAIL") .
+				" tier=" .
+				strtoupper($this->securityTier),
+			$this->trusted ? "INFO" : "WARN",
+		);
+		return $this->trusted;
+	}
+
+	/** True when the tier may sign in with Microsoft / Mojang accounts. */
+	private function tierAllowsMicrosoft()
+	{
+		return $this->securityTier === self::SEC_THIRD_PARTY ||
+			$this->securityTier === self::SEC_AUTHENTIC;
+	}
+
+	/** True when the tier may use third-party (Ely.by / FoxyClient) accounts. */
+	private function tierAllowsThirdParty()
+	{
+		return $this->securityTier !== self::SEC_UNSIGNED;
+	}
+
+	/** True when the vault uses the full strong encryption system. */
+	private function tierUsesStrongVault()
+	{
+		return $this->securityTier === self::SEC_AUTHENTIC ||
+			$this->securityTier === self::SEC_USER;
+	}
+
+	/**
+	 * Whether an account type may be used in the current tier.
+	 * Unsigned locks everything except local/offline accounts.
+	 */
+	private function accountTypeAllowed($type)
+	{
+		if ($this->securityTier === self::SEC_UNSIGNED) {
+			return $type === self::ACC_LOCAL || $type === self::ACC_OFFLINE;
+		}
+		if (
+			!$this->tierAllowsMicrosoft() &&
+			($type === self::ACC_MICROSOFT || $type === self::ACC_MOJANG)
+		) {
+			return false;
+		}
+		return true;
+	}
+
+	/** Human-readable label for the account type, for lock messages. */
+	private function accountTypeLabel($type)
+	{
+		switch ($type) {
+			case self::ACC_MICROSOFT:
+			case self::ACC_MOJANG:
+				return "Microsoft / Mojang";
+			case self::ACC_ELYBY:
+				return "Ely.by";
+			case self::ACC_FOXY:
+				return "FoxyClient";
+			case self::ACC_LOCAL:
+				return "Local";
+			default:
+				return "Offline";
+		}
+	}
+
+	/** Derives the 32-byte AES-256-GCM key for the account vault. */
+	private function vaultKey($strong = true)
+	{
+		return hash_hmac(
+			"sha256",
+			self::PUBLIC_KEY_PEM,
+			$strong ? self::VAULT_PEPPER : self::VAULT_PARTIAL_PEPPER,
+			true,
+		);
+	}
+
+	/** True when a stored value is already a vault ciphertext. */
+	private function isEncryptedValue($v)
+	{
+		if (!is_string($v)) {
+			return false;
+		}
+		return strpos($v, self::VAULT_PREFIX_STRONG) === 0 ||
+			strpos($v, self::VAULT_PREFIX_PARTIAL) === 0 ||
+			strpos($v, self::VAULT_PREFIX) === 0;
+	}
+
+	/** Encrypts a secret for storage. Idempotent and leaves empties alone. */
+	private function encryptSecret($plaintext)
+	{
+		if (!is_string($plaintext) || $plaintext === "") {
+			return (string) $plaintext;
+		}
+		if ($this->isEncryptedValue($plaintext)) {
+			return $plaintext;
+		}
+		// Strength follows the tier: strong for signed tiers, partial for
+		// third-party launches. The prefix records which key was used.
+		$strong = $this->tierUsesStrongVault();
+		$prefix = $strong ? self::VAULT_PREFIX_STRONG : self::VAULT_PREFIX_PARTIAL;
+		$iv = random_bytes(12);
+		$tag = "";
+		$ct = openssl_encrypt(
+			$plaintext,
+			"aes-256-gcm",
+			$this->vaultKey($strong),
+			OPENSSL_RAW_DATA,
+			$iv,
+			$tag,
+		);
+		if ($ct === false) {
+			return $plaintext;
+		}
+		return $prefix .
+			base64_encode($iv) . ":" .
+			base64_encode($tag) . ":" .
+			base64_encode($ct);
+	}
+
+	/**
+	 * Decrypts a stored secret. When $allow is false (the type is locked in
+	 * this tier) encrypted data is refused and returned as "".
+	 */
+	private function decryptSecret($stored, $allow = true)
+	{
+		if (!is_string($stored) || $stored === "") {
+			return "";
+		}
+		$strength = null;
+		$prefixLen = 0;
+		if (strpos($stored, self::VAULT_PREFIX_STRONG) === 0) {
+			$strength = true;
+			$prefixLen = strlen(self::VAULT_PREFIX_STRONG);
+		} elseif (strpos($stored, self::VAULT_PREFIX_PARTIAL) === 0) {
+			$strength = false;
+			$prefixLen = strlen(self::VAULT_PREFIX_PARTIAL);
+		} elseif (strpos($stored, self::VAULT_PREFIX) === 0) {
+			$strength = null; // legacy: try strong, then partial
+			$prefixLen = strlen(self::VAULT_PREFIX);
+		} else {
+			return $allow ? $stored : "";
+		}
+		if (!$allow) {
+			return "";
+		}
+		$parts = explode(":", substr($stored, $prefixLen));
+		if (count($parts) !== 3) {
+			return "";
+		}
+		$iv = base64_decode($parts[0], true);
+		$tag = base64_decode($parts[1], true);
+		$ct = base64_decode($parts[2], true);
+		if ($iv === false || $tag === false || $ct === false) {
+			return "";
+		}
+		$tryKeys = $strength === null ? [true, false] : [$strength];
+		foreach ($tryKeys as $s) {
+			$pt = @openssl_decrypt(
+				$ct,
+				"aes-256-gcm",
+				$this->vaultKey($s),
+				OPENSSL_RAW_DATA,
+				$iv,
+				$tag,
+			);
+			if ($pt !== false) {
+				return $pt;
+			}
+		}
+		return "";
+	}
+
+	/**
+	 * Re-encrypts a stored secret at the current tier's strength so a tier
+	 * change migrates the vault for free on the next save. Already-correct
+	 * entries are returned untouched to avoid needless rewrites.
+	 */
+	private function reencryptSecret($stored)
+	{
+		if (!is_string($stored) || $stored === "") {
+			return (string) $stored;
+		}
+		$wantPrefix = $this->tierUsesStrongVault()
+			? self::VAULT_PREFIX_STRONG
+			: self::VAULT_PREFIX_PARTIAL;
+		if (strpos($stored, $wantPrefix) === 0) {
+			return $stored; // already at the tier's strength
+		}
+		if (!$this->isEncryptedValue($stored)) {
+			return $this->encryptSecret($stored);
+		}
+		$pt = $this->decryptSecret($stored, true);
+		if ($pt === "") {
+			return $stored; // undecryptable: preserve bytes unchanged
+		}
+		return $this->encryptSecret($pt);
+	}
+
+	/**
+	 * Returns a secret safe to persist: always encrypted, re-keyed to the
+	 * tier strength when the account type is allowed, and left byte-for-byte
+	 * untouched when the type is locked in this tier.
+	 */
+	private function normalizeSecretAtRest($val, $type)
+	{
+		if (!is_string($val) || $val === "") {
+			return (string) $val;
+		}
+		if (!$this->isEncryptedValue($val)) {
+			return $this->encryptSecret($val); // never leave plaintext at rest
+		}
+		if (!$this->accountTypeAllowed($type)) {
+			return $val; // locked in this tier: preserve the ciphertext
+		}
+		return $this->reencryptSecret($val);
+	}
+
+	/**
+	 * Whether this launch is entitled to the enclave at all. Nothing under
+	 * this guard is reachable from unsigned, user-signed or third-party runs.
+	 */
+	private function teeAvailable()
+	{
+		return $this->securityTier === self::SEC_AUTHENTIC && $this->trusted;
+	}
+
+	/** Stable key: sealed data survives restarts, like an enclave fuse ID. */
+	private function teeStorageKey()
+	{
+		return hash_hmac("sha256", self::PUBLIC_KEY_PEM, self::TEE_PEPPER, true);
+	}
+
+	/** Session key: binds the attestation token to this authenticated run. */
+	private function teeSessionKey()
+	{
+		return hash_hmac(
+			"sha256",
+			$this->teeNonce,
+			self::TEE_PEPPER . ($this->hostLaunched ? "|host" : "|bare"),
+			true,
+		);
+	}
+
+	private function teeComputeToken()
+	{
+		return hash_hmac(
+			"sha256",
+			"FOXY-TEE|" . $this->teeNonce . "|" . self::TEE_VERSION,
+			$this->teeSessionKey(),
+			true,
+		);
+	}
+
+	private function teeCanonical($records)
+	{
+		return json_encode(["v" => self::TEE_VERSION, "records" => $records]);
+	}
+
+	/** Loads and authenticates the sealed container (MAC verified). */
+	private function teeLoadContainer()
+	{
+		$path = self::TEE_CONTAINER;
+		if (!is_file($path)) {
+			return [];
+		}
+		$raw = @file_get_contents($path);
+		if ($raw === false || $raw === "") {
+			return [];
+		}
+		$data = json_decode($raw, true);
+		if (!is_array($data) || ($data["v"] ?? 0) !== self::TEE_VERSION) {
+			return [];
+		}
+		$records = $data["records"] ?? [];
+		if (!is_array($records)) {
+			return [];
+		}
+		$expected = base64_encode(
+			hash_hmac("sha256", $this->teeCanonical($records), $this->teeStorageKey(), true),
+		);
+		if (!hash_equals($expected, (string) ($data["mac"] ?? ""))) {
+			$this->log("TEE: container MAC mismatch - ignoring tampered enclave.", "WARN");
+			return [];
+		}
+		return $records;
+	}
+
+	/** Writes the sealed container atomically, protected by a keyed MAC. */
+	private function teeSaveContainer()
+	{
+		if (!$this->teeActive || !$this->teeDirty) {
+			return false;
+		}
+		$records = $this->teeContainer;
+		$payload = [
+			"v" => self::TEE_VERSION,
+			"records" => $records,
+			"mac" => base64_encode(
+				hash_hmac("sha256", $this->teeCanonical($records), $this->teeStorageKey(), true),
+			),
+		];
+		$path = self::TEE_CONTAINER;
+		$tmp = $path . ".tmp";
+		$json = json_encode($payload, JSON_PRETTY_PRINT);
+		if (@file_put_contents($tmp, $json) !== false) {
+			if (!@rename($tmp, $path)) {
+				@file_put_contents($path, $json);
+				@unlink($tmp);
+			}
+		} else {
+			@file_put_contents($path, $json);
+		}
+		$this->teeDirty = false;
+		return true;
+	}
+
+	/**
+	 * Boots the enclave. For non-authenticated tiers it stays completely
+	 * dormant - the container is never opened or written.
+	 */
+	private function initTEE()
+	{
+		$this->teeActive = false;
+		$this->teeAttested = false;
+		$this->teeNonce = "";
+		$this->teeAttestationToken = "";
+		$this->teeContainer = [];
+		$this->teeDirty = false;
+		if (!$this->teeAvailable()) {
+			$this->log("TEE: locked - Authenticated FoxyClient launch required.", "WARN");
+			return false;
+		}
+		$this->teeNonce = bin2hex(random_bytes(16));
+		$this->teeAttestationToken = $this->teeComputeToken();
+		$this->teeContainer = $this->teeLoadContainer();
+		$this->teeAttested = $this->teeVerifyAttestation();
+		$this->teeActive = true;
+		$this->log(
+			"TEE: enclave active - sealed container holds " .
+				$this->teeRecordCount() .
+				" records.",
+			"INFO",
+		);
+		return true;
+	}
+
+	/** Fresh attestation: bytes must still verify and the host marker be set. */
+	private function teeVerifyAttestation()
+	{
+		if (!$this->teeAvailable() || $this->teeNonce === "") {
+			return false;
+		}
+		$sigOk = $this->verifySelfIntegrity();
+		$hostOk = $this->hostLaunched && getenv("FOXYCLIENT_LAUNCHED") === "1";
+		return $sigOk &&
+			$hostOk &&
+			hash_equals($this->teeAttestationToken, $this->teeComputeToken());
+	}
+
+	/**
+	 * Gate for critical execution paths. Re-attests every time so a client
+	 * modified after boot cannot keep using the enclave.
+	 */
+	private function teeGuard()
+	{
+		if (!$this->teeActive) {
+			return true; // enclave unused: the tier's own rules still apply
+		}
+		$ok = $this->teeVerifyAttestation();
+		$this->teeAttested = $ok;
+		if (!$ok) {
+			$this->log("TEE: attestation failed - enclave access denied.", "WARN");
+		}
+		return $ok;
+	}
+
+	/** Seals a plaintext with the enclave key. */
+	private function teeSeal($plaintext)
+	{
+		if (!is_string($plaintext) || $plaintext === "") {
+			return (string) $plaintext;
+		}
+		if (strpos($plaintext, self::TEE_PREFIX) === 0) {
+			return $plaintext;
+		}
+		$iv = random_bytes(12);
+		$tag = "";
+		$ct = openssl_encrypt(
+			$plaintext,
+			"aes-256-gcm",
+			$this->teeStorageKey(),
+			OPENSSL_RAW_DATA,
+			$iv,
+			$tag,
+		);
+		if ($ct === false) {
+			return $plaintext;
+		}
+		return self::TEE_PREFIX .
+			base64_encode($iv) . ":" .
+			base64_encode($tag) . ":" .
+			base64_encode($ct);
+	}
+
+	/** Opens a sealed blob inside the enclave; refuses when not attested. */
+	private function teeOpen($stored)
+	{
+		if (!$this->teeActive || !$this->teeAttested) {
+			return "";
+		}
+		if (!is_string($stored) || strpos($stored, self::TEE_PREFIX) !== 0) {
+			return "";
+		}
+		$parts = explode(":", substr($stored, strlen(self::TEE_PREFIX)));
+		if (count($parts) !== 3) {
+			return "";
+		}
+		$iv = base64_decode($parts[0], true);
+		$tag = base64_decode($parts[1], true);
+		$ct = base64_decode($parts[2], true);
+		if ($iv === false || $tag === false || $ct === false) {
+			return "";
+		}
+		$pt = @openssl_decrypt(
+			$ct,
+			"aes-256-gcm",
+			$this->teeStorageKey(),
+			OPENSSL_RAW_DATA,
+			$iv,
+			$tag,
+		);
+		return $pt === false ? "" : $pt;
+	}
+
+	private function teePut($uuid, $field, $plaintext)
+	{
+		if (!$this->teeActive || !is_string($plaintext) || $plaintext === "") {
+			return false;
+		}
+		$this->teeContainer[$uuid][$field] = $this->teeSeal($plaintext);
+		$this->teeDirty = true;
+		return true;
+	}
+
+	private function teeGet($uuid, $field)
+	{
+		if (!$this->teeActive || !$this->teeAttested) {
+			return "";
+		}
+		return $this->teeOpen($this->teeContainer[$uuid][$field] ?? "");
+	}
+
+	private function teeRecordCount()
+	{
+		$n = 0;
+		foreach ($this->teeContainer as $fields) {
+			$n += count(is_array($fields) ? $fields : []);
+		}
+		return $n;
+	}
+
+	/**
+	 * Whether secrets for this account may be read/used in the current tier.
+	 * Accounts whose type is locked never expose their tokens.
+	 */
+	private function accountAllowsSecrets($acc)
+	{
+		$type = $acc["Type"] ?? self::ACC_OFFLINE;
+		return $this->accountTypeAllowed($type);
+	}
+
+	/** Decrypts one secret field for an account, honouring the trust gate. */
+	private function getAccountSecret($uuid, $field)
+	{
+		$acc = $this->accounts[$uuid] ?? null;
+		if (!$acc) {
+			return "";
+		}
+		if (!$this->accountAllowsSecrets($acc)) {
+			return "";
+		}
+		// In an authenticated launch the enclave is the preferred source:
+		// its contents are sealed and every read needs a fresh attestation.
+		if ($this->teeActive && $this->teeGuard()) {
+			$sealed = $this->teeGet($uuid, $field);
+			if ($sealed !== "") {
+				return $sealed;
+			}
+		}
+		return $this->decryptSecret($acc[$field] ?? "", true);
+	}
+
 	private function loadAccounts()
 	{
 		$accPath = self::DATA_DIR . "/config/accounts.json";
 		if (file_exists($accPath)) {
 			$data = json_decode(file_get_contents($accPath), true);
 			$this->accounts = $data["accounts"] ?? [];
+			$needsMigration = false;
 			foreach ($this->accounts as $uuid => &$acc) {
 				if (!isset($acc["Type"])) {
 					$acc["Type"] = self::ACC_OFFLINE;
 				}
+				// Upgrade legacy plaintext tokens and re-key existing vault
+				// entries at the current tier's strength.
+				foreach (["AccessToken", "RefreshToken"] as $field) {
+					$val = $acc[$field] ?? "";
+					if (!is_string($val) || $val === "") {
+						continue;
+					}
+					$re = $this->normalizeSecretAtRest(
+						$val,
+						$acc["Type"] ?? self::ACC_OFFLINE,
+					);
+					if ($re !== $val) {
+						$acc[$field] = $re;
+						$needsMigration = true;
+					}
+				}
+				// An authenticated launch seals any existing vault tokens into
+				// the trusted container on first sight of them.
+				if (
+					$this->teeActive &&
+					$this->accountTypeAllowed($acc["Type"] ?? self::ACC_OFFLINE)
+				) {
+					foreach (["AccessToken", "RefreshToken"] as $field) {
+						if ($this->teeGet($uuid, $field) !== "") {
+							continue;
+						}
+						$pt = $this->decryptSecret($acc[$field] ?? "", true);
+						if ($pt !== "") {
+							$this->teePut($uuid, $field, $pt);
+						}
+					}
+				}
+			}
+			unset($acc);
+			if ($this->teeActive) {
+				$this->teeSaveContainer();
 			}
 			$this->activeAccount = $data["active"] ?? "";
 			$this->isLoggedIn = !empty($this->activeAccount);
@@ -4721,6 +5471,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					" accounts found in " .
 					realpath($accPath),
 			);
+			if ($needsMigration) {
+				$this->saveAccounts();
+				$this->log("Account vault migrated to encrypted storage.");
+			}
 		} else {
 			// Migration from mods.json
 			if (
@@ -4765,6 +5519,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->log("Settings loaded: " . realpath($path));
 			}
 		}
+		$this->restoreExploreState();
 	}
 
 	private function saveSettings()
@@ -4773,6 +5528,93 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			self::DATA_DIR . "/config/settings.json",
 			json_encode($this->settings, JSON_PRETTY_PRINT),
 		);
+	}
+
+	/**
+	 * Explore tab state: the launcher remembers the last sub-tab and every
+	 * filter selection so returning to the tab feels continuous.
+	 */
+	private function exploreStateSignature(): string
+	{
+		return serialize([
+			(int) $this->modpackSubTab,
+			$this->modSearchQuery,
+			$this->modsFilterCategories,
+			$this->modsFilterLoaders,
+			$this->modsFilterEnvs,
+			$this->modsFilterVersions,
+			$this->shaderFilterCategories,
+			$this->shaderFilterFeatures,
+			$this->shaderFilterPerformance,
+			$this->shaderFilterLoaders,
+			$this->modpackFilterCategories,
+			$this->modpackFilterEnvs,
+			$this->modpackFilterLoaders,
+			$this->resFilterCategories,
+			$this->resFilterFeatures,
+			$this->resFilterResolutions,
+		]);
+	}
+
+	private function restoreExploreState(): void
+	{
+		$slugList = function ($key, array $fallback): array {
+			$val = $this->settings[$key] ?? null;
+			if (!is_array($val)) return $fallback;
+			$out = [];
+			foreach ($val as $v) {
+				if (is_string($v) || is_int($v)) $out[] = (string) $v;
+			}
+			return $out;
+		};
+
+		$this->modpackSubTab = max(0, min(7, (int) ($this->settings["explore_sub_tab"] ?? 0)));
+		if (isset($this->settings["explore_search_query"]) && is_string($this->settings["explore_search_query"])) {
+			$this->modSearchQuery = $this->settings["explore_search_query"];
+		}
+		$this->modsFilterCategories = $slugList("explore_filter_categories", $this->modsFilterCategories);
+		$this->modsFilterLoaders    = $slugList("explore_filter_loaders", $this->modsFilterLoaders);
+		$this->modsFilterEnvs       = $slugList("explore_filter_envs", $this->modsFilterEnvs);
+		$this->modsFilterVersions   = $slugList("explore_filter_versions", $this->modsFilterVersions);
+		$this->shaderFilterCategories   = $slugList("explore_shader_categories", $this->shaderFilterCategories);
+		$this->shaderFilterFeatures     = $slugList("explore_shader_features", $this->shaderFilterFeatures);
+		$this->shaderFilterPerformance  = $slugList("explore_shader_performance", $this->shaderFilterPerformance);
+		$this->shaderFilterLoaders      = $slugList("explore_shader_loaders", $this->shaderFilterLoaders);
+		$this->modpackFilterCategories  = $slugList("explore_modpack_categories", $this->modpackFilterCategories);
+		$this->modpackFilterEnvs        = $slugList("explore_modpack_envs", $this->modpackFilterEnvs);
+		$this->modpackFilterLoaders     = $slugList("explore_modpack_loaders", $this->modpackFilterLoaders);
+		$this->resFilterCategories   = $slugList("explore_res_categories", $this->resFilterCategories);
+		$this->resFilterFeatures     = $slugList("explore_res_features", $this->resFilterFeatures);
+		$this->resFilterResolutions  = $slugList("explore_res_resolutions", $this->resFilterResolutions);
+
+		$this->exploreStateSig = $this->exploreStateSignature();
+	}
+
+	/** Persist the Explore tab state when it actually changed. */
+	private function persistExploreState(): void
+	{
+		$sig = $this->exploreStateSignature();
+		if ($sig === $this->exploreStateSig) {
+			return;
+		}
+		$this->exploreStateSig = $sig;
+		$this->settings["explore_sub_tab"] = (int) $this->modpackSubTab;
+		$this->settings["explore_search_query"] = $this->modSearchQuery;
+		$this->settings["explore_filter_categories"] = array_values($this->modsFilterCategories);
+		$this->settings["explore_filter_loaders"] = array_values($this->modsFilterLoaders);
+		$this->settings["explore_filter_envs"] = array_values($this->modsFilterEnvs);
+		$this->settings["explore_filter_versions"] = array_values($this->modsFilterVersions);
+		$this->settings["explore_shader_categories"] = array_values($this->shaderFilterCategories);
+		$this->settings["explore_shader_features"] = array_values($this->shaderFilterFeatures);
+		$this->settings["explore_shader_performance"] = array_values($this->shaderFilterPerformance);
+		$this->settings["explore_shader_loaders"] = array_values($this->shaderFilterLoaders);
+		$this->settings["explore_modpack_categories"] = array_values($this->modpackFilterCategories);
+		$this->settings["explore_modpack_envs"] = array_values($this->modpackFilterEnvs);
+		$this->settings["explore_modpack_loaders"] = array_values($this->modpackFilterLoaders);
+		$this->settings["explore_res_categories"] = array_values($this->resFilterCategories);
+		$this->settings["explore_res_features"] = array_values($this->resFilterFeatures);
+		$this->settings["explore_res_resolutions"] = array_values($this->resFilterResolutions);
+		$this->saveSettings();
 	}
 
 	private function loadModpacks()
@@ -5268,14 +6110,41 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 	private function saveAccounts()
 	{
+		// Encrypt secrets before they ever touch the disk. Values already in
+		// the vault are re-keyed to the current tier's strength.
+		$accounts = [];
+		foreach ($this->accounts as $uuid => $acc) {
+			$type = $acc["Type"] ?? self::ACC_OFFLINE;
+			$acc["AccessToken"] = $this->normalizeSecretAtRest(
+				$acc["AccessToken"] ?? "",
+				$type,
+			);
+			$acc["RefreshToken"] = $this->normalizeSecretAtRest(
+				$acc["RefreshToken"] ?? "",
+				$type,
+			);
+			$accounts[$uuid] = $acc;
+		}
 		$data = [
+			"v" => 2,
 			"active" => $this->activeAccount,
-			"accounts" => $this->accounts,
+			"accounts" => $accounts,
 		];
-		file_put_contents(
-			self::DATA_DIR . "/config/accounts.json",
-			json_encode($data, JSON_PRETTY_PRINT),
-		);
+		$path = self::DATA_DIR . "/config/accounts.json";
+		$json = json_encode($data, JSON_PRETTY_PRINT);
+		$tmp = $path . ".tmp";
+		// Atomic replace so a crash can never leave a half-written vault.
+		if (@file_put_contents($tmp, $json) !== false) {
+			if (!@rename($tmp, $path)) {
+				@file_put_contents($path, $json);
+				@unlink($tmp);
+			}
+		} else {
+			@file_put_contents($path, $json);
+		}
+		if ($this->teeActive) {
+			$this->teeSaveContainer();
+		}
 	}
 
 	public function selectAccount($uuid)
@@ -6191,6 +7060,30 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$activeAcc = $this->accounts[$this->activeAccount] ?? [];
 		$accType = $activeAcc["Type"] ?? self::ACC_OFFLINE;
 
+		// Authenticated launches must present a fresh enclave attestation.
+		if ($this->teeActive && !$this->teeGuard()) {
+			$this->assetMessage = "TEE attestation failed - launch denied";
+			$this->isLaunching = false;
+			$this->log("Blocked launch: TEE attestation failed.", "WARN");
+			return;
+		}
+
+		// The current tier must be allowed to launch this account type.
+		if (!$this->accountTypeAllowed($accType)) {
+			$this->assetMessage =
+				$this->accountTypeLabel($accType) . " accounts are locked in this tier";
+			$this->isLaunching = false;
+			$this->log(
+				"Blocked launch: " .
+					$this->accountTypeLabel($accType) .
+					" account in " .
+					$this->securityTier .
+					" tier.",
+				"WARN",
+			);
+			return;
+		}
+
 		// Refresh token if expired before launching the game
 		if ($accType !== self::ACC_OFFLINE && $accType !== self::ACC_LOCAL) {
 			$this->refreshTokenIfExpired();
@@ -6737,7 +7630,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$cmdArray[] = $mainClass;
 
 		$activeAcc = $this->accounts[$this->activeAccount] ?? [];
-		$token = $activeAcc["AccessToken"] ?? null;
+		$token = $this->getAccountSecret($this->activeAccount, "AccessToken");
 
 		// For local accounts without an AccessToken, fetch a JWT from the skin server
 		if (empty($token) && ($activeAcc["Type"] ?? "") === self::ACC_LOCAL) {
@@ -6750,7 +7643,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$authData = json_decode($authRes, true);
 					if (isset($authData["accessToken"])) {
 						$token = $authData["accessToken"];
-						$this->accounts[$this->activeAccount]["AccessToken"] = $token;
+						$this->accounts[$this->activeAccount]["AccessToken"] = $this->encryptSecret($token);
 						$this->saveAccounts();
 					}
 				}
@@ -9782,11 +10675,18 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 		$this->accounts[$uuid] = [
 			"Username" => $name,
-			"AccessToken" => $accessToken,
-			"RefreshToken" => $refreshToken,
+			"AccessToken" => $this->encryptSecret($accessToken),
+			"RefreshToken" => $this->encryptSecret($refreshToken),
 			"ExpiresAt" => $expiresAt,
 			"Type" => $type,
 		];
+		// Authenticated launches additionally seal the raw tokens inside the
+		// trusted container; ordinary tiers never create these records.
+		if ($this->teeActive) {
+			$this->teePut($uuid, "AccessToken", $accessToken);
+			$this->teePut($uuid, "RefreshToken", $refreshToken);
+			$this->teeSaveContainer();
+		}
 		$this->activeAccount = $uuid;
 		$this->accountName = $name;
 		$this->isLoggedIn = true;
@@ -10089,7 +10989,27 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		$type = $activeAcc["Type"] ?? self::ACC_OFFLINE;
-		$refreshToken = $activeAcc["RefreshToken"] ?? "";
+		// Refreshing enclave secrets also requires a fresh attestation.
+		if ($this->teeActive && !$this->teeGuard()) {
+			$this->log("Refusing token refresh: TEE attestation failed.", "WARN");
+			return;
+		}
+		// The current tier may never read or use a locked account's secrets.
+		if (!$this->accountTypeAllowed($type)) {
+			$this->log(
+				"Refusing to refresh " .
+					$this->accountTypeLabel($type) .
+					" token in " .
+					$this->securityTier .
+					" tier.",
+				"WARN",
+			);
+			return;
+		}
+		$refreshToken = $this->getAccountSecret(
+			$this->activeAccount,
+			"RefreshToken",
+		);
 
 		if (!$refreshToken || $refreshToken === "") {
 			if ($type !== self::ACC_OFFLINE && $type !== self::ACC_LOCAL) {
@@ -10444,6 +11364,34 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$value += ($target - $value) * $f;
 	}
 
+	/**
+	 * Begin the minimize/close animation. The real window action is deferred
+	 * until the animation's final frame has been presented (see run()).
+	 */
+	private function startWindowTransition(string $mode): void
+	{
+		if ($this->winAnimMode !== "") {
+			return;
+		}
+
+		// During the boot intro (or without a platform window) there is no
+		// settled frame to animate, so act immediately.
+		if (!$this->fontsReady || $this->windowAnim < 1.0 || !$this->hwnd) {
+			if ($mode === "minimize") {
+				$this->user32->ShowWindow($this->hwnd, 6); // SW_MINIMIZE
+			} else {
+				$this->user32->DestroyWindow($this->hwnd);
+			}
+			return;
+		}
+
+		$this->winAnimMode = $mode;
+		$this->winAnimT = 0.0;
+		$this->winAnimPending = "";
+		$this->isIdle = false;
+		$this->needsRedraw = true;
+	}
+
 	private function updateAnimations(float $now): void
 	{
 		// Delta time, clamped so a stall (debugger, sleep, hidden window) cannot
@@ -10524,6 +11472,18 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->animStep($this->windowAnim, 1.0, 0.08, $dt, 0.002);
 		}
 
+		// Window minimize/close transition (linear ramp, eased at draw time)
+		if ($this->winAnimMode !== "") {
+			$dur = $this->winAnimMode === "minimize" ? self::WIN_ANIM_MIN_DUR : self::WIN_ANIM_CLOSE_DUR;
+			$this->winAnimT += $dt / max(0.01, $dur);
+			if ($this->winAnimT >= 1.0) {
+				$this->winAnimT = 1.0;
+				// Hand off to run() once this final frame is on screen.
+				$this->winAnimPending = $this->winAnimMode;
+			}
+			$this->needsRedraw = true;
+		}
+
 		// Page transitions (linear ramps keep their original feel)
 		if ($this->pageAnim < 1.0) $this->pageAnim = min(1.0, $this->pageAnim + 4.8 * $dt);
 		$this->modrinthAnim = min(1.0, $this->modrinthAnim + 9.6 * $dt);
@@ -10540,6 +11500,14 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->modIconAlpha[$id] = min(1.0, $alpha + 3.0 * $dt);
 				$this->needsRedraw = true;
 			}
+		}
+
+		// Persist Explore tab state when the sub-tab or filters changed.
+		// Throttled: the check runs at most ~4x/second, and only while the
+		// Explore tab is open, so it costs nothing elsewhere.
+		if ($this->currentPage === self::PAGE_MODS && ($now - $this->explorePersistAt) >= 0.25) {
+			$this->explorePersistAt = $now;
+			$this->persistExploreState();
 		}
 	}
 
@@ -10573,6 +11541,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if ($this->pageAnim < 1.0) return true;
 		if ($this->modrinthAnim < 1.0) return true;
 		if ($this->windowAnim < 1.0) return true;
+		if ($this->winAnimMode !== "") return true;
+
+		// Sub-tab switch (content fade/slide + indicator glide)
+		if ($this->subTabAnimDir !== 0 && (microtime(true) - $this->subTabFadeStart) < self::SUBTAB_ANIM_DUR) return true;
 
 		// Dropdown animations
 		$dropdownPairs = [
@@ -10592,6 +11564,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if ($this->modsFilterDropdown === "" && $this->modsFilterDropdownAnim > 0.01) return true;
 		if ($this->modInfoModalOpen && $this->modInfoAlpha < 1.0) return true;
 		if (!$this->modInfoModalOpen && $this->modInfoAlpha > 0.01) return true;
+		if ($this->foxySecureModalOpen && $this->foxySecureAlpha < 1.0) return true;
+		if (!$this->foxySecureModalOpen && $this->foxySecureAlpha > 0.01) return true;
 		$isPropOpen = ($this->propFontDropdownOpen !== "" || $this->propLangDropdownOpen || $this->propThemeDropdownOpen);
 		if ($isPropOpen && $this->propDropdownAnim < 1.0) return true;
 		if (!$isPropOpen && $this->propDropdownAnim > 0.01) return true;
@@ -10695,6 +11669,23 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->gdi32->SwapBuffers($this->hdc);
 				// Low-end: SwapBuffers already VSYNCs (wglSwapIntervalEXT=1); DwmFlush after = 2x block. Keep only when throttling.
 
+				// Window transition finished and its final frame is on screen:
+				// now hand off to the OS (minimize) or tear the window down.
+				if ($this->winAnimPending !== "") {
+					$action = $this->winAnimPending;
+					$this->winAnimPending = "";
+					$this->winAnimMode = "";
+					$this->winAnimT = 0.0;
+					if ($action === "minimize") {
+						$this->user32->ShowWindow($this->hwnd, 6); // SW_MINIMIZE
+						$this->needsRedraw = true;
+						continue;
+					}
+					// close: WM_DESTROY clears $this->running, so the loop exits.
+					$this->user32->DestroyWindow($this->hwnd);
+					continue;
+				}
+
 				// Schedule redraw if animating
 				if ($isAnimating) {
 					$this->needsRedraw = true;
@@ -10757,6 +11748,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		if ($this->modInfoModalOpen) {
 			$this->modInfoButtonHover = ""; // Handled dynamically in render for simplicity
 			return;
+		}
+
+		if ($this->foxySecureModalOpen) {
+			return; // Modal owns the hover; its controls are drawn dynamically.
 		}
 
 		if ($this->bgModalOpen) {
@@ -11132,8 +12127,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$tw = $this->getTextWidth($name, 1000) + 32;
 				if ($cx >= $tabX && $cx <= $tabX + $tw) {
 					if ($this->foxySubTab !== $i) {
+						$prev = $this->foxySubTab;
 						$this->foxySubTab = $i;
-						$this->subTabFadeStart = microtime(true);
+						$this->beginSubTabSwitch($prev, $i);
 						$this->scrollOffset = 0;
 						$this->scrollTarget = 0;
 						$this->hoverModIndex = -1;
@@ -11392,7 +12388,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			}
 		}
 
-		$y = self::HEADER_H + 54;
+		$y = self::HEADER_H + 90;
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$h = $this->height - self::TITLEBAR_H - $footerH - $y;
 
@@ -11558,10 +12554,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->aboutGithubHover = false;
 		$this->aboutWebsiteHover = false;
 		$this->aboutContactHover = false;
+		$this->foxySecureBtnHover = false;
 
 		if ($this->propSubTab === 3) {
 			$contentTop = self::HEADER_H + self::TAB_H + 20;
-			$usableY = $this->mouseY - $contentTop + $this->propScrollOffset;
+			// $cy is already page-local (mouseY - TITLEBAR_H); using the raw
+			// mouseY here shifts every About hitbox up by the titlebar height.
+			$usableY = $cy - $contentTop + $this->propScrollOffset;
 			$usableX = $this->mouseX - self::SIDEBAR_W; // Local X relative to Content Area
 
 			// Calculate widths (matching renderPropertiesAbout)
@@ -11585,6 +12584,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->aboutWebsiteHover = true;
 			} elseif ($usableY >= 445 && $usableY < 470 && $usableX >= self::PAD + 10 && $usableX <= self::PAD + 10 + $wContact) {
 				$this->aboutContactHover = true;
+			} elseif ($usableY >= 478 && $usableY < 514 && $usableX >= self::PAD && $usableX <= self::PAD + 220) {
+				$this->foxySecureBtnHover = true;
 			}
 		}
 	}
@@ -11641,15 +12642,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$tw = strlen($cat) * 8 + 30;
 				if ($cx >= $tx && $cx < $tx + $tw) {
 					if ($this->propSubTab !== $i) {
+						$prev = $this->propSubTab;
 						$this->propSubTab = $i;
-						$this->subTabFadeStart = microtime(true);
+						$this->beginSubTabSwitch($prev, $i);
 					}
 					$this->propScrollTarget = 0;
 					$this->propScrollOffset = 0;
 					$this->propActiveField = "";
 					return;
 				}
-				$tx += $tw + 4;
+				$tx += $tw + 12;
 			}
 		}
 
@@ -12012,6 +13014,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			elseif ($this->aboutGithubHover) $this->openUrl("https://github.com/Minosuko/FoxyClient");
 			elseif ($this->aboutWebsiteHover) $this->openUrl("https://foxyclient.qzz.io");
 			elseif ($this->aboutContactHover) $this->openUrl("https://github.com/Minosuko/FoxyClient/issues");
+			elseif ($this->foxySecureBtnHover) {
+				$this->foxySecureModalOpen = true;
+				$this->foxySecureAlpha = 0.0;
+			}
 		} elseif ($this->propSubTab === 2) {
 			// Update tab
 			$cw = $this->width - self::SIDEBAR_W;
@@ -12049,6 +13055,35 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			1.0,
 		);
 		$gl->glClear(0x00004000);
+
+		// --- Window minimize/close transition transform ---
+		// Applied around the whole scene so the background, sidebar, content and
+		// titlebar collapse together; the fade overlay is drawn in screen space
+		// after the matrix is popped (see end of render()).
+		$winActive = $this->winAnimMode !== "";
+		if ($winActive) {
+			$e = $this->winAnimT;
+			$e = $e * $e * (3.0 - 2.0 * $e); // smoothstep
+			if ($this->winAnimMode === "minimize") {
+				// Collapse toward the taskbar corner (bottom-left).
+				$scale = 1.0 - 0.45 * $e;
+				$pivotX = $this->width * 0.18;
+				$pivotY = $this->height;
+				$dx = -$pivotX * 0.12 * $e;
+				$dy = $pivotY * 0.30 * $e;
+			} else {
+				// Close: gentle sink + shrink.
+				$scale = 1.0 - 0.05 * $e;
+				$pivotX = $this->width / 2;
+				$pivotY = $this->height / 2;
+				$dx = 0.0;
+				$dy = 16.0 * $e;
+			}
+			$gl->glPushMatrix();
+			$gl->glTranslatef($pivotX + $dx, $pivotY + $dy, 0);
+			$gl->glScalef($scale, $scale, 1.0);
+			$gl->glTranslatef(-$pivotX, -$pivotY, 0);
+		}
 
 		// --- Boot-up Sequence Calculations ---
 		$wA = $this->windowAnim;
@@ -12200,9 +13235,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$gl->glPushMatrix();
 			$gl->glTranslatef(self::SIDEBAR_W, self::TITLEBAR_H, 0);
 			$this->globalAlpha = $contEased * $this->pageAnim;
-			// Unified Page Emergence (Fade + 30px Slide Up)
+			// Unified page emergence: cubic fade plus a directional slide. The
+			// new page enters from the side it sits relative to the old one.
 			$this->globalAlpha = 1.0 - pow(1.0 - $this->pageAnim, 3); // Cubic Alpha
-			$pageSlide = (1.0 - $this->globalAlpha) * 30.0;
+			$pageSlide = (1.0 - $this->globalAlpha) * 28.0 * (float) $this->pageSlideDir;
 			$gl->glTranslatef(0, $pageSlide, 0);
 
 			switch ($this->currentPage) {
@@ -12285,6 +13321,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			if ($this->modInfoModalOpen || $this->modInfoAlpha > 0.01) {
 				$this->renderModInfoModal();
 			}
+			if ($this->foxySecureModalOpen || $this->foxySecureAlpha > 0.01) {
+				$this->renderFoxySecureModal();
+			}
 			if ($this->javaModalOpen) {
 				$this->renderJavaModal();
 			}
@@ -12300,6 +13339,50 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		$this->globalAlpha = 1.0;
+
+		// Fade the collapsing frame into the backdrop, then let the OS take over.
+		if ($winActive) {
+			$gl->glPopMatrix();
+			$this->globalAlpha = 1.0;
+			$e = $this->winAnimT;
+			$fade = min(1.0, pow($e, 1.3) * ($this->winAnimMode === "minimize" ? 0.95 : 1.0));
+			$bg = $this->colors["bg"];
+			$this->drawRect(0, 0, $this->width, $this->height, [$bg[0], $bg[1], $bg[2], $fade]);
+		}
+	}
+
+	// ─── Sub-tab switch animation ───
+	// The content of the incoming sub-tab fades in while sliding from the
+	// direction of travel; the active pill/underline glides between tabs.
+	// isAnyAnimationActive() keeps repainting until SUBTAB_ANIM_DUR elapses.
+
+	/** Record a sub-tab change and its travel direction. */
+	private function beginSubTabSwitch(int $from, int $to): void
+	{
+		$this->subTabFadeStart = microtime(true);
+		$this->subTabAnimDir = ($to === $from) ? 0 : ($to > $from ? 1 : -1);
+		$this->isIdle = false;
+		$this->needsRedraw = true;
+	}
+
+	/**
+	 * Eased [alpha, slideX] for the incoming sub-tab content.
+	 * slideX is in pixels and decays to 0; positive enters from the right.
+	 */
+	private function subTabTransition(): array
+	{
+		if ($this->subTabAnimDir === 0 || $this->subTabFadeStart <= 0) {
+			return [1.0, 0.0];
+		}
+		$t = (microtime(true) - $this->subTabFadeStart) / self::SUBTAB_ANIM_DUR;
+		if ($t >= 1.0) {
+			return [1.0, 0.0];
+		}
+		if ($t < 0.0) {
+			$t = 0.0;
+		}
+		$e = 1.0 - pow(1.0 - $t, 3); // cubic out
+		return [$e, (1.0 - $e) * 24.0 * (float) $this->subTabAnimDir];
 	}
 
 	private function renderSubTabs($tabs, $activeIdx, $hoverIdxBase)
@@ -12312,7 +13395,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Animation Logic
 		$now = microtime(true);
-		$progress = min(1.0, ($now - $this->subTabFadeStart) / 0.25);
+		$progress = min(1.0, ($now - $this->subTabFadeStart) / self::SUBTAB_ANIM_DUR);
 		$eased = 1.0 - pow(1.0 - $progress, 3); // Cubic Out Easing
 
 		// Calculate geometrical targets for all tabs first
@@ -12321,12 +13404,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		foreach ($tabs as $i => $name) {
 			$tw = $this->getTextWidth($name, 1000) + 32;
 			$tabMetrics[$i] = ["x" => $tabX, "w" => $tw];
-			$tabX += $tw + 6;
+			$tabX += $tw + 8; // must match hover/click spacing
 		}
 
 		// Sliding Indicator Logic
 		$levelKey = "lvl_" . $hoverIdxBase;
-		$lastIdx = $this->lastKnownActiveIdx[$levelKey] ?? $activeIdx;
+		if (!isset($this->lastKnownActiveIdx[$levelKey])) {
+			// Seed on first paint so the very first switch can animate.
+			$this->lastKnownActiveIdx[$levelKey] = $activeIdx;
+		}
+		$lastIdx = $this->lastKnownActiveIdx[$levelKey];
 		if ($lastIdx !== $activeIdx) {
 			// If indices don't match, we are in transition
 			$src = $tabMetrics[$lastIdx] ?? $tabMetrics[0];
@@ -12526,48 +13613,60 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 	// ─── HOME PAGE ENGINE ───
 
+	// Single centered frosted launch card that owns the whole Home layout.
+	// Returns [x, y, w, h].
+	private function getHomeCardRect()
+	{
+		$cw = $this->width - self::SIDEBAR_W;
+		$usableH = $this->height - self::TITLEBAR_H;
+		$w = 460;
+		$h = 392;
+		$x = ($cw - $w) / 2;
+		$y = ($usableH - $h) / 2 + 8;
+		if ($y < 24) {
+			$y = 24;
+		}
+		return [$x, $y, $w, $h];
+	}
+
 	// Returns bounds of Account Dropdown (x, y, w, h)
 	private function getHomeAccDropdownRect()
 	{
-		$cw = $this->width - self::SIDEBAR_W;
-		$w = 400;
-		$h = 40;
-		$x = ($cw - $w) / 2;
-		$y = 150 + 80; // Offset for logo
-		return [$x, $y, $w, $h];
+		[$cx, $cy, $cw] = $this->getHomeCardRect();
+		$pad = 28;
+		return [$cx + $pad, $cy + 108, $cw - $pad * 2, 44];
 	}
 
 	private function getHomeUpdateBadgeRect()
 	{
-		$cw = $this->width - self::SIDEBAR_W;
-		$w = 180;
-		$h = 30;
-		$x = ($cw - $w) / 2;
-		$y = 185;
-		return [$x, $y, $w, $h];
+		[$cx, $cy, $cw] = $this->getHomeCardRect();
+		$w = 200;
+		$h = 32;
+		return [$cx + ($cw - $w) / 2, $cy - 44, $w, $h];
 	}
 
 	// Returns bounds of Version Dropdown (x, y, w, h)
 	private function getHomeVerDropdownRect()
 	{
-		$cw = $this->width - self::SIDEBAR_W;
-		$w = 400;
-		$h = 40;
-		$x = ($cw - $w) / 2;
-		$y = 250 + 80; // Offset for logo
-		return [$x, $y, $w, $h];
+		[$cx, $cy, $cw] = $this->getHomeCardRect();
+		$pad = 28;
+		return [$cx + $pad, $cy + 186, $cw - $pad * 2, 44];
+	}
+
+	// Modpack toggle row (label + switch), fabric-only.
+	private function getHomeToggleRect()
+	{
+		[$cx, $cy, $cw] = $this->getHomeCardRect();
+		$pad = 28;
+		return [$cx + $pad, $cy + 248, $cw - $pad * 2, 24];
 	}
 
 	// Returns bounds of Launch Button (x, y, w, h)
 	private function getHomeLaunchRect()
 	{
-		$cw = $this->width - self::SIDEBAR_W;
-		$usableH = $this->height - self::TITLEBAR_H;
-		$w = 300;
-		$h = 60;
-		$x = ($cw - $w) / 2;
-		$y = $usableH - 120;
-		return [$x, $y, $w, $h];
+		[$cx, $cy, $cw] = $this->getHomeCardRect();
+		$pad = 28;
+		return [$cx + $pad, $cy + 300, $cw - $pad * 2, 54];
 	}
 
 	private function getHomeVersions()
@@ -12810,7 +13909,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->isLoggedIn &&
 				!$this->isLaunching &&
 				!$this->isDownloadingAssets &&
-				$this->assetMessage !== "GAME RUNNING" 
+				$this->assetMessage !== "GAME RUNNING" &&
+				$this->accountTypeAllowed(
+					$this->accounts[$this->activeAccount]["Type"] ?? "",
+				)
 			) {
 				$jarPath =
 					$this->settings["game_dir"] .
@@ -12833,16 +13935,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			// Modpack checkbox click - only for Fabric versions
 			$isFabricVersion =
 				stripos($this->selectedVersion, "fabric") !== false;
-			if ($isFabricVersion) {
-				$cbX = ($cw = $this->width - self::SIDEBAR_W)
-					? ($this->width - self::SIDEBAR_W - 250) / 2
-					: 0;
-				$cbY = $vy + $vh + 20;
+			if ($isFabricVersion && !$this->isDownloadingAssets) {
+				[$tgX, $tgY, $tgW, $tgH] = $this->getHomeToggleRect();
 				if (
-					$cx >= $cbX &&
-					$cx <= $cbX + 250 &&
-					$y >= $cbY &&
-					$y <= $cbY + 22
+					$cx >= $tgX &&
+					$cx <= $tgX + $tgW &&
+					$y >= $tgY &&
+					$y <= $tgY + $tgH
 				) {
 					$this->settings["enable_modpack"] = !(
 						$this->settings["enable_modpack"] ?? false
@@ -12932,15 +14031,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			// Modpack checkbox hover - only for Fabric versions
 			$isFabricVersion =
 				stripos($this->selectedVersion, "fabric") !== false;
-			if ($isFabricVersion) {
-				$cw = $this->width - self::SIDEBAR_W;
-				$cbX = ($cw - 250) / 2;
-				$cbY = $vy + $vh + 20;
+			if ($isFabricVersion && !$this->isDownloadingAssets) {
+				[$tgX, $tgY, $tgW, $tgH] = $this->getHomeToggleRect();
 				if (
-					$cx >= $cbX &&
-					$cx <= $cbX + 250 &&
-					$y >= $cbY &&
-					$y <= $cbY + 22
+					$cx >= $tgX &&
+					$cx <= $tgX + $tgW &&
+					$y >= $tgY &&
+					$y <= $tgY + $tgH
 				) {
 					$this->homeHoverIdx = 3;
 				}
@@ -12951,25 +14048,67 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function renderHomePage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
+		[$cardX, $cardY, $cardW, $cardH] = $this->getHomeCardRect();
+		$accCard = $this->colors["primary"];
+		$pcPanel = $this->colors["panel"];
 
-		// Cinematic Branding
-		$this->drawTexture($this->logoTex, ($cw - 80) / 2, 20, 80, 80);
-		
-		$logoText = "FOXY CLIENT";
-		$lw = $this->getTextWidth($logoText, 2000, 2.0);
-		$this->renderText($logoText, ($cw - $lw) / 2, 125, $this->colors["primary"], 2000, 2.0);
-		
-		$subText = "Ready to play.";
-		if (!$this->hasUiUpdate) {
-			$sw = $this->getTextWidth($subText, 3000, 1.2);
-			$this->renderText($subText, ($cw - $sw) / 2, 155, $this->colors["text_dim"], 3000, 1.2);
+		// Soft accent halo + frosted surface: one self-contained launch card.
+		$this->drawRoundedRect($cardX - 18, $cardY - 18, $cardW + 36, $cardH + 36, 28, [$accCard[0], $accCard[1], $accCard[2], 0.045]);
+		$this->drawRoundedRect($cardX - 8, $cardY - 8, $cardW + 16, $cardH + 16, 22, [$accCard[0], $accCard[1], $accCard[2], 0.06]);
+		$this->drawRoundedRect($cardX, $cardY, $cardW, $cardH, 18, [$pcPanel[0], $pcPanel[1], $pcPanel[2], 0.55], $this->colors["stroke_strong"]);
+		$this->drawRoundedRect($cardX + 28, $cardY, 52, 3, 1.5, [$accCard[0], $accCard[1], $accCard[2], 0.9]);
+
+		// Brand row.
+		$logoSize = 34;
+		$logoX = $cardX + 28;
+		$logoY = $cardY + 22;
+		if ($this->logoTex) {
+			$this->drawTexture($this->logoTex, $logoX, $logoY, $logoSize, $logoSize, [1, 1, 1, 1]);
 		}
+		$this->renderText("FOXY CLIENT", $logoX + $logoSize + 12, $logoY + 16, $this->colors["text"], 1500, 0.5);
+		$this->renderText("MINECRAFT LAUNCHER", $logoX + $logoSize + 12, $logoY + 33, $this->colors["text_dim"], 3000, 0.7);
 
-		// Update Badge
+		$this->drawRect($cardX + 28, $cardY + 84, $cardW - 56, 1, $this->colors["divider"]);
+
+		// Update Badge (floats just above the card)
 		if ($this->hasUiUpdate) {
 			[$ux, $uy, $uw, $uh] = $this->getHomeUpdateBadgeRect();
 			$uHover = $this->homeHoverIdx === 4;
 			$this->drawStyledButton($ux, $uy, $uw, $uh, "UPDATE AVAILABLE", $uHover, "success");
+		} elseif ($this->securityTier === self::SEC_UNSIGNED) {
+			// Surface the self-check result when running unsigned.
+			$warn = "UNSIGNED MODE  -  LOCAL ACCOUNTS ONLY";
+			$ww = $this->getTextWidth($warn, 3000, 0.9);
+			$this->renderText(
+				$warn,
+				$cardX + ($cardW - $ww) / 2,
+				$cardY - 22,
+				$this->colors["status_error"],
+				3000,
+				0.9,
+			);
+		} elseif ($this->securityTier === self::SEC_USER) {
+			$warn = "USER SIGNED  -  MICROSOFT / MOJANG LOCKED";
+			$ww = $this->getTextWidth($warn, 3000, 0.9);
+			$this->renderText(
+				$warn,
+				$cardX + ($cardW - $ww) / 2,
+				$cardY - 22,
+				$this->colors["primary"],
+				3000,
+				0.9,
+			);
+		} elseif ($this->securityTier === self::SEC_THIRD_PARTY) {
+			$warn = "THIRD-PARTY SIGNED  -  PARTIAL SECURE";
+			$ww = $this->getTextWidth($warn, 3000, 0.9);
+			$this->renderText(
+				$warn,
+				$cardX + ($cardW - $ww) / 2,
+				$cardY - 22,
+				$this->colors["status_active"],
+				3000,
+				0.9,
+			);
 		}
 
 		// List of rects (sync with handling)
@@ -12977,17 +14116,20 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		[$vx, $vy, $vw, $vh] = $this->getHomeVerDropdownRect();
 		[$lx, $ly, $lw, $lh] = $this->getHomeLaunchRect();
 
-		// Account Section
-		$accLabel = "ACCOUNT";
-		$accLabelW = $this->getTextWidth($accLabel, 3000, 0.8);
-		$this->renderText($accLabel, $ax - $accLabelW - 10, $ay + 18, $this->colors["text_dim"], 3000, 0.8);
+		// Account Section — label above a full-width control.
+		$this->renderText("ACCOUNT", $ax, $ay - 10, $this->colors["text_dim"], 3000, 0.9);
 		$dispName = $this->accountName ?: "Not Logged In";
 		$isAccHover = $this->homeHoverIdx === 0;
 
 		$accIconTex = 0;
+		$accLocked = false;
 		if ($this->isLoggedIn && $this->activeAccount) {
 			$accData = $this->accounts[$this->activeAccount] ?? [];
 			$type = $accData["Type"] ?? self::ACC_OFFLINE;
+			if (!$this->accountTypeAllowed($type)) {
+				$accLocked = true;
+				$dispName .= " (Locked)";
+			}
 			if ($type === self::ACC_MICROSOFT) {
 				$accIconTex = $this->mojangTex;
 			} elseif ($type === self::ACC_ELYBY) {
@@ -13002,15 +14144,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->drawDropdownSelector($ax, $ay, $aw, $ah, $dispName, $this->homeAccDropdownOpen, $isAccHover, $accIconTex);
 
 
-		// Version Section
-		$verLabel = "VERSION";
-		$this->renderText(
-			$verLabel,
-			$vx - $this->getTextWidth($verLabel, 3000) - 10,
-			$vy + 18,
-			$this->colors["text_dim"],
-			3000,
-		);
+		// Version Section — label above a full-width control.
+		$this->renderText("VERSION", $vx, $vy - 10, $this->colors["text_dim"], 3000, 0.9);
 		$isInstalled = false;
 		if ($this->selectedVersion) {
 			$jarPath =
@@ -13058,32 +14193,33 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Modpack Toggle - only show for Fabric versions
 		$isFabricVersion = stripos($this->selectedVersion, "fabric") !== false;
-		if ($isFabricVersion) {
-			$cbX = ($cw - 250) / 2;
-			$cbY = $vy + $vh + 20;
+		if ($isFabricVersion && !$this->isDownloadingAssets) {
+			[$tgX, $tgY, $tgW, $tgH] = $this->getHomeToggleRect();
 			$modpackEnabled =
 				(bool) ($this->settings["enable_modpack"] ?? false);
 			$cbHover = $this->homeHoverIdx === 3;
 
-			$this->drawToggleSwitch($cbX, $cbY, $modpackEnabled, $cbHover, "home:optimize");
+			$this->drawToggleSwitch($tgX, $tgY, $modpackEnabled, $cbHover, "home:optimize");
 
 			$mpLabelColor = $cbHover
 				? $this->colors["text"]
 				: $this->colors["text_dim"];
 			$this->renderText(
-				"Enable FoxyClient Optimize",
-				$cbX + 54,
-				$cbY + 16,
+				"FoxyClient Optimize",
+				$tgX + 54,
+				$tgY + 16,
 				$mpLabelColor,
 				1000,
 			);
 		}
 
 		// Launch Button
-		$canLaunch = $this->isLoggedIn;
+		$canLaunch = $this->isLoggedIn && !$accLocked;
 		$btnStyle = $canLaunch ? "success" : "secondary";
-		
-		if ($this->assetMessage === "GAME RUNNING") {
+
+		if ($accLocked) {
+			$btnStyle = "secondary";
+		} elseif ($this->assetMessage === "GAME RUNNING") {
 			$btnStyle = "danger";
 		} elseif ($this->isDownloadingAssets) {
 			$btnStyle = "success";
@@ -13092,7 +14228,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$isHover = $this->homeHoverIdx === 2 && $canLaunch;
 
 		$lText = "LAUNCH";
-		if ($this->assetMessage === "GAME RUNNING") {
+		if ($accLocked) {
+			$lText = "ACCOUNT LOCKED";
+		} elseif ($this->assetMessage === "GAME RUNNING") {
 			$lText = "GAME RUNNING";
 		} elseif ($this->isDownloadingAssets) {
 			$lText = "DOWNLOADING...";
@@ -13109,14 +14247,37 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			}
 		}
 
+		// Context hint above the launch button (hidden mid-download).
+		if ($accLocked) {
+			$hintType = $this->accounts[$this->activeAccount]["Type"] ?? self::ACC_OFFLINE;
+			$tierLabel = [
+				self::SEC_UNSIGNED => "UNSIGNED MODE",
+				self::SEC_USER => "USER SIGNED MODE",
+				self::SEC_THIRD_PARTY => "THIRD-PARTY MODE",
+				self::SEC_AUTHENTIC => "AUTHENTIC MODE",
+			][$this->securityTier] ?? "THIS MODE";
+			$hint =
+				strtoupper($this->accountTypeLabel($hintType)) .
+				" LOCKED IN " .
+				$tierLabel;
+			$hintW = $this->getTextWidth($hint, 3000, 1.1);
+			$this->renderText($hint, ($cw - $hintW) / 2, $ly - 18, $this->colors["status_error"], 3000, 1.1);
+		} elseif (!$this->isDownloadingAssets && $this->selectedVersion) {
+			$hint = "MINECRAFT " . $this->selectedVersion . "  /  " . strtoupper($modLoader) . " LOADER";
+			$hintW = $this->getTextWidth($hint, 3000, 1.2);
+			$this->renderText($hint, ($cw - $hintW) / 2, $ly - 18, $this->colors["text_dim"], 3000, 1.2);
+		}
+
 		$this->drawStyledButton($lx, $ly, $lw, $lh, $lText, $isHover, $btnStyle, 2000);
 
-		// Progress Bar on Home Page
+		// Progress Bar on Home Page (sits in the hint slot above the button)
 		if ($this->isDownloadingAssets) {
-			$barW = 400;
+			$barW = $lw;
 			$barH = 6;
-			$barX = ($cw - $barW) / 2;
-			$barY = $ly - 30;
+			$barX = $lx;
+			$barY = $ly - 26;
+			$msg = $this->assetMessage ?: "DOWNLOADING VERSION...";
+			$this->renderText($msg, $barX, $barY - 10, $this->colors["text_dim"], 3000);
 			$this->drawRoundedRect($barX, $barY, $barW, $barH, 3, $this->colors["surface_alt"], $this->colors["stroke"]);
 			$this->drawRoundedRect(
 				$barX,
@@ -13125,15 +14286,6 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$barH,
 				3,
 				$this->colors["primary"],
-			);
-
-			$msg = $this->assetMessage ?: "DOWNLOADING VERSION...";
-			$this->renderText(
-				$msg,
-				$barX,
-				$barY + $barH + 18,
-				$this->colors["text_dim"],
-				3000,
 			);
 		}
 
@@ -13179,12 +14331,19 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 				if ($tex) {
 					$this->drawTexture($tex, $ax + 12, $itemY + 8, 24, 24);
-					$name = $accData["Username"] ?? "Unknown";
-					$this->renderText($name, $ax + 44, $itemY + 26, $this->colors["text"], 1000);
-				} else {
-					$name = $accData["Username"] ?? "Unknown";
-					$this->renderText($name, $ax + 16, $itemY + 26, $this->colors["text"], 1000);
 				}
+				$isLockedItem = !$this->accountTypeAllowed($type);
+				$name = $accData["Username"] ?? "Unknown";
+				if ($isLockedItem) {
+					$name .= "  (locked)";
+				}
+				$this->renderText(
+					$name,
+					$ax + ($tex ? 44 : 16),
+					$itemY + 26,
+					$isLockedItem ? $this->colors["status_error"] : $this->colors["text"],
+					1000,
+				);
 				$i++;
 			}
 
@@ -13316,9 +14475,6 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function renderFoxyClientPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		
-		// Sub-Tab Alpha (Fade In)
-		$subTabAlpha = min(1.0, (microtime(true) - $this->subTabFadeStart) / 0.25);
 
 		$descs = [
 			"Manage built-in optimization mods",
@@ -13386,6 +14542,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 		$h = $usableH - $footerH - $y;
 
+		// Content transition: fade in + slide from the direction of travel.
+		[$subAlpha, $subSlide] = $this->subTabTransition();
+		$gl = $this->opengl32;
+		$gl->glPushMatrix();
+		$gl->glTranslatef($subSlide, 0, 0);
+		$this->globalAlpha = $subAlpha;
+
 		switch ($this->foxySubTab) {
 			case 0: // Modpack
 				$this->renderFoxyModpackTab($y, $h, $cw);
@@ -13397,6 +14560,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->renderFoxyCosmeticsTab($y, $h, $cw);
 				break;
 		}
+
+		$this->globalAlpha = 1.0;
+		$gl->glPopMatrix();
 
 
 	}
@@ -14333,22 +15499,28 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	}
 
 	/**
-	 * Reusable gradient page header with top accent and bottom divider.
+	 * Reusable page header: flat Fluent surface with an accent rail, a soft
+	 * bottom edge and a clear title/subtitle hierarchy shared by every page.
 	 */
 	private function drawPageHeader($title, $subtitle, $rightContent = null)
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		
-		// Header background with bottom divider (flat Fluent surface)
+
+		// Header surface with a faint accent wash behind the title block.
 		$this->drawRect(0, 0, $cw, self::HEADER_H, $this->colors["header_bg"]);
+		$acc = $this->colors["primary"];
+		$this->drawRect(0, 0, 220, self::HEADER_H, [$acc[0], $acc[1], $acc[2], 0.05]);
 		$this->drawRect(0, self::HEADER_H - 1, $cw, 1, $this->colors["divider"]);
 
+		// Accent rail marks the start of the title block.
+		$this->drawRoundedRect(self::PAD, 20, 3, 30, 1.5, $this->colors["primary"]);
+
 		// Title: Win11 title text (primary-on-surface, semibold)
-		$this->renderText($title, self::PAD, 35, $this->colors["text"], 1500, 0.4);
+		$this->renderText($title, self::PAD + 14, 34, $this->colors["text"], 1500, 0.4);
 		
 		// Subtitle: secondary caption
 		if ($subtitle !== "") {
-			$this->renderText($subtitle, self::PAD, 55, $this->colors["text_dim"], 3000, 0.3);
+			$this->renderText($subtitle, self::PAD + 14, 54, $this->colors["text_dim"], 3000, 0.3);
 		}
 	}
 
@@ -14373,6 +15545,10 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		]);
 		if ($isActive) {
 			$this->drawRoundedRect($x + 1, $y + 10, 3, max(10, $h - 20), 1.5, $this->colors["primary"]);
+		} elseif ($isHover) {
+			// Subtle accent rail previews selection on hover.
+			$pc = $this->colors["primary"];
+			$this->drawRoundedRect($x + 1, $y + 12, 2, max(8, $h - 24), 1.0, [$pc[0], $pc[1], $pc[2], 0.55]);
 		}
 	}
 
@@ -14515,14 +15691,68 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				["id" => self::ACC_ELYBY, "name" => "ELY.BY ACCOUNT"],
 			];
 			foreach ($types as $type) {
+				$isLocked = !$this->accountTypeAllowed($type["id"]);
 				// Adjust hover check for sidebar width
 				$isHover =
+					!$isLocked &&
 					$this->mouseY >= $y + self::TITLEBAR_H &&
 					$this->mouseY <= $y + 40 + self::TITLEBAR_H &&
 					$this->mouseX >= $boxX + self::SIDEBAR_W &&
 					$this->mouseX <= $boxX + self::SIDEBAR_W + $boxW;
-				$this->drawStyledButton($boxX, $y, $boxW, 40, $type["name"], $isHover, "secondary");
+				if ($isLocked) {
+					// Dimmed surface, left-aligned label, right-aligned LOCKED pill.
+					$this->drawRoundedRect($boxX, $y, $boxW, 40, 6, $this->colors["button"], $this->colors["stroke"]);
+					$ov = $this->colors["bg"];
+					$this->drawRoundedRect($boxX, $y, $boxW, 40, 6, [$ov[0], $ov[1], $ov[2], 0.55]);
+					$this->renderText(str_replace(" ACCOUNT", "", $type["name"]), $boxX + 16, $y + 25, $this->colors["text_dim"], 1000);
+					$lockLabel = "LOCKED";
+					$lockW = $this->getTextWidth($lockLabel, 3000, 0.8);
+					$this->renderText(
+						$lockLabel,
+						$boxX + $boxW - $lockW - 16,
+						$y + 25,
+						$this->colors["status_error"],
+						3000,
+						0.8,
+					);
+				} else {
+					$this->drawStyledButton($boxX, $y, $boxW, 40, $type["name"], $isHover, "secondary");
+				}
 				$y += 50;
+			}
+			if ($this->securityTier === self::SEC_UNSIGNED) {
+				$warn = "UNSIGNED MODE  -  LOCAL ACCOUNTS ONLY";
+				$ww = $this->getTextWidth($warn, 3000, 0.9);
+				$this->renderText(
+					$warn,
+					($cw - $ww) / 2,
+					410,
+					$this->colors["status_error"],
+					3000,
+					0.9,
+				);
+			} elseif ($this->securityTier === self::SEC_USER) {
+				$warn = "USER SIGNED  -  MICROSOFT / MOJANG LOCKED";
+				$ww = $this->getTextWidth($warn, 3000, 0.9);
+				$this->renderText(
+					$warn,
+					($cw - $ww) / 2,
+					410,
+					$this->colors["primary"],
+					3000,
+					0.9,
+				);
+			} elseif ($this->securityTier === self::SEC_THIRD_PARTY) {
+				$warn = "THIRD-PARTY SIGNED  -  PARTIAL SECURE";
+				$ww = $this->getTextWidth($warn, 3000, 0.9);
+				$this->renderText(
+					$warn,
+					($cw - $ww) / 2,
+					410,
+					$this->colors["status_active"],
+					3000,
+					0.9,
+				);
 			}
 			return;
 		}
@@ -14740,7 +15970,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		
 		$this->drawPageHeader("VERSION MANAGER", "Select target Minecraft version");
 
-		// Category Tabs
+		// Category Tabs — segmented control with an accent-tinted active pill.
 		$y = 100;
 		$cats = ["RELEASES", "SNAPSHOTS", "MODIFIED"];
 		$tx = self::PAD;
@@ -14754,13 +15984,19 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$isHover = $this->vTabHover === $i;
 			$tw = $this->getTextWidth($cat, 1000) + 30;
 
+			// Segment chip inset inside the tab cell (hit area stays full cell).
+			$segX = $tx + 4;
+			$segY = $y + 5;
+			$segW = $tw - 8;
+			$segH = self::TAB_H - 10;
+			$accTab = $this->colors["primary"];
+
 			if ($isActive) {
-				$this->drawRect($tx, $y, $tw, self::TAB_H, $this->colors["tab_active"]);
-				$this->drawRect($tx, $y + self::TAB_H - 3, $tw, 3, $this->colors["primary"]);
+				$this->drawRoundedRect($segX, $segY, $segW, $segH, 7, $this->colors["sidebar_active"], [$accTab[0], $accTab[1], $accTab[2], 0.5]);
 				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text"], 1000);
 			} else {
 				if ($isHover) {
-					$this->drawRect($tx, $y, $tw, self::TAB_H, $this->colors["card_hover"]);
+					$this->drawRoundedRect($segX, $segY, $segW, $segH, 7, $this->colors["card_hover"]);
 				}
 				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text_dim"], 1000);
 			}
@@ -14818,23 +16054,57 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$jarPath = $this->settings["game_dir"] . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $v["id"] . DIRECTORY_SEPARATOR . $v["id"] . ".jar";
 				$isVersionInstalled = file_exists($jarPath);
 
-				$this->drawCard(self::PAD, $vy, $cw - self::PAD * 2, $cardH, $isHover, $isSelected);
+				$cardW = $cw - self::PAD * 2;
+				$this->drawCard(self::PAD, $vy, $cardW, $cardH, $isHover, $isSelected);
 
+				$tileActive = $isSelected || $isHover;
+				$accV = $this->colors["primary"];
 
-				$textColor = $isSelected || $isHover ? $this->colors["text"] : $this->colors["text_dim"];
-				$this->renderText($v["id"], self::PAD + 16, $vy + 32, $textColor, 2000);
+				// Leading loader tile: regular Minecraft icon for vanilla
+				// releases/snapshots, the mod-loader mark for modified builds.
+				$idLowV = strtolower($v["id"]);
+				$vKey = "vanilla";
+				if (strpos($idLowV, "neoforge") !== false) {
+					$vKey = "neoforge";
+				} elseif (strpos($idLowV, "forge") !== false) {
+					$vKey = "forge";
+				} elseif (strpos($idLowV, "fabric") !== false) {
+					$vKey = "fabric";
+				} elseif (strpos($idLowV, "quilt") !== false) {
+					$vKey = "quilt";
+				} elseif (strpos($idLowV, "optifine") !== false) {
+					$vKey = "optifine";
+				}
 
+				$tileS = 36;
+				$tileX = self::PAD + 12;
+				$tileY = $vy + ($cardH - $tileS) / 2;
+				$tileBg = $tileActive ? [$accV[0], $accV[1], $accV[2], 0.14] : $this->colors["surface_alt"];
+				$this->drawRoundedRect($tileX, $tileY, $tileS, $tileS, 9, $tileBg, $tileActive ? [$accV[0], $accV[1], $accV[2], 0.45] : $this->colors["stroke"]);
+				$loaderTex = $this->verIcons[$vKey] ?? 0;
+				if ($loaderTex) {
+					$this->drawTexture($loaderTex, $tileX + 6, $tileY + 6, $tileS - 12, $tileS - 12, [1, 1, 1, 1]);
+				} else {
+					$this->renderIcon(0xf135, $tileX + 7, $tileY + 25, $tileActive ? $accV : $this->colors["text_dim"], 22);
+				}
+
+				// Title only, vertically centred in the row.
+				$textX = $tileX + $tileS + 14;
+				$this->renderText($v["id"], $textX, $vy + $cardH / 2 + 6, $this->colors["text"], 1500, 0.3);
+
+				// Status pill on the right.
 				$statusText = $isVersionInstalled ? "INSTALLED" : "AVAILABLE";
-				$statusColor = $isVersionInstalled ? $this->colors["status_update"] : $this->colors["text_dim"];
-				
-				// Status text
-				$this->renderText($statusText, $cw - self::PAD - 120, $vy + 32, $statusColor, 1000);
-				
-				// Type badge
-				$type = ucfirst($v["type"]);
-				$twType = $this->getTextWidth($type, 3000) + 12;
-				$this->drawRect($cw - self::PAD - 140 - $twType, $vy + 20, $twType, 16, [0,0,0,0.2]);
-				$this->renderText($type, $cw - self::PAD - 140 - $twType + 6, $vy + 31, $this->colors["text_dim"], 3000);
+				$statusColor = $isVersionInstalled ? $this->colors["status_active"] : $this->colors["text_dim"];
+				$sPillW = $this->getTextWidth($statusText, 3000) + 26;
+				$sPillX = self::PAD + $cardW - 14 - $sPillW;
+				$sPillY = $vy + ($cardH - 22) / 2;
+				$this->drawRoundedRect($sPillX, $sPillY, $sPillW, 22, 11, [$statusColor[0], $statusColor[1], $statusColor[2], 0.15], [$statusColor[0], $statusColor[1], $statusColor[2], 0.35]);
+				$this->renderText($statusText, $sPillX + 13, $sPillY + 15, $statusColor, 3000, 0.5);
+
+				// Selected marker sits just left of the status pill.
+				if ($isSelected) {
+					$this->renderIcon(0xe5ca, $sPillX - 28, $vy + 34, $accV, 20);
+				}
 			}
 			$vy += $cardH + $gap;
 		}
@@ -14854,8 +16124,22 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$jarPath = $this->settings["game_dir"] . DIRECTORY_SEPARATOR . "versions" . DIRECTORY_SEPARATOR . $this->selectedVersion . DIRECTORY_SEPARATOR . $this->selectedVersion . ".jar";
 			$isInstalled = file_exists($jarPath);
 		}
-		$statusBadge = $this->selectedVersion ? ($isInstalled ? "(INSTALLED)" : "(AVAILABLE)") : "";
-		$this->renderText("Current Selection: " . ($this->selectedVersion ?: "None") . " " . $statusBadge, self::PAD, $actionY + 25, $this->colors["text"], 1000);
+
+		// Selection summary: caption + version name + status pill on one line.
+		$this->renderText("SELECTED", self::PAD, $actionY + 30, $this->colors["text_dim"], 3000, 0.7);
+		$capW = $this->getTextWidth("SELECTED", 3000, 0.7);
+		$sumX = self::PAD + $capW + 12;
+		$selName = $this->selectedVersion ?: "None";
+		$this->renderText($selName, $sumX, $actionY + 30, $this->colors["text"], 1500, 0.3);
+		if ($this->selectedVersion) {
+			$stText = $isInstalled ? "INSTALLED" : "AVAILABLE";
+			$stColor = $isInstalled ? $this->colors["status_active"] : $this->colors["text_dim"];
+			$stW = $this->getTextWidth($stText, 3000) + 24;
+			$stX = $sumX + $this->getTextWidth($selName, 1500, 0.3) + 14;
+			$stY = $actionY + 18;
+			$this->drawRoundedRect($stX, $stY, $stW, 22, 11, [$stColor[0], $stColor[1], $stColor[2], 0.15], [$stColor[0], $stColor[1], $stColor[2], 0.35]);
+			$this->renderText($stText, $stX + 12, $stY + 15, $stColor, 3000, 0.5);
+		}
 
 		if ($this->isDownloadingAssets) {
 			$barW = $cw - self::PAD * 2;
@@ -15309,6 +16593,13 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$isAddHover = $this->accHoverIndex === "add_btn";
 		$this->drawStyledButton($addBtnX, $addBtnY, $addBtnW, $addBtnH, "+ ADD ACCOUNT", $isAddHover, "success");
 
+		// Section caption with profile count.
+		$profileCount = count($this->accounts);
+		$this->renderText("YOUR PROFILES", self::PAD, 100, $this->colors["text_dim"], 3000, 0.7);
+		$cntLabel = $profileCount . " PROFILE" . ($profileCount === 1 ? "" : "S");
+		$cntW = $this->getTextWidth($cntLabel, 3000, 0.7);
+		$this->renderText($cntLabel, $cw - self::PAD - $cntW, 100, $this->colors["text_dim"], 3000, 0.7);
+
 		$listTop = 110;
 		$usableH = $this->height - self::TITLEBAR_H;
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
@@ -15348,6 +16639,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					$tex = $this->localTex;
 					$typeLabel = "Local";
 					$typeColor = [0.5, 0.3, 0.9];
+				}
+
+				// The active tier locks account types it does not trust.
+				if (!$this->accountTypeAllowed($type)) {
+					$typeLabel .= " - LOCKED";
+					$typeColor = $this->colors["status_error"];
 				}
 
 				// Small head/icon placeholder
@@ -15421,23 +16718,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function renderPropertiesPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		
-		// Sub-Tab Alpha (Fade In)
-		$subTabAlpha = min(1.0, (microtime(true) - $this->subTabFadeStart) / 0.25);
-		$this->renderText(
-			"PROPERTIES",
-			self::PAD,
-			45,
-			$this->colors["primary"],
-			2000,
-		);
-		$this->renderText(
-			"Configure FoxyClient and Minecraft settings",
-			self::PAD,
-			62,
-			$this->colors["text_dim"],
-			1000,
-		);
+
+		$this->drawPageHeader("PROPERTIES", "Configure FoxyClient and Minecraft settings");
 
 		// Sub-tabs
 		$y = self::HEADER_H;
@@ -15450,26 +16732,49 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->colors["divider"],
 		);
 
-		$tx = self::PAD;
 		$cats = ["Minecraft", "Launcher", "Update", "About"];
+		$tabMetrics = [];
+		$tx = self::PAD;
 		foreach ($cats as $i => $cat) {
-			$isActive = $this->propSubTab === $i;
-			$isHover = $this->propTabHover === $i;
 			$tw = strlen($cat) * 8 + 30;
-
-			if ($isActive) {
-				// Active tab: subtle surface + accent underline (Win11 pivot)
-				$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 4, $this->colors["surface_alt"]);
-				$this->drawRoundedRect($tx + 10, $y + self::TAB_H - 3, max(12, $tw - 20), 3, 1.5, $this->colors["primary"]);
-				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text"], 1000, 0.2);
-			} else {
-				if ($isHover) {
-					// Soft hover surface
-					$this->drawRoundedRect($tx, $y + 5, $tw, self::TAB_H - 10, 4, $this->colors["surface_alt"]);
-				}
-				$this->renderText($cat, $tx + 15, $y + 26, $this->colors["text_dim"], 1000, 0.2);
-			}
+			$tabMetrics[$i] = ["x" => $tx, "w" => $tw];
 			$tx += $tw + 12; // Increased spacing for capsules
+		}
+
+		// Glide the active pill/underline between tabs (same clock as content).
+		$propProg = min(1.0, (microtime(true) - $this->subTabFadeStart) / self::SUBTAB_ANIM_DUR);
+		$propEased = 1.0 - pow(1.0 - $propProg, 3);
+		$propKey = "lvl_prop";
+		if (!isset($this->lastKnownActiveIdx[$propKey])) {
+			$this->lastKnownActiveIdx[$propKey] = $this->propSubTab;
+		}
+		$propLast = $this->lastKnownActiveIdx[$propKey];
+		if ($propLast !== $this->propSubTab && isset($tabMetrics[$propLast], $tabMetrics[$this->propSubTab])) {
+			$pSrc = $tabMetrics[$propLast];
+			$pTgt = $tabMetrics[$this->propSubTab];
+			$pillX = $pSrc["x"] + ($pTgt["x"] - $pSrc["x"]) * $propEased;
+			$pillW = $pSrc["w"] + ($pTgt["w"] - $pSrc["w"]) * $propEased;
+			if ($propProg >= 1.0) {
+				$this->lastKnownActiveIdx[$propKey] = $this->propSubTab;
+			}
+		} else {
+			$pm = $tabMetrics[$this->propSubTab] ?? $tabMetrics[0];
+			$pillX = $pm["x"];
+			$pillW = $pm["w"];
+		}
+
+		// Active tab: subtle surface + accent underline (Win11 pivot), gliding.
+		$this->drawRoundedRect($pillX, $y + 5, $pillW, self::TAB_H - 10, 4, $this->colors["surface_alt"]);
+		$this->drawRoundedRect($pillX + 10, $y + self::TAB_H - 3, max(12, $pillW - 20), 3, 1.5, $this->colors["primary"]);
+
+		foreach ($cats as $i => $cat) {
+			$metric = $tabMetrics[$i];
+			$isActive = $this->propSubTab === $i;
+			if (!$isActive && $this->propTabHover === $i) {
+				// Soft hover surface
+				$this->drawRoundedRect($metric["x"], $y + 5, $metric["w"], self::TAB_H - 10, 4, $this->colors["surface_alt"]);
+			}
+			$this->renderText($cat, $metric["x"] + 15, $y + 26, $isActive ? $this->colors["text"] : $this->colors["text_dim"], 1000, 0.2);
 		}
 
 		// Content Area
@@ -15491,6 +16796,11 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$clipH
 		);
 
+		[$subAlpha, $subSlide] = $this->subTabTransition();
+		$gl->glPushMatrix();
+		$gl->glTranslatef($subSlide, 0, 0);
+		$this->globalAlpha = $subAlpha;
+
 		if ($this->propSubTab === 0) {
 			$this->renderPropertiesMinecraft($drawY);
 		} elseif ($this->propSubTab === 1) {
@@ -15500,6 +16810,9 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		} elseif ($this->propSubTab === 3) {
 			$this->renderPropertiesAbout($drawY);
 		}
+
+		$this->globalAlpha = 1.0;
+		$gl->glPopMatrix();
 
 		$gl->glDisable(0x0c11);
 
@@ -15532,7 +16845,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 
 		// Premium Capsule Scrollbar logic
 		$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
-		$maxScroll = 400; // Increased for more rows
+		$maxScroll = 200; // Matches the scroll clamp and drag limits.
 		if ($this->propScrollTarget > 0 || $this->propScrollOffset > 0) {
 			$barW = 6;
 			$barX = $cw - 12;
@@ -16277,6 +17590,21 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		$this->renderLink("Website", "https://foxyclient.qzz.io", self::PAD + 10, $y, $this->aboutWebsiteHover);
 		$y += 25;
 		$this->renderLink("Contact", "https://github.com/Minosuko/FoxyClient/issues", self::PAD + 10, $y, $this->aboutContactHover);
+
+		// FoxySecure info button - opens the integrity report as a modal.
+		$y += 33;
+		$fsW = 220;
+		$fsH = 36;
+		$this->drawStyledButton(
+			self::PAD,
+			$y,
+			$fsW,
+			$fsH,
+			"FOXYSECURE INFO",
+			$this->foxySecureBtnHover,
+			"primary",
+			3000,
+		);
 	}
 
 	private function renderLink($label, $url, $x, $y, $isHover)
@@ -16302,17 +17630,20 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	private function renderModsPage()
 	{
 		$cw = $this->width - self::SIDEBAR_W;
-		
-		// Sub-Tab Alpha (Fade In)
-		$subTabAlpha = min(1.0, (microtime(true) - $this->subTabFadeStart) / 0.25);
 
 		$this->drawPageHeader("EXPLORE", "Explore and install community content seamlessly.");
-		
+
+		// ── Explore toolbar ──────────────────────────────────────────────
+		// One surface groups the view selector, filters and search so the top
+		// of the page reads as a single control cluster.
+		$this->drawRect(0, self::HEADER_H, $cw, 90, $this->colors["tab_bg"]);
+		$this->drawRect(0, self::HEADER_H + 89, $cw, 1, $this->colors["divider"]);
+
 		$tabs = ["MODS", "SHADERS", "RESOURCE PACKS", "MODPACKS", "INST. MODS", "INST. SHADERS", "INST. RES. PACKS", "INST. MODPACKS"];
 		
-		// Dropdown Selector (Lunar Style)
+		// View selector: segmented-control look with an accent rail.
 		$curTabName = $tabs[$this->modpackSubTab] ?? "MODS";
-		$selW = $this->getTextWidth($curTabName, 3000) + 40;
+		$selW = $this->getTextWidth($curTabName, 3000) + 52;
 		$selX = self::PAD;
 		$selY = self::HEADER_H + 10;
 		$selH = 36;
@@ -16322,14 +17653,16 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		
 		$selBg = $this->explorerSubTabDropdownOpen ? $this->colors["surface_alt"] : ($isHover ? $this->colors["button_hover"] : $this->colors["button"]);
 		$selBorder = $this->explorerSubTabDropdownOpen ? $this->colors["primary"] : $this->colors["stroke"];
-		$this->drawRoundedRect($selX, $selY, $selW, $selH, 4, $selBg, $selBorder);
-		$tc = $this->explorerSubTabDropdownOpen ? $this->colors["text"] : $this->colors["text"];
-		$this->renderText($curTabName, $selX + 12, $selY + 24, $tc, 3000);
+		$this->drawRoundedRect($selX, $selY, $selW, $selH, 6, $selBg, $selBorder);
+		$pcSel = $this->colors["primary"];
+		$this->drawRoundedRect($selX + 5, $selY + 9, 3, $selH - 18, 1.5, [$pcSel[0], $pcSel[1], $pcSel[2], $this->explorerSubTabDropdownOpen ? 1.0 : 0.55]);
+		$tc = $this->colors["text"];
+		$this->renderText($curTabName, $selX + 16, $selY + 24, $tc, 3000);
 		$this->renderIcon($this->explorerSubTabDropdownOpen ? 0xe5c7 : 0xe5c5, $selX + $selW - 24, $selY + 24, $tc, 20);
 		
 		$this->explorerSubTabSelectorRect = [$selX, $selY, $selW, $selH];
 
-		// --- Search Bar Positioning (Lunar Style: Right Aligned) ---
+		// --- Search Bar Positioning (Right Aligned) ---
 		$searchW = 300;
 		$searchX = $cw - self::PAD - $searchW;
 		$searchY = self::HEADER_H + 8;
@@ -16338,13 +17671,20 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		
 		$this->renderSearchBar($searchX, $searchY, $searchW, 40, $this->modSearchQuery, $this->modSearchFocus, $placeholder);
 
+		// Content transition: slide from the direction of travel. Alpha is owned
+		// per-branch (modrinthAnim for discovery, $subAlpha for installed tabs).
+		[$subAlpha, $subSlide] = $this->subTabTransition();
+		$gl = $this->opengl32;
+		$gl->glPushMatrix();
+		$gl->glTranslatef($subSlide, 0, 0);
+
 		if ($this->modpackSubTab >= 4) {
 			$type = 'mods';
 			if ($this->modpackSubTab === 5) $type = 'shaders';
 			elseif ($this->modpackSubTab === 6) $type = 'textures';
 			elseif ($this->modpackSubTab === 7) $type = 'packs';
 			
-			$this->renderManagedContentTab($type, self::HEADER_H + 54, $subTabAlpha);
+			$this->renderManagedContentTab($type, self::HEADER_H + 90, $subAlpha);
 		} else {
 			// Filter Pills Data (Only show for Discovery tabs 0-3)
 			$cleanVer = str_replace(
@@ -16401,22 +17741,19 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				];
 			}
 
-			// Calculate total width to right-align next to search bar
-			$pillGap = 6;
+			// Second toolbar row: filters rendered as chips, left aligned.
+			$pillGap = 8;
 			$pillWidths = [];
-			$totalW = 0;
 			foreach ($pills as $pill) {
 				$display = $pill[0] . ": " . $pill[2];
-				$tw = $this->getTextWidth($display, 3000) + 36;
-				$pillWidths[] = $tw;
-				$totalW += $tw;
+				$pillWidths[] = $this->getTextWidth($display, 3000) + 40;
 			}
-			$totalW += ($pillGap * (count($pills) - 1));
 
-			// Rendering pills
-			$pillH = 24;
-			$pillY = self::HEADER_H + 16; 
-			$pillX = $searchX - 15 - $totalW; 
+			$pillH = 26;
+			$pillY = self::HEADER_H + 52;
+			$filterCaption = "FILTERS";
+			$this->renderText($filterCaption, self::PAD, $pillY + 18, $this->colors["text_dim"], 3000, 0.6);
+			$pillX = self::PAD + $this->getTextWidth($filterCaption, 3000) + 14;
 
 			$this->modsFilterPillRects = []; 
 			foreach ($pills as $pi => $pill) {
@@ -16444,23 +17781,23 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$prop = $propMap[$key] ?? "";
 				$isActive = $prop !== "" && !empty($this->$prop);
 
-				// Pill background
+				// Chip background (pill radius, accent tint when active)
 				$bg = $isOpen ? $this->colors["surface_alt"] : ($isActive ? $this->colors["pill_active"] : $this->colors["pill_bg"]);
-				$this->drawRoundedRect($pillX, $pillY, $tw, $pillH, 4, $bg, $isOpen ? $this->colors["primary"] : $this->colors["stroke"]);
+				$this->drawRoundedRect($pillX, $pillY, $tw, $pillH, $pillH / 2, $bg, $isOpen ? $this->colors["primary"] : $this->colors["stroke"]);
 
 				// Pill text
 				$tc = $isOpen ? $this->colors["text"] : ($isActive ? $this->colors["primary"] : $this->colors["text_dim"]);
-				$this->renderText($display, $pillX + 10, $pillY + 16, $tc, 3000, 0);
+				$this->renderText($display, $pillX + 14, $pillY + 17, $tc, 3000, 0);
 
 				// Down arrow
 				$arrowX = $pillX + $tw - 20;
-				$this->renderIcon($isOpen ? 0xe316 : 0xe313, $arrowX, $pillY + 16, $tc, 18);
+				$this->renderIcon($isOpen ? 0xe316 : 0xe313, $arrowX, $pillY + 17, $tc, 18);
 
 				$this->modsFilterPillRects[$key] = [$pillX, $pillY, $tw, $pillH];
 				$pillX += $tw + $pillGap;
 			}
 
-			$y = self::HEADER_H + 54;
+			$y = self::HEADER_H + 90;
 			$usableH = $this->height - self::TITLEBAR_H;
 			$footerH = $this->getFooterVisibility() ? self::FOOTER_H : 0;
 			$h = $usableH - $footerH - $y;
@@ -16473,9 +17810,12 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			$this->renderModList();
 		}
 
+		$gl->glPopMatrix();
+		$this->globalAlpha = 1.0; // drawLocalModCard leaves it at the tab alpha
+
 		// Install progress overlay (Always show if installing a modpack)
 		if ($this->isInstallingModpack || (isset($this->modpackInstallProgress) && $this->modpackInstallProgress !== "")) {
-			$progY = self::HEADER_H + 54;
+			$progY = self::HEADER_H + 90;
 			$isDone = !$this->isInstallingModpack && !str_starts_with($this->modpackInstallProgress, "Error");
 			$isErr = str_starts_with($this->modpackInstallProgress, "Error");
 			
@@ -17130,7 +18470,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		$usableH = $this->height - self::TITLEBAR_H;
-		$y = self::HEADER_H + 54;
+		$y = self::HEADER_H + 90;
 
 		if ($this->currentPage === self::PAGE_MODS && ($this->modpackSubTab === 1 || $this->modpackSubTab === 2) && ($this->isInstallingModpack || $this->modpackInstallProgress !== "")) {
 			$y += 46;
@@ -17168,11 +18508,22 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 					}
 				}
 			} elseif (!empty($this->modrinthError)) {
-				$this->renderText("ERROR", $cw / 2 - 30, $y + 50, [1.0, 0.3, 0.3], 2000);
-				$this->renderText($this->modrinthError, $cw / 2 - 100, $y + 75, $this->colors["text_dim"], 1000);
+				$ey = $y + 36;
+				$errC = $this->colors["status_error"];
+				$this->drawRoundedRect($cw / 2 - 26, $ey, 52, 52, 12, $this->tint($errC, 0.12), $this->tint($errC, 0.4));
+				$this->renderIcon(0xe8b6, $cw / 2 - 13, $ey + 34, $errC, 26);
+				$et = "COULD NOT LOAD RESULTS";
+				$this->renderText($et, ($cw - $this->getTextWidth($et, 2000)) / 2, $ey + 92, $this->colors["text"], 2000);
+				$this->renderText($this->modrinthError, ($cw - $this->getTextWidth($this->modrinthError, 3000)) / 2, $ey + 116, $this->colors["text_dim"], 3000);
 			} elseif (empty($this->modrinthSearchResults) && !$this->isSearchingModrinth) {
-				$this->renderText("NO RESULTS FOUND", $cw / 2 - 80, $y + 60, $this->colors["text_dim"], 2000);
-				$this->renderText("Try a different search term", $cw / 2 - 100, $y + 85, $this->colors["text_dim"], 1000);
+				// Designed empty state: soft icon tile + headline + hint.
+				$ey = $y + 36;
+				$this->drawRoundedRect($cw / 2 - 26, $ey, 52, 52, 12, $this->colors["surface_alt"], $this->colors["stroke"]);
+				$this->renderIcon(0xe8b6, $cw / 2 - 13, $ey + 34, $this->colors["text_dim"], 26);
+				$et = "NO RESULTS FOUND";
+				$this->renderText($et, ($cw - $this->getTextWidth($et, 2000)) / 2, $ey + 92, $this->colors["text"], 2000);
+				$es = "Try a different search term or clear your filters.";
+				$this->renderText($es, ($cw - $this->getTextWidth($es, 3000)) / 2, $ey + 116, $this->colors["text_dim"], 3000);
 			} else {
 				$gl = $this->opengl32;
 				$gl->glEnable(0x0c11); // SCISSOR
@@ -17424,7 +18775,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	{
 		$cw = $this->width - self::SIDEBAR_W;
 		$usableH = $this->height - self::TITLEBAR_H;
-		$yBase = self::HEADER_H + 54;
+		$yBase = self::HEADER_H + 90;
 		$showFooter = $this->getFooterVisibility();
 		$effectiveFooterH = $showFooter ? self::FOOTER_H : 0;
 		$h = $usableH - $effectiveFooterH - $yBase;
@@ -18619,6 +19970,248 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 				$this->openUrl("https://modrinth.com/project/$slug");
 			}
 			return;
+		}
+	}
+
+	/**
+	 * FoxySecure modal - the integrity report opened from Properties > About.
+	 * Shows the live tier, the raw trust signals and every tier's account /
+	 * encryption capabilities.
+	 */
+	private function renderFoxySecureModal()
+	{
+		$gl = $this->opengl32;
+		$target = $this->foxySecureModalOpen ? 1.0 : 0.0;
+		$this->animStep(
+			$this->foxySecureAlpha,
+			$target,
+			$this->foxySecureModalOpen ? 0.18 : 0.20,
+			$this->animDt,
+			0.001,
+		);
+		$p = $this->foxySecureAlpha;
+		$mAlpha = min(1.0, $p / 0.3);
+		$tAlpha = max(0.0, ($p - 0.3) / 0.7);
+		$scale = 0.96 + 0.04 * $mAlpha;
+
+		// Dim the launcher behind the dialog.
+		$this->drawRect(0, 0, $this->width, $this->height, [0, 0, 0, 0.62 * $mAlpha]);
+
+		$mw = 720;
+		$mh = 660;
+		$mx = ($this->width - $mw) / 2;
+		$my = ($this->height - $mh) / 2;
+
+		// Subtle scale-in around the window centre (hit-testing uses scale 1).
+		$gl->glPushMatrix();
+		$gl->glTranslatef($this->width / 2, $this->height / 2, 0);
+		$gl->glScalef($scale, $scale, 1);
+		$gl->glTranslatef(-$this->width / 2, -$this->height / 2, 0);
+
+		$prevAlpha = $this->globalAlpha;
+		$this->globalAlpha = $mAlpha;
+		$mc = $this->colors["modal_bg"];
+		$this->drawRoundedRect(
+			$mx, $my, $mw, $mh, 10,
+			[$mc[0], $mc[1], $mc[2], 0.99 * $mAlpha],
+			$this->tint($this->colors["stroke"], $mAlpha),
+		);
+
+		$this->globalAlpha = $tAlpha;
+		$tc = $this->colors["text"];
+		$td = $this->colors["text_dim"];
+
+		// Header.
+		$this->renderText("FOXYSECURE", $mx + 26, $my + 30, [$tc[0], $tc[1], $tc[2], $tAlpha], 2000);
+		$this->renderText(
+			"Integrity system & account protection",
+			$mx + 26, $my + 62,
+			[$td[0], $td[1], $td[2], $tAlpha],
+			3000,
+		);
+		$closeX = $mx + $mw - 100;
+		$closeY = $my + 18;
+		$closeHover =
+			$this->mouseX >= $closeX && $this->mouseX <= $closeX + 90 &&
+			$this->mouseY >= $closeY && $this->mouseY <= $closeY + 34;
+		$this->drawStyledButton($closeX, $closeY, 90, 34, "CLOSE", $closeHover, "danger", 3000);
+		$dc = $this->colors["divider"];
+		$this->drawRect($mx + 24, $my + 88, $mw - 48, 1, [$dc[0], $dc[1], $dc[2], 0.3]);
+
+		// ── Live status card ──
+		$tierColors = [
+			self::SEC_UNSIGNED => $this->colors["status_error"],
+			self::SEC_USER => $this->colors["warning"],
+			self::SEC_THIRD_PARTY => $this->colors["primary"],
+			self::SEC_AUTHENTIC => $this->colors["status_active"],
+		];
+		$tierNames = [
+			self::SEC_UNSIGNED => "UNSIGNED",
+			self::SEC_USER => "USER SIGNED",
+			self::SEC_THIRD_PARTY => "THIRD-PARTY SIGNED",
+			self::SEC_AUTHENTIC => "AUTHENTICATED FOXYCLIENT SIGNED",
+		];
+		$tier = $this->securityTier;
+		$accent = $tierColors[$tier] ?? $this->colors["text_dim"];
+		$accentDim = [$accent[0], $accent[1], $accent[2], 0.16];
+
+		$cardX = $mx + 24;
+		$cardY = $my + 104;
+		$cardW = $mw - 48;
+		$cardH = 84;
+		$cc = $this->colors["card"];
+		$this->drawRoundedRect(
+			$cardX, $cardY, $cardW, $cardH, 8,
+			[$cc[0], $cc[1], $cc[2], $tAlpha],
+			$this->tint($this->colors["stroke"], $tAlpha),
+		);
+		$this->drawRoundedRect($cardX + 1, $cardY + 1, 3, $cardH - 2, 1.5, $accent);
+
+		$this->renderText("FOXYCLIENT SECURE", $cardX + 18, $cardY + 28, [$tc[0], $tc[1], $tc[2], $tAlpha], 2000);
+		$this->renderText("Active integrity tier", $cardX + 18, $cardY + 52, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+
+		$pillLabel = $tierNames[$tier];
+		$pillW = $this->getTextWidth($pillLabel, 1000, 0.8) + 28;
+		$pillX = $cardX + $cardW - $pillW - 16;
+		$pillY = $cardY + 18;
+		$this->drawRoundedRect($pillX, $pillY, $pillW, 28, 14, $accentDim, $accent);
+		$this->renderText(
+			$pillLabel, $pillX + 14, $pillY + 19,
+			[$accent[0], $accent[1], $accent[2], $tAlpha],
+			1000, 0.8,
+		);
+
+		$sigTxt = $this->selfSignatureOk ? "VALID" : "FAILED";
+		$sigCol = $this->selfSignatureOk ? $this->colors["status_active"] : $this->colors["status_error"];
+		$hostTxt = $this->hostLaunched ? "SET" : "MISSING";
+		$hostCol = $this->hostLaunched ? $this->colors["status_active"] : $this->colors["text_dim"];
+		$vaultTxt = $this->tierUsesStrongVault() ? "STRONG AES-256-GCM" : "PARTIAL";
+		$sigY = $cardY + 74;
+		$this->renderText("SIGNATURE:", $cardX + 18, $sigY, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+		$this->renderText($sigTxt, $cardX + 104, $sigY, [$sigCol[0], $sigCol[1], $sigCol[2], $tAlpha], 3000);
+		$this->renderText("HOST:", $cardX + 190, $sigY, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+		$this->renderText($hostTxt, $cardX + 236, $sigY, [$hostCol[0], $hostCol[1], $hostCol[2], $tAlpha], 3000);
+		$this->renderText("VAULT:", $cardX + 330, $sigY, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+		$this->renderText($vaultTxt, $cardX + 388, $sigY, [$accent[0], $accent[1], $accent[2], $tAlpha], 3000);
+
+		// ── Tier reference ──
+		$this->renderText("INTEGRITY TIERS", $mx + 26, $my + 212, [$this->colors["primary"][0], $this->colors["primary"][1], $this->colors["primary"][2], $tAlpha], 1500);
+
+		$tiers = [
+			[self::SEC_UNSIGNED, "UNSIGNED", "LOCAL ONLY",
+				"Not signed and launched outside the host.",
+				"Local / offline accounts only; all others stay locked."],
+			[self::SEC_USER, "USER SIGNED", "3RD-PARTY",
+				"Signed bytes, launched directly (bare php).",
+				"3rd-party accounts allowed; Microsoft / Mojang denied."],
+			[self::SEC_THIRD_PARTY, "THIRD-PARTY SIGNED", "PARTIAL SECURE",
+				"Signed host launched a modified client.",
+				"All accounts and edits; partial secure, not strong."],
+			[self::SEC_AUTHENTIC, "AUTHENTICATED FOXYCLIENT SIGNED", "STRONG",
+				"Signed client launched by the signed host.",
+				"All accounts; strong vault, Trusted Execution Environment."],
+		];
+		$rowH = 68;
+		$gapY = 8;
+		$rowY = $my + 236;
+		foreach ($tiers as $t) {
+			[$id, $name, $tag, $desc1, $desc2] = $t;
+			$isCurrent = $id === $tier;
+			$rc = $tierColors[$id];
+			$bg = $this->colors["surface_alt"];
+			if ($isCurrent) {
+				$this->drawRoundedRect(
+					$cardX, $rowY, $cardW, $rowH, 8,
+					[$accentDim[0], $accentDim[1], $accentDim[2], $tAlpha * 0.6],
+					[$rc[0], $rc[1], $rc[2], $tAlpha * 0.7],
+				);
+			} else {
+				$this->drawRoundedRect(
+					$cardX, $rowY, $cardW, $rowH, 8,
+					[$bg[0], $bg[1], $bg[2], $tAlpha],
+					$this->tint($this->colors["stroke"], $tAlpha),
+				);
+			}
+			$this->drawRoundedRect($cardX + 10, $rowY + 12, 3, $rowH - 24, 1.5, $rc);
+
+			$this->renderText($name, $cardX + 22, $rowY + 22, [$tc[0], $tc[1], $tc[2], $tAlpha], 1000);
+			$tagW = $this->getTextWidth($tag, 3000, 0.8);
+			$this->renderText(
+				$tag, $cardX + $cardW - $tagW - 16, $rowY + 22,
+				[$rc[0], $rc[1], $rc[2], $tAlpha], 3000, 0.8,
+			);
+			$this->renderText($desc1, $cardX + 22, $rowY + 42, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+			$this->renderText($desc2, $cardX + 22, $rowY + 58, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+
+			$rowY += $rowH + $gapY;
+		}
+
+		// ── Trusted Execution Environment status ──
+		$this->drawRect($cardX, $my + 548, $cardW, 1, [$dc[0], $dc[1], $dc[2], 0.3]);
+		$pc = $this->colors["primary"];
+		$this->renderText(
+			"TRUSTED EXECUTION ENVIRONMENT",
+			$mx + 26, $my + 566,
+			[$pc[0], $pc[1], $pc[2], $tAlpha],
+			1500,
+		);
+		$teeOn = $this->teeActive;
+		$teeStatus = $teeOn ? "ACTIVE" : "INACTIVE";
+		$teeColor = $teeOn ? $this->colors["status_active"] : $this->colors["text_dim"];
+		$tpW = $this->getTextWidth($teeStatus, 1000, 0.8) + 28;
+		$tpX = $cardX + $cardW - $tpW - 16;
+		$this->drawRoundedRect(
+			$tpX, $my + 550, $tpW, 28, 14,
+			[$teeColor[0], $teeColor[1], $teeColor[2], 0.16 * $tAlpha],
+			[$teeColor[0], $teeColor[1], $teeColor[2], $tAlpha],
+		);
+		$this->renderText(
+			$teeStatus, $tpX + 14, $my + 569,
+			[$teeColor[0], $teeColor[1], $teeColor[2], $tAlpha],
+			1000, 0.8,
+		);
+		$containerTxt = $teeOn
+			? "SEALED - " . $this->teeRecordCount() . " records"
+			: "LOCKED - authenticated launch required";
+		$containerCol = $teeOn ? $this->colors["status_active"] : $td;
+		$attTxt = !$teeOn ? "N/A" : ($this->teeAttested ? "PASS" : "FAILED");
+		$attCol = !$teeOn ? $td : ($this->teeAttested
+			? $this->colors["status_active"]
+			: $this->colors["status_error"]);
+		$this->renderText("Secure container:", $mx + 26, $my + 594, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+		$this->renderText($containerTxt, $mx + 170, $my + 594, [$containerCol[0], $containerCol[1], $containerCol[2], $tAlpha], 3000);
+		$this->renderText("Attestation:", $mx + 26, $my + 612, [$td[0], $td[1], $td[2], $tAlpha], 3000);
+		$this->renderText($attTxt, $mx + 170, $my + 612, [$attCol[0], $attCol[1], $attCol[2], $tAlpha], 3000);
+		$this->renderText(
+			"Access: Authenticated FoxyClient signature only",
+			$mx + 26, $my + 630,
+			[$td[0], $td[1], $td[2], $tAlpha],
+			3000,
+		);
+
+		$this->globalAlpha = $prevAlpha;
+		$gl->glPopMatrix();
+	}
+
+	private function handleFoxySecureModalClick($x, $y)
+	{
+		$mw = 720;
+		$mh = 660;
+		$mx = ($this->width - $mw) / 2;
+		$my = ($this->height - $mh) / 2;
+
+		// Clicking outside the dialog dismisses it.
+		if ($x < $mx || $x > $mx + $mw || $y < $my || $y > $my + $mh) {
+			$this->foxySecureModalOpen = false;
+			return;
+		}
+		$cx = $x - $mx;
+		$cy = $y - $my;
+		if (
+			$cx >= $mw - 100 && $cx <= $mw - 10 &&
+			$cy >= 18 && $cy <= 52
+		) {
+			$this->foxySecureModalOpen = false;
 		}
 	}
 
