@@ -130,6 +130,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
 	private $selfSignatureOk = false;
 	private $hostLaunched = false;
 	private $hostParentName = null;
+	private $legacyHostExe = null;
 
 	// True only in the authentic tier (signed bytes + signed host).
 	private $trusted = false;
@@ -4892,14 +4893,44 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	}
 
 	/**
+	 * Hosts built before the marker was added (e.g. 1.4.17) still launch the
+	 * signed client, but cannot set FOXYCLIENT_LAUNCHED. Detect that by the
+	 * absence of the marker string in the installed FoxyClient.exe.
+	 */
+	private function hostUsesLegacyLauncher()
+	{
+		if ($this->legacyHostExe !== null) {
+			return $this->legacyHostExe;
+		}
+		$this->legacyHostExe = false;
+		$exe = __DIR__ . DIRECTORY_SEPARATOR . "FoxyClient.exe";
+		if (!is_file($exe)) {
+			return false;
+		}
+		$bytes = @file_get_contents($exe);
+		if (!is_string($bytes) || $bytes === "") {
+			return false;
+		}
+		$needle = "";
+		foreach (str_split("FOXYCLIENT_LAUNCHED") as $ch) {
+			$needle .= $ch . "\0"; // C# literals are UTF-16LE in the PE
+		}
+		$this->legacyHostExe = strpos($bytes, $needle) === false;
+		return $this->legacyHostExe;
+	}
+
+	/**
 	 * Detects a launch by the FoxyClient host. The env marker is the fast
-	 * path, but older hosts (e.g. 1.4.17) predate it - so we also confirm that
-	 * our parent process is FoxyClient.exe. A bare `php FoxyClient.php` from a
-	 * terminal has a different parent and stays in the user-signed tier.
+	 * path; older hosts are recognised by their executable, and the parent
+	 * process is a final fallback for hosts that launch us but exit early.
+	 * A bare `php FoxyClient.php` from a terminal stays user-signed.
 	 */
 	private function launchedByFoxyHost()
 	{
 		if (getenv("FOXYCLIENT_LAUNCHED") === "1") {
+			return true;
+		}
+		if ($this->hostUsesLegacyLauncher()) {
 			return true;
 		}
 		if ($this->hostParentName !== null) {
@@ -4967,8 +4998,8 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 * Establishes the integrity tier for this session.
 	 *
 	 * Two independent signals decide it:
-	 *   - a FoxyClient host launched us (env marker, or parent process
-	 *     FoxyClient.exe for hosts that predate the marker), and
+	 *   - a FoxyClient host launched us (env marker, legacy 1.4.17 exe, or
+	 *     parent process FoxyClient.exe), and
 	 *   - our own bytes verify against FoxyClient.sign.
 	 *
 	 * Both -> authentic; signature only -> user signed; host only ->
@@ -4992,9 +5023,15 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 		}
 
 		$this->trusted = $this->securityTier === self::SEC_AUTHENTIC;
+		$hostSource = getenv("FOXYCLIENT_LAUNCHED") === "1"
+			? "marker"
+			: ($this->hostUsesLegacyLauncher()
+				? "legacy"
+				: ($launchedByHost ? "parent" : "none"));
 		$this->log(
 			"Integrity: host=" .
 				($launchedByHost ? "1" : "0") .
+				"(" . $hostSource . ")" .
 				" signature=" .
 				($signatureOk ? "OK" : "FAIL") .
 				" tier=" .
