@@ -129,6 +129,7 @@ htxZN3kC3BC1pHniNpxcgHUCAwEAAQ==
 	// these instead of re-running the (costly) RSA self-check every frame.
 	private $selfSignatureOk = false;
 	private $hostLaunched = false;
+	private $hostParentName = null;
 
 	// True only in the authentic tier (signed bytes + signed host).
 	private $trusted = false;
@@ -4891,10 +4892,83 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	}
 
 	/**
+	 * Detects a launch by the FoxyClient host. The env marker is the fast
+	 * path, but older hosts (e.g. 1.4.17) predate it - so we also confirm that
+	 * our parent process is FoxyClient.exe. A bare `php FoxyClient.php` from a
+	 * terminal has a different parent and stays in the user-signed tier.
+	 */
+	private function launchedByFoxyHost()
+	{
+		if (getenv("FOXYCLIENT_LAUNCHED") === "1") {
+			return true;
+		}
+		if ($this->hostParentName !== null) {
+			return strtolower($this->hostParentName) === "foxyclient.exe";
+		}
+		$this->hostParentName = "";
+		try {
+			$ffi = FFI::cdef(
+				"typedef unsigned short wchar_t;" .
+				"typedef struct { unsigned long dwSize; unsigned long cntUsage;" .
+				" unsigned long th32ProcessID; void* th32DefaultHeapID;" .
+				" unsigned long th32ModuleID; unsigned long cntThreads;" .
+				" unsigned long th32ParentProcessID; long pcPriClassBase;" .
+				" unsigned long dwFlags; wchar_t szExeFile[260]; } PROCESSENTRY32W;" .
+				"void* CreateToolhelp32Snapshot(unsigned long, unsigned long);" .
+				"int Process32FirstW(void*, PROCESSENTRY32W*);" .
+				"int Process32NextW(void*, PROCESSENTRY32W*);" .
+				"int CloseHandle(void*);",
+				"kernel32.dll",
+			);
+			$pid = (int) getmypid();
+			$snap = $ffi->CreateToolhelp32Snapshot(2, 0);
+			if (!FFI::isNull($snap)) {
+				$entry = $ffi->new("PROCESSENTRY32W");
+				$entry->dwSize = FFI::sizeof($entry);
+				$parent = 0;
+				if ($ffi->Process32FirstW($snap, FFI::addr($entry))) {
+					do {
+						if ((int) $entry->th32ProcessID === $pid) {
+							$parent = (int) $entry->th32ParentProcessID;
+							break;
+						}
+					} while ($ffi->Process32NextW($snap, FFI::addr($entry)));
+				}
+				if ($parent > 0) {
+					$parentEntry = $ffi->new("PROCESSENTRY32W");
+					$parentEntry->dwSize = FFI::sizeof($parentEntry);
+					if ($ffi->Process32FirstW($snap, FFI::addr($parentEntry))) {
+						do {
+							if ((int) $parentEntry->th32ProcessID === $parent) {
+								$raw = FFI::string(
+									FFI::cast("char*", FFI::addr($parentEntry->szExeFile)),
+									520,
+								);
+								$name = (string) iconv("UTF-16LE", "UTF-8", $raw);
+								$this->hostParentName = (string) preg_replace(
+									'/\x00.*$/s',
+									"",
+									$name,
+								);
+								break;
+							}
+						} while ($ffi->Process32NextW($snap, FFI::addr($parentEntry)));
+					}
+				}
+				$ffi->CloseHandle($snap);
+			}
+		} catch (\Throwable $e) {
+			$this->hostParentName = "";
+		}
+		return strtolower($this->hostParentName) === "foxyclient.exe";
+	}
+
+	/**
 	 * Establishes the integrity tier for this session.
 	 *
 	 * Two independent signals decide it:
-	 *   - the signed C# host set FOXYCLIENT_LAUNCHED=1, and
+	 *   - a FoxyClient host launched us (env marker, or parent process
+	 *     FoxyClient.exe for hosts that predate the marker), and
 	 *   - our own bytes verify against FoxyClient.sign.
 	 *
 	 * Both -> authentic; signature only -> user signed; host only ->
@@ -4902,7 +4976,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 	 */
 	private function initTrust()
 	{
-		$launchedByHost = getenv("FOXYCLIENT_LAUNCHED") === "1";
+		$launchedByHost = $this->launchedByFoxyHost();
 		$signatureOk = $this->verifySelfIntegrity();
 		$this->hostLaunched = $launchedByHost;
 		$this->selfSignatureOk = $signatureOk;
@@ -5274,7 +5348,7 @@ private function buildFontAtlas($listBase, $fontSize, $fontWeight, $charList = n
 			return false;
 		}
 		$sigOk = $this->verifySelfIntegrity();
-		$hostOk = $this->hostLaunched && getenv("FOXYCLIENT_LAUNCHED") === "1";
+		$hostOk = $this->hostLaunched && $this->launchedByFoxyHost();
 		return $sigOk &&
 			$hostOk &&
 			hash_equals($this->teeAttestationToken, $this->teeComputeToken());
